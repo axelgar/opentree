@@ -126,6 +126,23 @@ func (m *Manager) Diff(branchName string) (string, error) {
 	return string(output), nil
 }
 
+// DiffBranches compares a worktree branch with a base branch
+func (m *Manager) DiffBranches(branchName, baseBranch string) (string, error) {
+	if err := m.ensureGitRepo(); err != nil {
+		return "", err
+	}
+
+	// Use git diff to compare the two branches
+	cmd := exec.Command("git", "diff", "--stat", baseBranch+"..."+branchName)
+	cmd.Dir = m.repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get diff between branches: %w", err)
+	}
+
+	return string(output), nil
+}
+
 // ensureGitRepo finds the git repository root
 func (m *Manager) ensureGitRepo() error {
 	if m.repoRoot != "" {
