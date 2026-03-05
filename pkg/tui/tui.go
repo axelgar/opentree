@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/axelgar/opentree/pkg/agent"
+
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -423,11 +423,7 @@ func (m Model) createWorkspaceCmd(name string) tea.Cmd {
 		wd, _ := os.Getwd()
 		worktreePath := fmt.Sprintf("%s/.opentree/%s", wd, dirName)
 
-		ag := agent.NewOpenCodeAgent("opencode", []string{"agent", "start"})
-		cmd := ag.Name() // "opencode"
-		// We want to run `opencode agent start`
-		
-		if err := m.tmuxCtrl.CreateWindow(name, worktreePath, "opencode", "agent", "start"); err != nil {
+		if err := m.tmuxCtrl.CreateWindow(name, worktreePath, "opencode"); err != nil {
 			return errMsg{err}
 		}
 
@@ -438,7 +434,7 @@ func (m Model) createWorkspaceCmd(name string) tea.Cmd {
 			BaseBranch:  "main",
 			CreatedAt:   time.Now(),
 			Status:      "active",
-			Agent:       cmd,
+			Agent:       "opencode",
 			WorktreeDir: worktreePath,
 		}
 		if err := m.stateStore.AddWorkspace(ws); err != nil {
