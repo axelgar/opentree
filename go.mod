@@ -1,6 +1,6 @@
 module github.com/axelgar/opentree
 
-go 1.25.0
+go 1.24.7
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
