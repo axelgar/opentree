@@ -3,6 +3,9 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -18,6 +21,9 @@ import (
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
+
+// ansiEscapeRe strips ANSI escape sequences from tmux pane output.
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]`)
 
 // Styles
 var (
@@ -66,6 +72,32 @@ var (
 				Foreground(lipgloss.Color("#FFF")).
 				Background(lipgloss.Color("#1F7A4D")).
 				Padding(0, 1)
+
+	// Improvement 2: agent preview panel styles
+	previewBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#444")).
+			Padding(0, 1).
+			MarginTop(1)
+
+	previewTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888"))
+
+	previewLineStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#AAA"))
+
+	// Improvement 1: delete confirmation styles
+	dangerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196"))
+
+	confirmKeyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F4A261")).
+			Bold(true)
+
+	// Improvement 4: two-step create dialog
+	stepLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888")).
+			Italic(true)
 )
 
 type keyMap struct {
@@ -75,6 +107,7 @@ type keyMap struct {
 	Enter  key.Binding
 	Diff   key.Binding
 	PR     key.Binding
+	Open   key.Binding // Improvement 5: open PR in browser
 	Delete key.Binding
 	Quit   key.Binding
 	Help   key.Binding
@@ -87,7 +120,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Enter},
-		{k.Diff, k.PR, k.Delete, k.Quit, k.Help},
+		{k.Diff, k.PR, k.Open, k.Delete, k.Quit, k.Help},
 	}
 }
 
@@ -115,6 +148,10 @@ var keys = keyMap{
 	PR: key.NewBinding(
 		key.WithKeys("p"),
 		key.WithHelp("p", "create PR"),
+	),
+	Open: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "open PR in browser"),
 	),
 	Delete: key.NewBinding(
 		key.WithKeys("x"),
@@ -149,10 +186,21 @@ type Model struct {
 	width      int
 	height     int
 
-	input    textinput.Model
-	creating bool
-	help     help.Model
-	keys     keyMap
+	// Improvement 4: two-step create dialog
+	input         textinput.Model
+	creating      bool
+	createStep    int    // 0 = branch name, 1 = base branch
+	newBranchName string // stores branch name between steps
+
+	// Improvement 1: delete confirmation
+	deleting     bool
+	deleteTarget string
+
+	// Improvement 2: agent output preview
+	agentPreview string
+
+	help help.Model
+	keys keyMap
 
 	err error
 }
@@ -162,7 +210,7 @@ func NewModel() (*Model, error) {
 	st, err := state.New(".")
 	if err != nil {
 		// Try to find git root if "." fails
-		if wd, err := os.Getwd(); err == nil {
+		if wd, err2 := os.Getwd(); err2 == nil {
 			st, err = state.New(wd)
 		}
 		if err != nil {
@@ -197,6 +245,10 @@ func (m Model) Init() tea.Cmd {
 		textinput.Blink,
 		m.loadWorkspacesCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
+		// Improvement 3: auto-refresh workspace status every 10 seconds
+		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
+		// Improvement 2: agent preview refresh every 5 seconds
+		tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
 	)
 }
 
@@ -210,37 +262,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.Width = msg.Width
 
 	case tea.KeyMsg:
+		// Improvement 1: delete confirmation mode takes priority
+		if m.deleting {
+			switch msg.String() {
+			case "y", "Y":
+				target := m.deleteTarget
+				m.deleting = false
+				m.deleteTarget = ""
+				return m, m.deleteWorkspaceCmd(target)
+			case "n", "esc":
+				m.deleting = false
+				m.deleteTarget = ""
+			}
+			return m, nil
+		}
+
+		// Improvement 4: two-step create dialog
 		if m.creating {
 			switch msg.String() {
 			case "enter":
-				name := m.input.Value()
-				if name != "" {
-					m.creating = false
-					m.input.SetValue("")
-					return m, m.createWorkspaceCmd(name)
+				val := m.input.Value()
+				if val == "" {
+					return m, nil
 				}
+				if m.createStep == 0 {
+					// Advance to step 2: collect base branch
+					m.newBranchName = val
+					m.createStep = 1
+					m.input.Placeholder = "Base branch"
+					m.input.SetValue(m.cfg.Worktree.DefaultBase)
+					return m, textinput.Blink
+				}
+				// Step 2 confirmed: create workspace
+				branchName := m.newBranchName
+				baseBranch := val
+				m.creating = false
+				m.createStep = 0
+				m.newBranchName = ""
+				m.input.SetValue("")
+				m.input.Placeholder = "New branch name"
+				return m, m.createWorkspaceCmd(branchName, baseBranch)
 			case "esc":
 				m.creating = false
+				m.createStep = 0
+				m.newBranchName = ""
 				m.input.SetValue("")
+				m.input.Placeholder = "New branch name"
 				return m, nil
 			}
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
 		}
 
+		// Normal mode
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
 				m.cursor--
+				return m, m.capturePreviewCmd()
 			}
 		case key.Matches(msg, m.keys.Down):
 			if m.cursor < len(m.workspaces)-1 {
 				m.cursor++
+				return m, m.capturePreviewCmd()
 			}
 		case key.Matches(msg, m.keys.New):
 			m.creating = true
+			m.createStep = 0
+			m.input.Placeholder = "New branch name"
+			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
 		case key.Matches(msg, m.keys.Enter):
@@ -249,18 +341,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.attachWorkspaceCmd(ws.Name)
 			}
 		case key.Matches(msg, m.keys.Diff):
-			// For now, just refresh to update diff stats
-			// In a real implementation, we might show a popup
 			return m, m.loadWorkspacesCmd
 		case key.Matches(msg, m.keys.PR):
 			if len(m.workspaces) > 0 {
 				ws := m.workspaces[m.cursor]
 				return m, m.createPRCmd(ws.Name, ws.Branch, ws.BaseBranch)
 			}
+		// Improvement 5: open PR URL in browser
+		case key.Matches(msg, m.keys.Open):
+			if len(m.workspaces) > 0 {
+				ws := m.workspaces[m.cursor]
+				if ws.PRURL != "" {
+					return m, openURLCmd(ws.PRURL)
+				}
+			}
+		// Improvement 1: show confirmation instead of immediate delete
 		case key.Matches(msg, m.keys.Delete):
 			if len(m.workspaces) > 0 {
 				ws := m.workspaces[m.cursor]
-				return m, m.deleteWorkspaceCmd(ws.Name)
+				m.deleting = true
+				m.deleteTarget = ws.Name
 			}
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
@@ -271,12 +371,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.workspaces) {
 			m.cursor = max(0, len(m.workspaces)-1)
 		}
+		// Refresh preview for the newly selected workspace
+		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
 		return m, m.loadWorkspacesCmd
 
 	case deletedWorkspaceMsg:
 		return m, m.loadWorkspacesCmd
+
+	// Improvement 2: agent preview received
+	case capturePreviewMsg:
+		m.agentPreview = msg.lines
+
+	// Improvement 3: periodic workspace status refresh
+	case refreshTickMsg:
+		return m, tea.Batch(
+			m.loadWorkspacesCmd,
+			tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
+		)
+
+	// Improvement 2: periodic preview refresh
+	case previewTickMsg:
+		return m, tea.Batch(
+			m.capturePreviewCmd(),
+			tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
+		)
 
 	case prCreatedMsg:
 		ws, err := m.stateStore.GetWorkspace(msg.wsName)
@@ -324,11 +444,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg.err
-		// Clear error after 3 seconds
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 			return clearErrorMsg{}
 		})
-		
+
 	case clearErrorMsg:
 		m.err = nil
 	}
@@ -337,15 +456,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if m.creating {
-		return appStyle.Render(
-			fmt.Sprintf(
-				"%s\n\n%s\n\n%s",
-				titleStyle.Render("Create New Workspace"),
-				m.input.View(),
-				helpStyle.Render("Enter to confirm • Esc to cancel"),
-			),
+	// Improvement 1: delete confirmation dialog
+	if m.deleting {
+		body := dangerStyle.Render(fmt.Sprintf("Delete workspace %q?", m.deleteTarget)) +
+			"\n" +
+			helpStyle.Render("The worktree, tmux window, and all local changes will be removed.")
+		footer := fmt.Sprintf("%s %s  •  %s %s",
+			confirmKeyStyle.Render("y"), helpStyle.Render("confirm"),
+			confirmKeyStyle.Render("esc/n"), helpStyle.Render("cancel"),
 		)
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
+			titleStyle.Render("Delete Workspace"),
+			body,
+			footer,
+		))
+	}
+
+	// Improvement 4: two-step create dialog
+	if m.creating {
+		var stepLabel string
+		if m.createStep == 0 {
+			stepLabel = "Step 1/2 — Branch name"
+		} else {
+			stepLabel = fmt.Sprintf("Step 2/2 — Base branch  (branching from: %s)", m.newBranchName)
+		}
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n%s\n\n%s",
+			titleStyle.Render("Create New Workspace"),
+			stepLabelStyle.Render(stepLabel),
+			m.input.View(),
+			helpStyle.Render("Enter to continue • Esc to cancel"),
+		))
 	}
 
 	var s strings.Builder
@@ -360,7 +500,7 @@ func (m Model) View() string {
 		s.WriteString("\n\n")
 	}
 
-	// List
+	// Workspace list
 	if len(m.workspaces) == 0 {
 		s.WriteString(itemStyle.Render("No workspaces found. Press 'n' to create one."))
 		s.WriteString("\n")
@@ -387,8 +527,21 @@ func (m Model) View() string {
 				title += "  " + prOpenBadgeStyle.Render("PR open")
 			}
 			desc := fmt.Sprintf("  %s • %s", ws.Branch, ws.DiffStat)
-			
+
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
+			s.WriteString("\n")
+		}
+
+		// Improvement 2: agent output preview for selected workspace
+		if m.agentPreview != "" {
+			wsName := m.workspaces[m.cursor].Name
+			previewWidth := m.width - 8
+			if previewWidth < 20 {
+				previewWidth = 60
+			}
+			content := previewTitleStyle.Render("Agent Output: "+wsName) + "\n" +
+				previewLineStyle.Render(m.agentPreview)
+			s.WriteString(previewBoxStyle.Width(previewWidth).Render(content))
 			s.WriteString("\n")
 		}
 	}
@@ -418,19 +571,22 @@ type prStatusCheckedMsg struct {
 	prURL    string
 	prStatus string
 }
+type refreshTickMsg struct{}    // Improvement 3
+type previewTickMsg struct{}    // Improvement 2
+type capturePreviewMsg struct { // Improvement 2
+	lines string
+}
 
 // Commands
 
 func (m Model) loadWorkspacesCmd() tea.Msg {
-	// Get saved workspaces
 	saved := m.stateStore.ListWorkspaces()
-	
-	// Get active windows
+
 	windows, err := m.tmuxCtrl.ListWindows()
 	if err != nil {
 		// Log error but continue
 	}
-	
+
 	windowMap := make(map[string]tmux.Window)
 	for _, w := range windows {
 		windowMap[w.Name] = w
@@ -438,7 +594,6 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 	var items []WorkspaceItem
 	for _, ws := range saved {
-		// Get diff stats
 		diff, _ := m.worktreeMgr.Diff(ws.Branch)
 		diffStat := "No changes"
 		lines := strings.Split(strings.TrimSpace(diff), "\n")
@@ -446,9 +601,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 			diffStat = lines[len(lines)-1]
 		}
 
-		// Check status
-		win, exists := windowMap[ws.Name] // Assuming workspace name matches window name
-		// Sanitize window name for lookup as tmux sanitizes it
+		win, exists := windowMap[ws.Name]
 		sanitizedName := strings.ReplaceAll(ws.Name, "/", "-")
 		sanitizedName = strings.ReplaceAll(sanitizedName, ":", "-")
 		if !exists {
@@ -464,34 +617,21 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		if exists {
 			item.WindowID = win.ID
 		}
-		
+
 		items = append(items, item)
 	}
 
 	return loadedWorkspacesMsg{workspaces: items}
 }
 
-func (m Model) createWorkspaceCmd(name string) tea.Cmd {
+// Improvement 4: createWorkspaceCmd now accepts baseBranch instead of hardcoding "main"
+func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 	return func() tea.Msg {
-		// 1. Create git worktree
-		if err := m.worktreeMgr.Create(name, "main"); err != nil {
+		if err := m.worktreeMgr.Create(name, baseBranch); err != nil {
 			return errMsg{err}
 		}
 
-		// 2. Create tmux window with agent
-		// Construct workspace path
-		// We need to know where worktree created it.
-		// Usually .opentree/<sanitized_name>
 		dirName := strings.ReplaceAll(name, "/", "-")
-		// Assume we can get repo root from somewhere or worktree returns it
-		// For now let's assume standard path relative to CWD if we are in root
-		// But better to ask worktree.Manager where the root is.
-		// Since we don't have that exposed easily, let's just use the name.
-		// The tmux command runs in the worktree dir.
-		
-		// We need the absolute path for tmux
-		// worktree.Manager knows the path.
-		// Let's rely on standard path structure for now: .opentree/<name>
 		wd, _ := os.Getwd()
 		worktreePath := fmt.Sprintf("%s/.opentree/%s", wd, dirName)
 
@@ -500,11 +640,10 @@ func (m Model) createWorkspaceCmd(name string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		// 3. Save state
 		ws := &state.Workspace{
 			Name:        name,
 			Branch:      name,
-			BaseBranch:  "main",
+			BaseBranch:  baseBranch,
 			CreatedAt:   time.Now(),
 			Status:      "active",
 			Agent:       agentCmd,
@@ -520,17 +659,14 @@ func (m Model) createWorkspaceCmd(name string) tea.Cmd {
 
 func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		// 1. Kill tmux window
 		if err := m.tmuxCtrl.KillWindow(name); err != nil {
 			// Continue even if window doesn't exist
 		}
 
-		// 2. Remove worktree
 		if err := m.worktreeMgr.Delete(name, true); err != nil {
 			return errMsg{err}
 		}
 
-		// 3. Remove from state
 		if err := m.stateStore.DeleteWorkspace(name); err != nil {
 			return errMsg{err}
 		}
@@ -568,6 +704,56 @@ func (m Model) checkPRStatusCmd(wsName, branch string) tea.Cmd {
 			return nil
 		}
 		return prStatusCheckedMsg{wsName: wsName, prURL: prURL, prStatus: prStatus}
+	}
+}
+
+// Improvement 2: capturePreviewCmd fetches the last 5 lines of agent output for the selected workspace.
+func (m Model) capturePreviewCmd() tea.Cmd {
+	if len(m.workspaces) == 0 {
+		return nil
+	}
+	ws := m.workspaces[m.cursor]
+	if ws.WindowID == "" {
+		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
+	}
+	wsName := ws.Name
+	return func() tea.Msg {
+		output, err := m.tmuxCtrl.CapturePane(wsName, 5)
+		if err != nil {
+			return capturePreviewMsg{lines: ""}
+		}
+		return capturePreviewMsg{lines: cleanPreview(output)}
+	}
+}
+
+// cleanPreview strips ANSI codes and returns the last 5 non-empty lines.
+func cleanPreview(s string) string {
+	s = ansiEscapeRe.ReplaceAllString(s, "")
+	lines := strings.Split(s, "\n")
+	var out []string
+	for _, l := range lines {
+		if trimmed := strings.TrimRight(l, " \t"); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) > 5 {
+		out = out[len(out)-5:]
+	}
+	return strings.Join(out, "\n")
+}
+
+// Improvement 5: openURLCmd opens a URL in the system default browser (fire-and-forget).
+func openURLCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", url)
+		default:
+			cmd = exec.Command("xdg-open", url)
+		}
+		_ = cmd.Start()
+		return nil
 	}
 }
 
