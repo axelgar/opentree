@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
@@ -141,6 +142,7 @@ type Model struct {
 	tmuxCtrl    *tmux.Controller
 	stateStore  *state.Store
 	prMgr       *github.PRManager
+	cfg         *config.Config
 
 	workspaces []WorkspaceItem
 	cursor     int
@@ -167,7 +169,11 @@ func NewModel() (*Model, error) {
 			return nil, fmt.Errorf("failed to initialize state: %w", err)
 		}
 	}
-	tm := tmux.New("opentree")
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.Default()
+	}
+	tm := tmux.New(cfg.Tmux.SessionPrefix)
 
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
@@ -179,6 +185,7 @@ func NewModel() (*Model, error) {
 		tmuxCtrl:    tm,
 		stateStore:  st,
 		prMgr:       github.New(),
+		cfg:         cfg,
 		input:       ti,
 		help:        help.New(),
 		keys:        keys,
@@ -488,7 +495,8 @@ func (m Model) createWorkspaceCmd(name string) tea.Cmd {
 		wd, _ := os.Getwd()
 		worktreePath := fmt.Sprintf("%s/.opentree/%s", wd, dirName)
 
-		if err := m.tmuxCtrl.CreateWindow(name, worktreePath, "opencode"); err != nil {
+		agentCmd := m.cfg.Agent.Command
+		if err := m.tmuxCtrl.CreateWindow(name, worktreePath, agentCmd, m.cfg.Agent.Args...); err != nil {
 			return errMsg{err}
 		}
 
@@ -499,7 +507,7 @@ func (m Model) createWorkspaceCmd(name string) tea.Cmd {
 			BaseBranch:  "main",
 			CreatedAt:   time.Now(),
 			Status:      "active",
-			Agent:       "opencode",
+			Agent:       agentCmd,
 			WorktreeDir: worktreePath,
 		}
 		if err := m.stateStore.AddWorkspace(ws); err != nil {
