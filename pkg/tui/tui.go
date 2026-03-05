@@ -475,10 +475,11 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.tmuxCtrl.SelectWindow(name); err != nil {
+		cmd, err := m.tmuxCtrl.AttachCmd(name)
+		if err != nil {
 			return errMsg{err}
 		}
-		return tea.ExecProcess(m.tmuxCtrl.AttachSessionCmd(), func(err error) tea.Msg {
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return attachFinishedMsg{err: err}
 		})()
 	}

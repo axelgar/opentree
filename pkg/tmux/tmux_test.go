@@ -1,7 +1,9 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -427,38 +429,84 @@ func TestSelectWindowNonExistent(t *testing.T) {
 	}
 }
 
-func TestAttachSessionCmd(t *testing.T) {
-	ctrl := New("test-opentree-cmd")
+func TestAttachCmd(t *testing.T) {
+	if !isTmuxAvailable() {
+		t.Skip("tmux not available, skipping integration test")
+	}
 
-	cmd := ctrl.AttachSessionCmd()
+	ctrl := New("test-opentree-attachcmd")
+	sessionName := ctrl.getSessionName()
 
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	err := ctrl.CreateWindow("attach-win", "/tmp", "sleep", "1000")
+	if err != nil {
+		t.Fatalf("CreateWindow() failed: %v", err)
+	}
+
+	cmd, err := ctrl.AttachCmd("attach-win")
+	if err != nil {
+		t.Logf("AttachCmd() returned error (expected in no-TTY environments): %v", err)
+		return
+	}
 	if cmd == nil {
-		t.Fatal("AttachSessionCmd() returned nil")
+		t.Fatal("AttachCmd() returned nil cmd")
 	}
-
 	if cmd.Path == "" {
-		t.Error("AttachSessionCmd() returned cmd with empty Path")
+		t.Error("AttachCmd() returned cmd with empty Path")
 	}
 
-	expectedArgs := []string{"tmux", "attach-session", "-t", "test-opentree-cmd"}
-	if len(cmd.Args) != len(expectedArgs) {
-		t.Fatalf("AttachSessionCmd() args length = %d, want %d", len(cmd.Args), len(expectedArgs))
-	}
-
-	for i, arg := range expectedArgs {
-		if cmd.Args[i] != arg {
-			t.Errorf("AttachSessionCmd() args[%d] = %q, want %q", i, cmd.Args[i], arg)
+	hasFlag := false
+	for _, arg := range cmd.Args {
+		if arg == sessionName || strings.Contains(arg, sessionName) {
+			hasFlag = true
+			break
 		}
 	}
+	if !hasFlag {
+		t.Errorf("AttachCmd() args %v do not reference session %q", cmd.Args, sessionName)
+	}
+}
 
-	if cmd.Stdin != nil {
-		t.Error("AttachSessionCmd() should not set Stdin")
+func TestAttachCmdNoSession(t *testing.T) {
+	ctrl := New("test-opentree-nosession")
+	sessionName := ctrl.getSessionName()
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	cmd, err := ctrl.AttachCmd("nonexistent")
+	// AttachCmd builds a command even if the session doesn't exist yet;
+	// the error surfaces when the command actually runs.
+	if err != nil {
+		// If we're in a no-TTY env (CI), this is expected
+		t.Logf("AttachCmd() returned error (expected in no-TTY environments): %v", err)
+		return
 	}
-	if cmd.Stdout != nil {
-		t.Error("AttachSessionCmd() should not set Stdout")
+	if cmd == nil {
+		t.Fatal("AttachCmd() returned nil cmd without error")
 	}
-	if cmd.Stderr != nil {
-		t.Error("AttachSessionCmd() should not set Stderr")
+}
+
+func TestDetectEnv(t *testing.T) {
+	ctrl := New("test-opentree-detect")
+	env := ctrl.detectEnv()
+
+	// In test environments (CI/terminals), we should get either envOutsideTmux,
+	// envInsideSameSession, envInsideDifferentSession, or envNoTTY — never panic.
+	switch env {
+	case envOutsideTmux, envInsideSameSession, envInsideDifferentSession, envNoTTY:
+		// valid
+	default:
+		t.Errorf("detectEnv() returned unexpected value: %d", env)
+	}
+}
+
+func TestIsInsideTmux(t *testing.T) {
+	result := IsInsideTmux()
+	tmuxVar := os.Getenv("TMUX")
+	expected := tmuxVar != ""
+	if result != expected {
+		t.Errorf("IsInsideTmux() = %v, want %v (TMUX=%q)", result, expected, tmuxVar)
 	}
 }
 

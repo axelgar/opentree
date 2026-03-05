@@ -1,7 +1,9 @@
 package tmux
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -69,20 +71,7 @@ func (c *Controller) ListWindows() ([]Window, error) {
 	return c.parseWindows(string(output))
 }
 
-// AttachWindow attaches to a specific tmux window
-func (c *Controller) AttachWindow(name string) error {
-	if err := c.SelectWindow(name); err != nil {
-		return err
-	}
-
-	cmd := c.AttachSessionCmd()
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// SelectWindow selects a tmux window by name without attaching
+// SelectWindow selects a tmux window by name without attaching.
 func (c *Controller) SelectWindow(name string) error {
 	sessionName := c.getSessionName()
 	windowName := c.sanitizeWindowName(name)
@@ -93,12 +82,119 @@ func (c *Controller) SelectWindow(name string) error {
 	return nil
 }
 
-// AttachSessionCmd returns an *exec.Cmd for attaching to the tmux session.
-// This is useful for callers that need to control how the process is executed
-// (e.g., Bubble Tea's ExecProcess).
-func (c *Controller) AttachSessionCmd() *exec.Cmd {
+type tmuxEnv int
+
+const (
+	envOutsideTmux tmuxEnv = iota
+	envInsideSameSession
+	envInsideDifferentSession
+	envNoTTY
+)
+
+func (c *Controller) detectEnv() tmuxEnv {
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		return envNoTTY
+	}
+	tmuxVar := os.Getenv("TMUX")
+	if tmuxVar == "" {
+		return envOutsideTmux
+	}
+	currentSession := c.getCurrentSessionName()
+	if currentSession == c.getSessionName() {
+		return envInsideSameSession
+	}
+	return envInsideDifferentSession
+}
+
+func (c *Controller) getCurrentSessionName() string {
+	out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// IsInsideTmux reports whether the current process is running inside tmux.
+func IsInsideTmux() bool {
+	return os.Getenv("TMUX") != ""
+}
+
+// AttachWindow attaches to a specific tmux window using the correct
+// strategy based on the current environment.
+func (c *Controller) AttachWindow(name string) error {
+	env := c.detectEnv()
 	sessionName := c.getSessionName()
-	return exec.Command("tmux", "attach-session", "-t", sessionName)
+	windowTarget := fmt.Sprintf("%s:%s", sessionName, c.sanitizeWindowName(name))
+
+	switch env {
+	case envNoTTY:
+		return fmt.Errorf("attach requires an interactive terminal (no TTY detected)")
+
+	case envOutsideTmux:
+		_ = c.SelectWindow(name)
+		cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		var stderr bytes.Buffer
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+		if err := cmd.Run(); err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return fmt.Errorf("%s", msg)
+			}
+			return fmt.Errorf("tmux attach-session failed: %w", err)
+		}
+		return nil
+	case envInsideSameSession:
+		return c.SelectWindow(name)
+
+	case envInsideDifferentSession:
+		cmd := exec.Command("tmux", "switch-client", "-t", windowTarget)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return fmt.Errorf("%s", msg)
+			}
+			return fmt.Errorf("tmux switch-client failed: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unknown tmux environment")
+}
+
+// AttachCmd returns the appropriate *exec.Cmd for attaching to a workspace.
+// This is intended for callers that need to control execution themselves
+// (e.g., Bubble Tea's ExecProcess).
+func (c *Controller) AttachCmd(name string) (*exec.Cmd, error) {
+	env := c.detectEnv()
+	sessionName := c.getSessionName()
+	windowTarget := fmt.Sprintf("%s:%s", sessionName, c.sanitizeWindowName(name))
+
+	switch env {
+	case envNoTTY:
+		return nil, fmt.Errorf("attach requires an interactive terminal (no TTY detected)")
+
+	case envOutsideTmux:
+		_ = c.SelectWindow(name)
+		return exec.Command("tmux", "attach-session", "-t", sessionName), nil
+
+	case envInsideSameSession:
+		return exec.Command("tmux", "select-window", "-t", windowTarget), nil
+
+	case envInsideDifferentSession:
+		return exec.Command("tmux", "switch-client", "-t", windowTarget), nil
+	}
+
+	return nil, fmt.Errorf("unknown tmux environment")
 }
 
 // KillWindow stops and removes a tmux window

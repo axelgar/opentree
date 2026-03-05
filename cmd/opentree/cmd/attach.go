@@ -2,9 +2,6 @@ package cmd
 
 import (
 	"fmt"
-
-
-
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/spf13/cobra"
@@ -14,6 +11,7 @@ var AttachCmd = &cobra.Command{
 	Use:   "attach <branch-name>",
 	Short: "Attach to a workspace's tmux window",
 	Args:  cobra.ExactArgs(1),
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
 
