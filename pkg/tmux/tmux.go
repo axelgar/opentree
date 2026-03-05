@@ -1,0 +1,177 @@
+package tmux
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// Controller manages tmux sessions and windows
+type Controller struct {
+	sessionPrefix string
+}
+
+// New creates a new tmux controller
+func New(sessionPrefix string) *Controller {
+	return &Controller{
+		sessionPrefix: sessionPrefix,
+	}
+}
+
+// CreateWindow creates a new tmux window and runs a command in it
+func (c *Controller) CreateWindow(name, workdir, command string, args ...string) error {
+	sessionName := c.getSessionName()
+	
+	// Ensure tmux session exists
+	if !c.sessionExists(sessionName) {
+		if err := c.createSession(sessionName); err != nil {
+			return fmt.Errorf("failed to create tmux session: %w", err)
+		}
+	}
+
+	// Create new window
+	windowName := c.sanitizeWindowName(name)
+	cmd := exec.Command("tmux", "new-window", "-t", sessionName, "-n", windowName, "-c", workdir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
+	}
+
+	// Send command to the window
+	fullCmd := command
+	if len(args) > 0 {
+		fullCmd = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
+	}
+	
+	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", sessionName, windowName), fullCmd, "Enter")
+	if output, err := sendCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to send command to window: %w\nOutput: %s", err, output)
+	}
+
+	return nil
+}
+
+// ListWindows returns all windows in the opentree session
+func (c *Controller) ListWindows() ([]Window, error) {
+	sessionName := c.getSessionName()
+	
+	if !c.sessionExists(sessionName) {
+		return []Window{}, nil
+	}
+
+	// Format: window_id window_name window_active
+	cmd := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_id}|#{window_name}|#{window_active}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list windows: %w", err)
+	}
+
+	return c.parseWindows(string(output))
+}
+
+// AttachWindow attaches to a specific tmux window
+func (c *Controller) AttachWindow(name string) error {
+	sessionName := c.getSessionName()
+	windowName := c.sanitizeWindowName(name)
+	
+	cmd := exec.Command("tmux", "select-window", "-t", fmt.Sprintf("%s:%s", sessionName, windowName))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to select window: %w\nOutput: %s", err, output)
+	}
+
+	// Attach to session
+	cmd = exec.Command("tmux", "attach-session", "-t", sessionName)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	
+	return cmd.Run()
+}
+
+// KillWindow stops and removes a tmux window
+func (c *Controller) KillWindow(name string) error {
+	sessionName := c.getSessionName()
+	windowName := c.sanitizeWindowName(name)
+	
+	cmd := exec.Command("tmux", "kill-window", "-t", fmt.Sprintf("%s:%s", sessionName, windowName))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to kill window: %w\nOutput: %s", err, output)
+	}
+
+	return nil
+}
+
+// CapturePane captures recent output from a window
+func (c *Controller) CapturePane(name string, lines int) (string, error) {
+	sessionName := c.getSessionName()
+	windowName := c.sanitizeWindowName(name)
+	
+	cmd := exec.Command("tmux", "capture-pane", "-t", fmt.Sprintf("%s:%s", sessionName, windowName), 
+		"-p", "-S", fmt.Sprintf("-%d", lines))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to capture pane: %w", err)
+	}
+
+	return string(output), nil
+}
+
+// getSessionName returns the tmux session name for this repository
+func (c *Controller) getSessionName() string {
+	// TODO: Include repo name in session name to support multiple repos
+	return c.sessionPrefix
+}
+
+// sessionExists checks if a tmux session exists
+func (c *Controller) sessionExists(name string) bool {
+	cmd := exec.Command("tmux", "has-session", "-t", name)
+	return cmd.Run() == nil
+}
+
+// createSession creates a new detached tmux session
+func (c *Controller) createSession(name string) error {
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create session: %w\nOutput: %s", err, output)
+	}
+	return nil
+}
+
+// sanitizeWindowName converts a branch name to a valid tmux window name
+func (c *Controller) sanitizeWindowName(name string) string {
+	// Replace invalid characters
+	name = strings.ReplaceAll(name, "/", "-")
+	name = strings.ReplaceAll(name, ":", "-")
+	return name
+}
+
+// parseWindows parses tmux list-windows output
+func (c *Controller) parseWindows(output string) ([]Window, error) {
+	var windows []Window
+	
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			continue
+		}
+		
+		windows = append(windows, Window{
+			ID:     parts[0],
+			Name:   parts[1],
+			Active: parts[2] == "1",
+		})
+	}
+	
+	return windows, nil
+}
+
+// Window represents a tmux window
+type Window struct {
+	ID     string
+	Name   string
+	Active bool
+}
