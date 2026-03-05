@@ -306,13 +306,10 @@ func (m Model) View() string {
 		s.WriteString("\n")
 	} else {
 		for i, ws := range m.workspaces {
-			cursor := " "
 			style := itemStyle
 			if i == m.cursor {
-				cursor = "│"
 				style = selectedItemStyle
 			}
-
 			status := "○"
 			statusColor := stoppedStyle
 			if ws.Active {
@@ -323,8 +320,8 @@ func (m Model) View() string {
 				statusColor = idleStyle
 			}
 
-			title := fmt.Sprintf("%s %s %s", cursor, statusColor.Render(status), ws.Name)
-			desc := fmt.Sprintf("   %s • %s", ws.Branch, ws.DiffStat)
+			title := fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
+			desc := fmt.Sprintf("  %s • %s", ws.Branch, ws.DiffStat)
 			
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
 			s.WriteString("\n")
