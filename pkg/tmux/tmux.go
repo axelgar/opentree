@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -70,21 +71,34 @@ func (c *Controller) ListWindows() ([]Window, error) {
 
 // AttachWindow attaches to a specific tmux window
 func (c *Controller) AttachWindow(name string) error {
+	if err := c.SelectWindow(name); err != nil {
+		return err
+	}
+
+	cmd := c.AttachSessionCmd()
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// SelectWindow selects a tmux window by name without attaching
+func (c *Controller) SelectWindow(name string) error {
 	sessionName := c.getSessionName()
 	windowName := c.sanitizeWindowName(name)
-	
 	cmd := exec.Command("tmux", "select-window", "-t", fmt.Sprintf("%s:%s", sessionName, windowName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to select window: %w\nOutput: %s", err, output)
 	}
+	return nil
+}
 
-	// Attach to session
-	cmd = exec.Command("tmux", "attach-session", "-t", sessionName)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	
-	return cmd.Run()
+// AttachSessionCmd returns an *exec.Cmd for attaching to the tmux session.
+// This is useful for callers that need to control how the process is executed
+// (e.g., Bubble Tea's ExecProcess).
+func (c *Controller) AttachSessionCmd() *exec.Cmd {
+	sessionName := c.getSessionName()
+	return exec.Command("tmux", "attach-session", "-t", sessionName)
 }
 
 // KillWindow stops and removes a tmux window

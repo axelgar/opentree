@@ -253,6 +253,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case deletedWorkspaceMsg:
 		return m, m.loadWorkspacesCmd
 
+	case attachFinishedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearErrorMsg{}
+			})
+		}
+		return m, m.loadWorkspacesCmd
+
 	case errMsg:
 		m.err = msg.err
 		// Clear error after 3 seconds
@@ -339,6 +348,7 @@ type createdWorkspaceMsg struct{}
 type deletedWorkspaceMsg struct{}
 type errMsg struct{ err error }
 type clearErrorMsg struct{}
+type attachFinishedMsg struct{ err error }
 
 // Commands
 
@@ -465,11 +475,12 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.tmuxCtrl.AttachWindow(name); err != nil {
+		if err := m.tmuxCtrl.SelectWindow(name); err != nil {
 			return errMsg{err}
 		}
-		// After detaching from tmux, we return to the TUI
-		return m.loadWorkspacesCmd()
+		return tea.ExecProcess(m.tmuxCtrl.AttachSessionCmd(), func(err error) tea.Msg {
+			return attachFinishedMsg{err: err}
+		})()
 	}
 }
 
