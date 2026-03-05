@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -55,6 +55,16 @@ var (
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262")).
 			MarginTop(1)
+
+	mergedBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#6E40C9")).
+				Padding(0, 1)
+
+	prOpenBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#1F7A4D")).
+				Padding(0, 1)
 )
 
 type keyMap struct {
@@ -130,6 +140,7 @@ type Model struct {
 	worktreeMgr *worktree.Manager
 	tmuxCtrl    *tmux.Controller
 	stateStore  *state.Store
+	prMgr       *github.PRManager
 
 	workspaces []WorkspaceItem
 	cursor     int
@@ -167,6 +178,7 @@ func NewModel() (*Model, error) {
 		worktreeMgr: wt,
 		tmuxCtrl:    tm,
 		stateStore:  st,
+		prMgr:       github.New(),
 		input:       ti,
 		help:        help.New(),
 		keys:        keys,
@@ -177,6 +189,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
 		m.loadWorkspacesCmd,
+		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 	)
 }
 
@@ -232,6 +245,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// For now, just refresh to update diff stats
 			// In a real implementation, we might show a popup
 			return m, m.loadWorkspacesCmd
+		case key.Matches(msg, m.keys.PR):
+			if len(m.workspaces) > 0 {
+				ws := m.workspaces[m.cursor]
+				return m, m.createPRCmd(ws.Name, ws.Branch, ws.BaseBranch)
+			}
 		case key.Matches(msg, m.keys.Delete):
 			if len(m.workspaces) > 0 {
 				ws := m.workspaces[m.cursor]
@@ -252,6 +270,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case deletedWorkspaceMsg:
 		return m, m.loadWorkspacesCmd
+
+	case prCreatedMsg:
+		ws, err := m.stateStore.GetWorkspace(msg.wsName)
+		if err == nil {
+			ws.PRURL = msg.prURL
+			ws.PRStatus = "open"
+			_ = m.stateStore.UpdateWorkspace(ws)
+		}
+		return m, tea.Batch(m.loadWorkspacesCmd, m.checkPRStatusCmd(msg.wsName, ""))
+
+	case prStatusTickMsg:
+		cmds := []tea.Cmd{
+			tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
+		}
+		for _, ws := range m.workspaces {
+			if ws.PRURL != "" && ws.PRStatus != "merged" {
+				cmds = append(cmds, m.checkPRStatusCmd(ws.Name, ws.Branch))
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case prStatusCheckedMsg:
+		ws, err := m.stateStore.GetWorkspace(msg.wsName)
+		if err == nil {
+			ws.PRURL = msg.prURL
+			ws.PRStatus = msg.prStatus
+			_ = m.stateStore.UpdateWorkspace(ws)
+		}
+		for i, item := range m.workspaces {
+			if item.Name == msg.wsName {
+				m.workspaces[i].PRURL = msg.prURL
+				m.workspaces[i].PRStatus = msg.prStatus
+				break
+			}
+		}
 
 	case attachFinishedMsg:
 		if msg.err != nil {
@@ -321,6 +374,11 @@ func (m Model) View() string {
 			}
 
 			title := fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
+			if ws.PRStatus == "merged" {
+				title += "  " + mergedBadgeStyle.Render("merged · ready to delete")
+			} else if ws.PRStatus == "open" {
+				title += "  " + prOpenBadgeStyle.Render("PR open")
+			}
 			desc := fmt.Sprintf("  %s • %s", ws.Branch, ws.DiffStat)
 			
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
@@ -346,6 +404,13 @@ type deletedWorkspaceMsg struct{}
 type errMsg struct{ err error }
 type clearErrorMsg struct{}
 type attachFinishedMsg struct{ err error }
+type prStatusTickMsg struct{}
+type prCreatedMsg struct{ wsName, prURL string }
+type prStatusCheckedMsg struct {
+	wsName   string
+	prURL    string
+	prStatus string
+}
 
 // Commands
 
@@ -475,6 +540,26 @@ func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return attachFinishedMsg{err: err}
 		})()
+	}
+}
+
+func (m Model) createPRCmd(wsName, branch, baseBranch string) tea.Cmd {
+	return func() tea.Msg {
+		prURL, err := m.prMgr.CreatePR(branch, baseBranch, "", "")
+		if err != nil {
+			return errMsg{err}
+		}
+		return prCreatedMsg{wsName: wsName, prURL: prURL}
+	}
+}
+
+func (m Model) checkPRStatusCmd(wsName, branch string) tea.Cmd {
+	return func() tea.Msg {
+		prURL, prStatus, err := m.prMgr.GetFullPRStatus(branch)
+		if err != nil || prURL == "" {
+			return nil
+		}
+		return prStatusCheckedMsg{wsName: wsName, prURL: prURL, prStatus: prStatus}
 	}
 }
 

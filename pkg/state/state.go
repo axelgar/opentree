@@ -28,6 +28,8 @@ type Workspace struct {
 	Status     string    `json:"status"` // active, idle, stopped
 	Agent      string    `json:"agent"`
 	WorktreeDir string   `json:"worktree_dir"`
+	PRURL       string   `json:"pr_url,omitempty"`
+	PRStatus    string   `json:"pr_status,omitempty"` // "open", "merged", "closed"
 }
 
 // New creates a new state store
