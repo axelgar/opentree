@@ -1,4 +1,4 @@
-module github.com/opentree/opentree
+module github.com/axelgar/opentree
 
 go 1.25.0
 

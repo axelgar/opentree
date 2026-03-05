@@ -12,10 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/opentree/opentree/pkg/agent"
-	"github.com/opentree/opentree/pkg/state"
-	"github.com/opentree/opentree/pkg/tmux"
-	"github.com/opentree/opentree/pkg/worktree"
+	"github.com/axelgar/opentree/pkg/agent"
+	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/tmux"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
 
 // Styles
