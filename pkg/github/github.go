@@ -67,6 +67,27 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// GetFullPRStatus returns the URL and state of a PR for the given branch.
+// State is lowercased: "open", "merged", or "closed".
+func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err error) {
+	if !pm.isGHInstalled() {
+		return "", "", nil
+	}
+
+	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", nil // No PR exists
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(string(output)), "\t", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("unexpected gh output: %s", output)
+	}
+
+	return parts[0], strings.ToLower(parts[1]), nil
+}
+
 // isGHInstalled checks if gh CLI is available
 func (pm *PRManager) isGHInstalled() bool {
 	cmd := exec.Command("gh", "--version")
