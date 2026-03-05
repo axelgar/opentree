@@ -790,3 +790,56 @@ func TestErrorMessage_DisplayedAndCleared(t *testing.T) {
 		t.Errorf("expected m.err=nil after clearErrorMsg, got %v", m.err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue badge tests
+// ---------------------------------------------------------------------------
+
+func testWSWithIssue(name string, issueNumber int, issueTitle string) WorkspaceItem {
+	ws := testWS(name)
+	ws.IssueNumber = issueNumber
+	ws.IssueTitle = issueTitle
+	return ws
+}
+
+func TestView_IssueBadge_Shown(t *testing.T) {
+	m := newTestModel(testWSWithIssue("my-issue-branch", 42, "Add dark mode"))
+	view := m.View()
+	if !strings.Contains(view, "#42") {
+		t.Errorf("View() should show issue badge '#42'\ngot: %s", view)
+	}
+}
+
+func TestView_IssueBadge_NotShownWhenNoIssue(t *testing.T) {
+	m := newTestModel(testWS("plain-branch"))
+	view := m.View()
+	// No issue number in state → no badge rendered
+	if strings.Contains(view, "#0") {
+		t.Errorf("View() should not render '#0' badge for workspaces without an issue\ngot: %s", view)
+	}
+}
+
+func TestView_IssueBadge_AndPRBadge_BothShown(t *testing.T) {
+	ws := testWSWithIssue("combo-branch", 7, "Fix login bug")
+	ws.PRStatus = "open"
+	ws.PRURL = "https://github.com/owner/repo/pull/1"
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "#7") {
+		t.Errorf("View() should show issue badge '#7'\ngot: %s", view)
+	}
+	if !strings.Contains(view, "PR open") {
+		t.Errorf("View() should still show 'PR open' badge\ngot: %s", view)
+	}
+}
+
+func TestView_IssueBadge_MultipleWorkspaces(t *testing.T) {
+	m := newTestModel(
+		testWSWithIssue("issue-branch", 99, "Refactor auth"),
+		testWS("plain-branch"),
+	)
+	view := m.View()
+	if !strings.Contains(view, "#99") {
+		t.Errorf("View() should show badge for issue workspace\ngot: %s", view)
+	}
+}

@@ -73,6 +73,11 @@ var (
 				Background(lipgloss.Color("#1F7A4D")).
 				Padding(0, 1)
 
+	issueBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#0969DA")).
+				Padding(0, 1)
+
 	// Improvement 2: agent preview panel styles
 	previewBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -521,6 +526,9 @@ func (m Model) View() string {
 			}
 
 			title := fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
+			if ws.IssueNumber > 0 {
+				title += "  " + issueBadgeStyle.Render(fmt.Sprintf("#%d", ws.IssueNumber))
+			}
 			if ws.PRStatus == "merged" {
 				title += "  " + mergedBadgeStyle.Render("merged · ready to delete")
 			} else if ws.PRStatus == "open" {

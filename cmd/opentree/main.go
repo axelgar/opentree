@@ -33,6 +33,7 @@ func init() {
 	rootCmd.AddCommand(cmd.DeleteCmd)
 	rootCmd.AddCommand(cmd.DiffCmd)
 	rootCmd.AddCommand(cmd.PrCmd)
+	rootCmd.AddCommand(cmd.IssueCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {
