@@ -114,7 +114,7 @@ func (m *Manager) Diff(branchName string) (string, error) {
 		cmd = exec.Command("git", "diff", "--stat", "origin/main...HEAD")
 	} else {
 		baseCommit := strings.TrimSpace(string(baseOutput))
-		cmd = exec.Command("git", "diff", "--stat", baseCommit)
+		cmd = exec.Command("git", "diff", "--stat", baseCommit, "HEAD")
 	}
 
 	cmd.Dir = worktreePath
@@ -142,7 +142,7 @@ func (m *Manager) DiffFull(branchName string) (string, error) {
 		cmd = exec.Command("git", "diff", "origin/main...HEAD")
 	} else {
 		baseCommit := strings.TrimSpace(string(baseOutput))
-		cmd = exec.Command("git", "diff", baseCommit)
+		cmd = exec.Command("git", "diff", baseCommit, "HEAD")
 	}
 
 	cmd.Dir = worktreePath
@@ -254,7 +254,7 @@ func (m *Manager) DiffFileStats(branchName string) ([]FileChange, error) {
 		cmd = exec.Command("git", "diff", "--numstat", "origin/main...HEAD")
 	} else {
 		baseCommit := strings.TrimSpace(string(baseOutput))
-		cmd = exec.Command("git", "diff", "--numstat", baseCommit)
+		cmd = exec.Command("git", "diff", "--numstat", baseCommit, "HEAD")
 	}
 
 	cmd.Dir = worktreePath
