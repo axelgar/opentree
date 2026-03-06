@@ -1,5 +1,5 @@
 # Binaries
-opentree
+/opentree
 *.exe
 *.exe~
 *.dll

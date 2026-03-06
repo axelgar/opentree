@@ -11,9 +11,10 @@ import (
 )
 
 var PrCmd = &cobra.Command{
-	Use:   "pr <branch-name>",
-	Short: "Create a GitHub PR for a workspace",
-	Args:  cobra.ExactArgs(1),
+	Use:               "pr <branch-name>",
+	Short:             "Create a GitHub PR for a workspace",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: workspaceCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
 		title, _ := cmd.Flags().GetString("title")
