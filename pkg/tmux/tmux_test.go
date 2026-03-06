@@ -21,6 +21,11 @@ func TestNew(t *testing.T) {
 }
 
 func TestGetSessionName(t *testing.T) {
+	// Derive the repo name that the controller will compute, so tests stay
+	// correct regardless of which machine or directory they run on.
+	ctrl0 := New("probe")
+	repoName := ctrl0.repoName() // may be "" in non-git environments
+
 	tests := []struct {
 		name   string
 		prefix string
@@ -29,17 +34,27 @@ func TestGetSessionName(t *testing.T) {
 		{
 			name:   "simple prefix",
 			prefix: "opentree",
-			want:   "opentree",
+			want: func() string {
+				if repoName == "" {
+					return "opentree"
+				}
+				return "opentree-" + repoName
+			}(),
 		},
 		{
 			name:   "prefix with hyphens",
 			prefix: "my-app",
-			want:   "my-app",
+			want: func() string {
+				if repoName == "" {
+					return "my-app"
+				}
+				return "my-app-" + repoName
+			}(),
 		},
 		{
 			name:   "empty prefix",
 			prefix: "",
-			want:   "",
+			want:   repoName, // just the repo name, or "" if not in a git repo
 		},
 	}
 

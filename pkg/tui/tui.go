@@ -534,7 +534,7 @@ func (m Model) View() string {
 			} else if ws.PRStatus == "open" {
 				title += "  " + prOpenBadgeStyle.Render("PR open")
 			}
-			desc := fmt.Sprintf("  %s • %s", ws.Branch, ws.DiffStat)
+			desc := fmt.Sprintf("  %s • %s • %s", ws.Branch, ws.DiffStat, formatAge(ws.CreatedAt))
 
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
 			s.WriteString("\n")
@@ -750,13 +750,15 @@ func cleanPreview(s string) string {
 	return strings.Join(out, "\n")
 }
 
-// Improvement 5: openURLCmd opens a URL in the system default browser (fire-and-forget).
+// openURLCmd opens a URL in the system default browser (fire-and-forget).
 func openURLCmd(url string) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
 			cmd = exec.Command("open", url)
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", url)
 		default:
 			cmd = exec.Command("xdg-open", url)
 		}
@@ -770,6 +772,24 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// formatAge returns a human-readable age string for a given timestamp.
+func formatAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		return fmt.Sprintf("%dm ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		return fmt.Sprintf("%dh ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%dd ago", days)
+	}
 }
 
 func Run() error {

@@ -39,6 +39,9 @@ var PrCmd = &cobra.Command{
 		}
 
 		gh := github.New()
+		if !gh.IsInstalled() {
+			return fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
+		}
 
 		prURL, err := gh.CreatePR(branchName, ws.BaseBranch, title, body)
 		if err != nil {
