@@ -70,6 +70,72 @@ func TestCreatePR_GHNotInstalled(t *testing.T) {
 	}
 }
 
+// ---- IssueBranchName tests ----
+
+func TestIssueBranchName_Basic(t *testing.T) {
+	got := IssueBranchName(42, "Add dark mode")
+	want := "issue-42-add-dark-mode"
+	if got != want {
+		t.Errorf("IssueBranchName(42, %q) = %q, want %q", "Add dark mode", got, want)
+	}
+}
+
+func TestIssueBranchName_SpecialChars(t *testing.T) {
+	got := IssueBranchName(7, "Fix: login bug (regression!)")
+	want := "issue-7-fix-login-bug-regression"
+	if got != want {
+		t.Errorf("IssueBranchName = %q, want %q", got, want)
+	}
+}
+
+func TestIssueBranchName_LongTitle(t *testing.T) {
+	title := "This is a very long issue title that exceeds the maximum allowed length for branch names"
+	got := IssueBranchName(1, title)
+	// Must start with "issue-1-" and be at most 8+40 chars
+	if !strings.HasPrefix(got, "issue-1-") {
+		t.Errorf("IssueBranchName prefix wrong: %q", got)
+	}
+	slug := strings.TrimPrefix(got, "issue-1-")
+	if len(slug) > 40 {
+		t.Errorf("slug too long: %d chars: %q", len(slug), slug)
+	}
+	if strings.HasSuffix(slug, "-") {
+		t.Errorf("slug has trailing dash: %q", slug)
+	}
+}
+
+func TestIssueBranchName_Uppercase(t *testing.T) {
+	got := IssueBranchName(10, "UPPERCASE TITLE")
+	want := "issue-10-uppercase-title"
+	if got != want {
+		t.Errorf("IssueBranchName = %q, want %q", got, want)
+	}
+}
+
+func TestIssueBranchName_EmptyTitle(t *testing.T) {
+	got := IssueBranchName(5, "")
+	// When title is empty, slug is also empty → just "issue-5-"
+	if !strings.HasPrefix(got, "issue-5") {
+		t.Errorf("IssueBranchName with empty title = %q, want prefix 'issue-5'", got)
+	}
+}
+
+// ---- GetIssue when gh is not installed ----
+
+func TestGetIssue_GHNotInstalled(t *testing.T) {
+	if isGHAvailable() {
+		t.Skip("gh is installed; skipping test for missing gh")
+	}
+	pm := New()
+	_, err := pm.GetIssue(1)
+	if err == nil {
+		t.Fatal("GetIssue() expected error when gh not installed, got nil")
+	}
+	if !strings.Contains(err.Error(), "gh CLI is not installed") {
+		t.Errorf("GetIssue() error = %q, expected message about gh CLI", err.Error())
+	}
+}
+
 // ---- Integration tests (require gh CLI) ----
 
 func TestGetPRStatus_NoPRForBranch(t *testing.T) {

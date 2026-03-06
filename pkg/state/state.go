@@ -30,6 +30,8 @@ type Workspace struct {
 	WorktreeDir string   `json:"worktree_dir"`
 	PRURL       string   `json:"pr_url,omitempty"`
 	PRStatus    string   `json:"pr_status,omitempty"` // "open", "merged", "closed"
+	IssueNumber int      `json:"issue_number,omitempty"`
+	IssueTitle  string   `json:"issue_title,omitempty"`
 }
 
 // New creates a new state store

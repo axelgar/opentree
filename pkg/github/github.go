@@ -1,10 +1,74 @@
 package github
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
+
+// Issue represents a GitHub issue
+type Issue struct {
+	Number int
+	Title  string
+	Body   string
+	Labels []string
+}
+
+// GetIssue fetches a GitHub issue by number using the gh CLI
+func (pm *PRManager) GetIssue(number int) (*Issue, error) {
+	if !pm.isGHInstalled() {
+		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
+	}
+
+	cmd := exec.Command("gh", "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch issue #%d: %w\nOutput: %s", number, err, output)
+	}
+
+	var raw struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	if err := json.Unmarshal(output, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse issue response: %w", err)
+	}
+
+	labels := make([]string, len(raw.Labels))
+	for i, l := range raw.Labels {
+		labels[i] = l.Name
+	}
+
+	return &Issue{
+		Number: raw.Number,
+		Title:  raw.Title,
+		Body:   raw.Body,
+		Labels: labels,
+	}, nil
+}
+
+// issueBranchSlugRe matches any sequence of non-alphanumeric characters
+var issueBranchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// IssueBranchName generates a Git branch name from an issue number and title.
+// e.g. issue #42 "Add dark mode" → "issue-42-add-dark-mode"
+func IssueBranchName(number int, title string) string {
+	slug := strings.ToLower(title)
+	slug = issueBranchSlugRe.ReplaceAllString(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 40 {
+		slug = slug[:40]
+		slug = strings.TrimRight(slug, "-")
+	}
+	return fmt.Sprintf("issue-%d-%s", number, slug)
+}
 
 // PRManager handles GitHub PR operations
 type PRManager struct{}
