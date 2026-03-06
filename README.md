@@ -31,6 +31,12 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew install axelgar/tap/opentree
+```
+
 ### From Source
 
 ```bash
