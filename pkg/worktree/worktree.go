@@ -97,6 +97,7 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 }
 
 // Diff returns the diffstat for a worktree vs its base branch.
+// Includes both committed and uncommitted changes (compares merge-base to working tree).
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) {
 	if err := m.ensureGitRepo(); err != nil {
@@ -111,18 +112,9 @@ func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) 
 	dirName := strings.ReplaceAll(branchName, "/", "-")
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	// Get the base branch (merge-base)
-	cmd := exec.Command("git", "merge-base", branchName, base)
-	cmd.Dir = worktreePath
-	baseOutput, err := cmd.CombinedOutput()
-	if err != nil {
-		// Fallback to origin/<base>
-		cmd = exec.Command("git", "diff", "--stat", "origin/"+base+"...HEAD")
-	} else {
-		baseCommit := strings.TrimSpace(string(baseOutput))
-		cmd = exec.Command("git", "diff", "--stat", baseCommit, "HEAD")
-	}
-
+	baseCommit := m.resolveBase(branchName, base, worktreePath)
+	// Compare merge-base to working tree (no HEAD) to include uncommitted changes
+	cmd := exec.Command("git", "diff", "--stat", baseCommit)
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -245,12 +237,14 @@ type Worktree struct {
 
 // FileChange represents per-file diff stats.
 type FileChange struct {
-	FileName string
-	Added    int
-	Removed  int
+	FileName    string
+	Added       int
+	Removed     int
+	Uncommitted bool // true if the file has uncommitted changes
 }
 
 // DiffFileStats returns per-file change stats for a worktree vs its base branch.
+// Includes both committed and uncommitted changes, with each file marked accordingly.
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]FileChange, error) {
 	if err := m.ensureGitRepo(); err != nil {
@@ -265,23 +259,74 @@ func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]File
 	dirName := strings.ReplaceAll(branchName, "/", "-")
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "merge-base", branchName, base)
-	cmd.Dir = worktreePath
-	baseOutput, err := cmd.CombinedOutput()
-	if err != nil {
-		cmd = exec.Command("git", "diff", "--numstat", "origin/"+base+"...HEAD")
-	} else {
-		baseCommit := strings.TrimSpace(string(baseOutput))
-		cmd = exec.Command("git", "diff", "--numstat", baseCommit, "HEAD")
-	}
-
+	baseCommit := m.resolveBase(branchName, base, worktreePath)
+	// Compare merge-base to working tree (includes uncommitted changes)
+	cmd := exec.Command("git", "diff", "--numstat", baseCommit)
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file stats: %w", err)
 	}
 
-	return parseNumstat(string(output)), nil
+	files := parseNumstat(string(output))
+
+	// Mark files that have uncommitted changes
+	uncommitted := uncommittedFiles(worktreePath)
+	for i := range files {
+		if uncommitted[files[i].FileName] {
+			files[i].Uncommitted = true
+		}
+	}
+
+	return files, nil
+}
+
+// resolveBase finds the merge-base commit between branchName and the given base.
+// Falls back to "origin/<base>" if merge-base computation fails.
+func (m *Manager) resolveBase(branchName, base, worktreePath string) string {
+	cmd := exec.Command("git", "merge-base", branchName, base)
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "origin/" + base
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// DiffUncommitted returns the unified diff of uncommitted changes (HEAD vs working tree).
+func (m *Manager) DiffUncommitted(branchName string) (string, error) {
+	if err := m.ensureGitRepo(); err != nil {
+		return "", err
+	}
+
+	dirName := strings.ReplaceAll(branchName, "/", "-")
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = worktreePath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get uncommitted diff: %w", err)
+	}
+
+	return string(output), nil
+}
+
+// uncommittedFiles returns a set of file names that have uncommitted changes in a worktree.
+func uncommittedFiles(worktreePath string) map[string]bool {
+	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			result[line] = true
+		}
+	}
+	return result
 }
 
 func parseNumstat(output string) []FileChange {

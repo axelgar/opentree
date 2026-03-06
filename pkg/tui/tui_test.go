@@ -833,6 +833,51 @@ func TestView_IssueBadge_AndPRBadge_BothShown(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// renderDiffLine
+// ---------------------------------------------------------------------------
+
+func TestRenderDiffLine_SectionHeader(t *testing.T) {
+	line := "══════ Committed Changes ══════"
+	result := renderDiffLine(line)
+	// Should be styled (non-empty and different from plain text due to ANSI codes)
+	if result == "" {
+		t.Error("renderDiffLine should return non-empty for section header")
+	}
+	if !strings.Contains(result, "Committed Changes") {
+		t.Errorf("renderDiffLine should preserve section header text, got: %s", result)
+	}
+}
+
+func TestRenderDiffLine_AddedLine(t *testing.T) {
+	result := renderDiffLine("+added line")
+	if !strings.Contains(result, "added line") {
+		t.Errorf("renderDiffLine should preserve added line text, got: %s", result)
+	}
+}
+
+func TestRenderDiffLine_RemovedLine(t *testing.T) {
+	result := renderDiffLine("-removed line")
+	if !strings.Contains(result, "removed line") {
+		t.Errorf("renderDiffLine should preserve removed line text, got: %s", result)
+	}
+}
+
+func TestRenderDiffLine_HunkHeader(t *testing.T) {
+	result := renderDiffLine("@@ -1,3 +1,5 @@")
+	if !strings.Contains(result, "@@") {
+		t.Errorf("renderDiffLine should preserve hunk header, got: %s", result)
+	}
+}
+
+func TestRenderDiffLine_PlainLine(t *testing.T) {
+	line := " context line"
+	result := renderDiffLine(line)
+	if result != line {
+		t.Errorf("renderDiffLine should return plain lines unchanged, got: %q", result)
+	}
+}
+
 func TestView_IssueBadge_MultipleWorkspaces(t *testing.T) {
 	m := newTestModel(
 		testWSWithIssue("issue-branch", 99, "Refactor auth"),

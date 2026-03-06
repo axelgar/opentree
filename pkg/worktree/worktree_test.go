@@ -342,6 +342,197 @@ func TestDelete_RemovesWorktree(t *testing.T) {
 	}
 }
 
+// ---- parseNumstat (pure, no git required) ----
+
+func TestParseNumstat_Empty(t *testing.T) {
+	files := parseNumstat("")
+	if len(files) != 0 {
+		t.Errorf("parseNumstat(\"\") returned %d files, want 0", len(files))
+	}
+}
+
+func TestParseNumstat_SingleFile(t *testing.T) {
+	files := parseNumstat("10\t3\tsrc/main.go\n")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].FileName != "src/main.go" {
+		t.Errorf("FileName = %q, want %q", files[0].FileName, "src/main.go")
+	}
+	if files[0].Added != 10 {
+		t.Errorf("Added = %d, want 10", files[0].Added)
+	}
+	if files[0].Removed != 3 {
+		t.Errorf("Removed = %d, want 3", files[0].Removed)
+	}
+	if files[0].Uncommitted {
+		t.Error("Uncommitted should default to false")
+	}
+}
+
+func TestParseNumstat_MultipleFiles(t *testing.T) {
+	input := "5\t2\ta.go\n0\t10\tb.go\n1\t0\tc.go\n"
+	files := parseNumstat(input)
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(files))
+	}
+	if files[1].FileName != "b.go" || files[1].Added != 0 || files[1].Removed != 10 {
+		t.Errorf("file[1] = %+v, want b.go +0 -10", files[1])
+	}
+}
+
+func TestParseNumstat_BinaryFile(t *testing.T) {
+	// Binary files use "-" for added/removed counts.
+	files := parseNumstat("-\t-\timage.png\n")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].Added != 0 || files[0].Removed != 0 {
+		t.Errorf("binary file should have 0/0, got +%d -%d", files[0].Added, files[0].Removed)
+	}
+}
+
+func TestParseNumstat_MalformedLineSkipped(t *testing.T) {
+	files := parseNumstat("not-a-valid-line\n5\t2\tvalid.go\n")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file (malformed skipped), got %d", len(files))
+	}
+	if files[0].FileName != "valid.go" {
+		t.Errorf("FileName = %q, want %q", files[0].FileName, "valid.go")
+	}
+}
+
+// ---- Diff integration tests (committed + uncommitted) ----
+
+// initWorktreeRepo creates a temp git repo, creates a worktree with a committed
+// file and an uncommitted file, and returns (repoDir, branchName, manager).
+func initWorktreeRepo(t *testing.T) (string, string, *Manager) {
+	t.Helper()
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(repoDir)
+
+	m := New()
+	if err := m.ensureGitRepo(); err != nil {
+		t.Fatalf("ensureGitRepo: %v", err)
+	}
+
+	branch := "diff-test"
+	if err := m.Create(branch, "HEAD"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	wtPath := filepath.Join(repoDir, ".opentree", branch)
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Committed file
+	os.WriteFile(filepath.Join(wtPath, "done.txt"), []byte("hello\n"), 0644)
+	run("git", "add", "done.txt")
+	run("git", "commit", "--no-gpg-sign", "-m", "add done.txt")
+
+	// Uncommitted file (staged but not committed)
+	os.WriteFile(filepath.Join(wtPath, "wip.txt"), []byte("wip\n"), 0644)
+	run("git", "add", "wip.txt")
+
+	return repoDir, branch, m
+}
+
+func TestDiff_IncludesUncommittedChanges(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	stat, err := m.Diff(branch)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	// Should include both done.txt and wip.txt
+	if !strings.Contains(stat, "done.txt") {
+		t.Errorf("Diff should include done.txt\ngot: %s", stat)
+	}
+	if !strings.Contains(stat, "wip.txt") {
+		t.Errorf("Diff should include wip.txt\ngot: %s", stat)
+	}
+}
+
+func TestDiffFull_OnlyCommittedChanges(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	full, err := m.DiffFull(branch)
+	if err != nil {
+		t.Fatalf("DiffFull: %v", err)
+	}
+	// DiffFull compares merge-base to HEAD — only committed changes
+	if !strings.Contains(full, "done.txt") {
+		t.Errorf("DiffFull should include done.txt\ngot: %s", full)
+	}
+	if strings.Contains(full, "wip.txt") {
+		t.Errorf("DiffFull should NOT include wip.txt\ngot: %s", full)
+	}
+}
+
+func TestDiffUncommitted_OnlyUncommittedChanges(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	uncommitted, err := m.DiffUncommitted(branch)
+	if err != nil {
+		t.Fatalf("DiffUncommitted: %v", err)
+	}
+	// DiffUncommitted compares HEAD to working tree
+	if !strings.Contains(uncommitted, "wip.txt") {
+		t.Errorf("DiffUncommitted should include wip.txt\ngot: %s", uncommitted)
+	}
+	if strings.Contains(uncommitted, "done.txt") {
+		t.Errorf("DiffUncommitted should NOT include done.txt\ngot: %s", uncommitted)
+	}
+}
+
+func TestDiffFileStats_MarksUncommittedFiles(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	files, err := m.DiffFileStats(branch)
+	if err != nil {
+		t.Fatalf("DiffFileStats: %v", err)
+	}
+
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+
+	fileMap := make(map[string]FileChange)
+	for _, f := range files {
+		fileMap[f.FileName] = f
+	}
+
+	committed, ok := fileMap["done.txt"]
+	if !ok {
+		t.Fatal("done.txt not in DiffFileStats results")
+	}
+	if committed.Uncommitted {
+		t.Error("done.txt should NOT be marked as Uncommitted")
+	}
+
+	uncommitted, ok := fileMap["wip.txt"]
+	if !ok {
+		t.Fatal("wip.txt not in DiffFileStats results")
+	}
+	if !uncommitted.Uncommitted {
+		t.Error("wip.txt should be marked as Uncommitted")
+	}
+}
+
+// ---- Delete ----
+
 func TestDelete_WithDeleteBranch(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")

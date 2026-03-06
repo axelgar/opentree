@@ -186,6 +186,13 @@ var (
 
 	fileRemovedStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("196"))
+
+	uncommittedFileStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#E5C07B"))
+
+	diffSectionStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F4A261")).
+				Bold(true)
 )
 
 type keyMap struct {
@@ -1497,13 +1504,37 @@ func cleanPreview(s string) string {
 
 func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 	return func() tea.Msg {
-		content, err := m.worktreeMgr.DiffFull(ws.Branch, ws.BaseBranch)
+		committed, err := m.worktreeMgr.DiffFull(ws.Branch, ws.BaseBranch)
 		if err != nil {
 			return errMsg{err}
 		}
-		if strings.TrimSpace(content) == "" {
+
+		uncommitted, _ := m.worktreeMgr.DiffUncommitted(ws.Branch)
+
+		committedTrimmed := strings.TrimSpace(committed)
+		uncommittedTrimmed := strings.TrimSpace(uncommitted)
+
+		var sections []string
+
+		if committedTrimmed != "" {
+			header := "══════ Committed Changes ══════"
+			if uncommittedTrimmed != "" {
+				sections = append(sections, header+"\n\n"+committedTrimmed)
+			} else {
+				sections = append(sections, committedTrimmed)
+			}
+		}
+
+		if uncommittedTrimmed != "" {
+			header := "══════ Uncommitted Changes ══════"
+			sections = append(sections, header+"\n\n"+uncommittedTrimmed)
+		}
+
+		content := strings.Join(sections, "\n\n")
+		if content == "" {
 			content = "No changes."
 		}
+
 		return diffLoadedMsg{content: content, wsName: ws.Name}
 	}
 }
@@ -1511,25 +1542,47 @@ func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 // renderFileChanges builds the per-file changes panel content.
 func (m Model) renderFileChanges(files []worktree.FileChange, width int) string {
 	var sb strings.Builder
-	sb.WriteString(fileChangesTitleStyle.Render(fmt.Sprintf("Changed files (%d)", len(files))))
+
+	uncommittedCount := 0
+	for _, f := range files {
+		if f.Uncommitted {
+			uncommittedCount++
+		}
+	}
+
+	title := fmt.Sprintf("Changed files (%d)", len(files))
+	if uncommittedCount > 0 {
+		title += uncommittedFileStyle.Render(fmt.Sprintf(" · %d uncommitted", uncommittedCount))
+	}
+	sb.WriteString(fileChangesTitleStyle.Render(title))
 	sb.WriteString("\n")
 
 	maxName := 0
 	for _, f := range files {
-		name := shortenPath(f.FileName, width-20)
+		name := shortenPath(f.FileName, width-24)
 		if len(name) > maxName {
 			maxName = len(name)
 		}
 	}
 
 	for _, f := range files {
-		name := shortenPath(f.FileName, width-20)
+		name := shortenPath(f.FileName, width-24)
 		padding := strings.Repeat(" ", maxName-len(name)+2)
 
 		addStr := fileAddedStyle.Render(fmt.Sprintf("+%d", f.Added))
 		remStr := fileRemovedStyle.Render(fmt.Sprintf("-%d", f.Removed))
 
-		sb.WriteString(fmt.Sprintf(" %s%s%s %s\n", fileNameStyle.Render(name), padding, addStr, remStr))
+		marker := "  "
+		if f.Uncommitted {
+			marker = uncommittedFileStyle.Render("● ")
+		}
+
+		sb.WriteString(fmt.Sprintf(" %s%s%s%s %s\n", marker, fileNameStyle.Render(name), padding, addStr, remStr))
+	}
+
+	if uncommittedCount > 0 {
+		sb.WriteString(uncommittedFileStyle.Render(" ● = uncommitted"))
+		sb.WriteString("\n")
 	}
 
 	return sb.String()
@@ -1558,6 +1611,8 @@ func shortenPath(path string, maxLen int) string {
 // renderDiffLine colorizes a single line of unified diff output.
 func renderDiffLine(line string) string {
 	switch {
+	case strings.HasPrefix(line, "══"):
+		return diffSectionStyle.Render(line)
 	case strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ "):
 		return diffFileStyle.Render(line)
 	case strings.HasPrefix(line, "@@"):
