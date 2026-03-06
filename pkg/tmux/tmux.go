@@ -8,11 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Controller manages tmux sessions and windows
 type Controller struct {
-	sessionPrefix string
+	sessionPrefix    string
+	repoNameOnce     sync.Once
+	cachedRepoName   string
 }
 
 // New creates a new tmux controller
@@ -240,16 +243,20 @@ func (c *Controller) getSessionName() string {
 }
 
 // repoName derives a short, sanitized name from the current git repository root.
+// The result is computed once and cached.
 func (c *Controller) repoName() string {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		return ""
-	}
-	name := filepath.Base(strings.TrimSpace(string(out)))
-	// Replace characters that are problematic in tmux session names.
-	name = strings.ReplaceAll(name, ".", "-")
-	name = strings.ReplaceAll(name, ":", "-")
-	return name
+	c.repoNameOnce.Do(func() {
+		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+		if err != nil {
+			return
+		}
+		name := filepath.Base(strings.TrimSpace(string(out)))
+		// Replace characters that are problematic in tmux session names.
+		name = strings.ReplaceAll(name, ".", "-")
+		name = strings.ReplaceAll(name, ":", "-")
+		c.cachedRepoName = name
+	})
+	return c.cachedRepoName
 }
 
 // sessionExists checks if a tmux session exists

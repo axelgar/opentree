@@ -21,10 +21,10 @@ func TestNew(t *testing.T) {
 func TestIsGHInstalled(t *testing.T) {
 	pm := New()
 	// Just verify it doesn't panic and returns a consistent result.
-	got := pm.isGHInstalled()
+	got := pm.IsInstalled()
 	want := isGHAvailable()
 	if got != want {
-		t.Errorf("isGHInstalled() = %v, want %v", got, want)
+		t.Errorf("IsInstalled() = %v, want %v", got, want)
 	}
 }
 

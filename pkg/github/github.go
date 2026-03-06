@@ -19,7 +19,7 @@ type Issue struct {
 
 // GetIssue fetches a GitHub issue by number using the gh CLI
 func (pm *PRManager) GetIssue(number int) (*Issue, error) {
-	if !pm.isGHInstalled() {
+	if !pm.IsInstalled() {
 		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
 
@@ -81,7 +81,7 @@ func New() *PRManager {
 // CreatePR creates a GitHub pull request using gh CLI
 func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, error) {
 	// Check if gh CLI is installed
-	if !pm.isGHInstalled() {
+	if !pm.IsInstalled() {
 		return "", fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
 
@@ -118,7 +118,7 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 
 // GetPRStatus checks if a PR exists for the given branch
 func (pm *PRManager) GetPRStatus(branch string) (string, error) {
-	if !pm.isGHInstalled() {
+	if !pm.IsInstalled() {
 		return "", nil // Silently fail if gh not installed
 	}
 
@@ -134,7 +134,7 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 // GetFullPRStatus returns the URL and state of a PR for the given branch.
 // State is lowercased: "open", "merged", or "closed".
 func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err error) {
-	if !pm.isGHInstalled() {
+	if !pm.IsInstalled() {
 		return "", "", nil
 	}
 
@@ -155,9 +155,4 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 // IsInstalled reports whether the gh CLI is available on PATH.
 func (pm *PRManager) IsInstalled() bool {
 	return exec.Command("gh", "--version").Run() == nil
-}
-
-// isGHInstalled checks if gh CLI is available
-func (pm *PRManager) isGHInstalled() bool {
-	return pm.IsInstalled()
 }
