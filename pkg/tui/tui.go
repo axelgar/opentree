@@ -33,7 +33,7 @@ var (
 	appStyle = lipgloss.NewStyle().Padding(1, 2)
 
 	logoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#2A9D8F")).
+			Foreground(lipgloss.Color("#FFFFFF")).
 			Bold(true)
 
 	titleStyle = lipgloss.NewStyle().
