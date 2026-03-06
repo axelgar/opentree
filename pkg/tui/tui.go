@@ -1356,6 +1356,11 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 		if err := m.stateStore.DeleteWorkspace(name); err != nil {
 			return errMsg{err}
 		}
+		
+		// If this was the last workspace, kill the tmux session
+		if len(m.stateStore.ListWorkspaces()) == 0 {
+			_ = m.tmuxCtrl.KillSession()
+		}
 		return deletedWorkspaceMsg{}
 	}
 }
@@ -1371,6 +1376,11 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 			if err := m.stateStore.DeleteWorkspace(name); err != nil {
 				return errMsg{fmt.Errorf("delete state %s: %w", name, err)}
 			}
+		}
+		
+		// If this was the last workspace, kill the tmux session
+		if len(m.stateStore.ListWorkspaces()) == 0 {
+			_ = m.tmuxCtrl.KillSession()
 		}
 		return deletedWorkspaceMsg{}
 	}

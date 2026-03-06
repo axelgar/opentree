@@ -90,6 +90,11 @@ var DeleteCmd = &cobra.Command{
 		if err := store.DeleteWorkspace(branchName); err != nil {
 			fmt.Printf("Warning: failed to update state: %v\n", err)
 		}
+
+		// Check if last workspace and cleanup session
+		if len(store.ListWorkspaces()) == 0 {
+			_ = tmuxCtrl.KillSession()
+		}
 		fmt.Printf("✓ Deleted workspace '%s'\n", branchName)
 		fmt.Printf("✓ Deleted branch '%s'\n", branchName)
 		return nil

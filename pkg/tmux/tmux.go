@@ -217,6 +217,21 @@ func (c *Controller) KillWindow(name string) error {
 
 	return nil
 }
+// KillSession stops and removes the tmux session
+func (c *Controller) KillSession() error {
+	sessionName := c.getSessionName()
+	
+	if !c.sessionExists(sessionName) {
+		return nil // Session doesn't exist, nothing to do
+	}
+	
+	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to kill session: %w\nOutput: %s", err, output)
+	}
+	
+	return nil
+}
 
 // CapturePane captures recent output from a window
 func (c *Controller) CapturePane(name string, lines int) (string, error) {
