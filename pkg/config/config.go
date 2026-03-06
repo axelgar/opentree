@@ -57,9 +57,9 @@ func Default() *Config {
 	}
 }
 
-// findConfigFile walks up from the current directory looking for opentree.toml,
+// FindConfigFile walks up from the current directory looking for opentree.toml,
 // mirroring how git finds .git. Returns "opentree.toml" if nothing is found.
-func findConfigFile() string {
+func FindConfigFile() string {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "opentree.toml"
@@ -84,7 +84,7 @@ func Load(path string) (*Config, error) {
 
 	// If no path specified, search up the directory tree for opentree.toml
 	if path == "" {
-		path = findConfigFile()
+		path = FindConfigFile()
 	}
 
 	data, err := os.ReadFile(path)
