@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Controller manages tmux sessions and windows
@@ -227,6 +229,23 @@ func (c *Controller) CapturePane(name string, lines int) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// GetWindowActivity returns the timestamp of the last activity in a tmux window.
+func (c *Controller) GetWindowActivity(name string) (time.Time, error) {
+	sessionName := c.getSessionName()
+	windowName := c.sanitizeWindowName(name)
+	cmd := exec.Command("tmux", "display-message", "-t",
+		fmt.Sprintf("%s:%s", sessionName, windowName), "-p", "#{window_activity}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get window activity: %w", err)
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(string(output)), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse activity timestamp: %w", err)
+	}
+	return time.Unix(sec, 0), nil
 }
 
 // getSessionName returns the tmux session name for this repository.

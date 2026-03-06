@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,7 +43,7 @@ var (
 
 	selectedItemStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("#F4A261")). // Orange accent
+				BorderForeground(lipgloss.Color("#F4A261")).
 				Foreground(lipgloss.Color("#F4A261")).
 				Padding(0, 1)
 
@@ -53,13 +54,13 @@ var (
 			Foreground(lipgloss.Color("#555"))
 
 	activeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#2A9D8F")) // Teal
+			Foreground(lipgloss.Color("#2A9D8F"))
 
 	idleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E9C46A")) // Yellow
+			Foreground(lipgloss.Color("#E9C46A"))
 
 	stoppedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666")) // Grey
+			Foreground(lipgloss.Color("#666"))
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262")).
@@ -80,7 +81,7 @@ var (
 				Background(lipgloss.Color("#0969DA")).
 				Padding(0, 1)
 
-	// Improvement 2: agent preview panel styles
+	// agent preview panel styles
 	previewBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#444")).
@@ -93,7 +94,7 @@ var (
 	previewLineStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#AAA"))
 
-	// Improvement 1: delete confirmation styles
+	// delete confirmation styles
 	dangerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
 
@@ -101,10 +102,52 @@ var (
 			Foreground(lipgloss.Color("#F4A261")).
 			Bold(true)
 
-	// Improvement 4: two-step create dialog
+	// two-step create dialog
 	stepLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888")).
 			Italic(true)
+
+	// CI badge styles
+	ciSuccessStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2A9D8F")).
+			Bold(true)
+
+	ciFailureStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Bold(true)
+
+	ciPendingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#E9C46A"))
+
+	// multi-select
+	selectedMarkStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F4A261")).
+				Bold(true)
+
+	// filter prompt
+	filterPromptStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F4A261"))
+
+	// status bar
+	statusBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262"))
+
+	// merged cleanup hint
+	mergedHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555")).
+			Italic(true)
+
+	// error log
+	errLogTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("196")).
+				Bold(true)
+
+	errLogLineStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#AAA"))
+
+	// uncommitted changes
+	uncommittedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#E9C46A"))
 )
 
 type keyMap struct {
@@ -115,8 +158,12 @@ type keyMap struct {
 	Enter  key.Binding
 	Diff   key.Binding
 	PR     key.Binding
-	Open   key.Binding // Improvement 5: open PR in browser
+	Open   key.Binding
 	Delete key.Binding
+	Select key.Binding
+	Filter key.Binding
+	Sort   key.Binding
+	ErrLog key.Binding
 	Quit   key.Binding
 	Help   key.Binding
 }
@@ -128,7 +175,8 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Enter},
-		{k.Diff, k.PR, k.Open, k.Delete, k.Quit, k.Help},
+		{k.Diff, k.PR, k.Open, k.Select, k.Delete},
+		{k.Filter, k.Sort, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -169,6 +217,22 @@ var keys = keyMap{
 		key.WithKeys("x"),
 		key.WithHelp("x", "delete"),
 	),
+	Select: key.NewBinding(
+		key.WithKeys(" "),
+		key.WithHelp("space", "multi-select"),
+	),
+	Filter: key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "filter"),
+	),
+	Sort: key.NewBinding(
+		key.WithKeys("s"),
+		key.WithHelp("s", "cycle sort"),
+	),
+	ErrLog: key.NewBinding(
+		key.WithKeys("E"),
+		key.WithHelp("E", "error log"),
+	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
@@ -181,10 +245,21 @@ var keys = keyMap{
 
 type WorkspaceItem struct {
 	*state.Workspace
-	DiffStat string
-	Active   bool
-	WindowID string
+	DiffStat         string
+	Active           bool
+	WindowID         string
+	UncommittedCount int
+	LastActivity     time.Time
 }
+
+const (
+	sortByName     = 0
+	sortByAge      = 1
+	sortByActivity = 2
+	sortByPR       = 3
+)
+
+var sortModeNames = []string{"name", "age", "activity", "PR"}
 
 type Model struct {
 	worktreeMgr *worktree.Manager
@@ -198,19 +273,42 @@ type Model struct {
 	width      int
 	height     int
 
-	// Improvement 4: two-step create dialog
+	// two-step create dialog
 	input         textinput.Model
 	creating      bool
-	issueMode     bool   // true when creating from a GH issue number
-	createStep    int    // 0 = branch name, 1 = base branch
-	newBranchName string // stores branch name between steps
+	issueMode     bool
+	createStep    int
+	newBranchName string
 
-	// Improvement 1: delete confirmation
+	// delete confirmation (single or batch)
 	deleting     bool
-	deleteTarget string
+	deleteTarget string // single target; empty means batch (use m.selected)
 
-	// Improvement 2: agent output preview
+	// agent output preview
 	agentPreview string
+
+	// PR creation dialog (improvement 5)
+	prCreating bool
+	prStep     int // 0 = title, 1 = body
+	prTitle    string
+	prWsName   string
+	prBranch   string
+	prBase     string
+
+	// CI status per workspace (improvement 1)
+	ciStatus map[string]string // wsName -> "success"/"failure"/"pending"/""
+
+	// multi-select (improvement 9)
+	selected map[string]bool
+
+	// sorting & filtering (improvement 4)
+	sortMode    int
+	filtering   bool
+	filterQuery string
+
+	// error log (improvement 10)
+	errLog     []string
+	showErrLog bool
 
 	help help.Model
 	keys keyMap
@@ -222,7 +320,6 @@ func NewModel() (*Model, error) {
 	wt := worktree.New()
 	st, err := state.New(".")
 	if err != nil {
-		// Try to find git root if "." fails
 		if wd, err2 := os.Getwd(); err2 == nil {
 			st, err = state.New(wd)
 		}
@@ -250,6 +347,8 @@ func NewModel() (*Model, error) {
 		input:       ti,
 		help:        help.New(),
 		keys:        keys,
+		ciStatus:    make(map[string]string),
+		selected:    make(map[string]bool),
 	}, nil
 }
 
@@ -258,9 +357,7 @@ func (m Model) Init() tea.Cmd {
 		textinput.Blink,
 		m.loadWorkspacesCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
-		// Improvement 3: auto-refresh workspace status every 10 seconds
 		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
-		// Improvement 2: agent preview refresh every 5 seconds
 		tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
 	)
 }
@@ -275,14 +372,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.Width = msg.Width
 
 	case tea.KeyMsg:
-		// Improvement 1: delete confirmation mode takes priority
+		// Error log overlay swallows all keys
+		if m.showErrLog {
+			m.showErrLog = false
+			return m, nil
+		}
+
+		// Delete confirmation mode
 		if m.deleting {
 			switch msg.String() {
 			case "y", "Y":
-				target := m.deleteTarget
+				if m.deleteTarget != "" {
+					target := m.deleteTarget
+					m.deleting = false
+					m.deleteTarget = ""
+					return m, m.deleteWorkspaceCmd(target)
+				}
+				// batch delete
+				targets := make([]string, 0, len(m.selected))
+				for name := range m.selected {
+					targets = append(targets, name)
+				}
 				m.deleting = false
 				m.deleteTarget = ""
-				return m, m.deleteWorkspaceCmd(target)
+				m.selected = make(map[string]bool)
+				return m, m.batchDeleteWorkspaceCmd(targets)
 			case "n", "esc":
 				m.deleting = false
 				m.deleteTarget = ""
@@ -290,7 +404,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Improvement 4: two-step create dialog (and issue mode)
+		// PR creation dialog (improvement 5)
+		if m.prCreating {
+			switch msg.String() {
+			case "enter":
+				val := m.input.Value()
+				if m.prStep == 0 {
+					m.prTitle = val
+					m.prStep = 1
+					m.input.Placeholder = "PR body (optional)"
+					m.input.SetValue("")
+					return m, textinput.Blink
+				}
+				// step 1: body confirmed
+				wsName := m.prWsName
+				branch := m.prBranch
+				base := m.prBase
+				title := m.prTitle
+				body := val
+				m.prCreating = false
+				m.prStep = 0
+				m.prTitle = ""
+				m.input.SetValue("")
+				m.input.Placeholder = "New branch name"
+				return m, m.createPRCmd(wsName, branch, base, title, body)
+			case "esc":
+				m.prCreating = false
+				m.prStep = 0
+				m.prTitle = ""
+				m.input.SetValue("")
+				m.input.Placeholder = "New branch name"
+				return m, nil
+			}
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
+		// Filter mode (improvement 4)
+		if m.filtering {
+			switch msg.String() {
+			case "esc", "enter":
+				m.filtering = false
+				m.cursor = 0
+				return m, m.capturePreviewCmd()
+			case "backspace":
+				if len(m.filterQuery) > 0 {
+					m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
+				}
+				m.cursor = 0
+			default:
+				if len(msg.String()) == 1 {
+					m.filterQuery += msg.String()
+					m.cursor = 0
+				}
+			}
+			return m, nil
+		}
+
+		// Two-step workspace create / issue mode
 		if m.creating {
 			switch msg.String() {
 			case "enter":
@@ -306,14 +477,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.createWorkspaceFromIssueCmd(val)
 				}
 				if m.createStep == 0 {
-					// Advance to step 2: collect base branch
 					m.newBranchName = val
 					m.createStep = 1
 					m.input.Placeholder = "Base branch"
 					m.input.SetValue(m.cfg.Worktree.DefaultBase)
 					return m, textinput.Blink
 				}
-				// Step 2 confirmed: create workspace
 				branchName := m.newBranchName
 				baseBranch := val
 				m.creating = false
@@ -336,6 +505,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Normal mode
+		visible := m.visibleWorkspaces()
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
@@ -345,7 +515,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.capturePreviewCmd()
 			}
 		case key.Matches(msg, m.keys.Down):
-			if m.cursor < len(m.workspaces)-1 {
+			if m.cursor < len(visible)-1 {
 				m.cursor++
 				return m, m.capturePreviewCmd()
 			}
@@ -364,48 +534,85 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 			return m, textinput.Blink
 		case key.Matches(msg, m.keys.Enter):
-			if len(m.workspaces) > 0 {
-				ws := m.workspaces[m.cursor]
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
 				return m, m.attachWorkspaceCmd(ws.Name)
 			}
 		case key.Matches(msg, m.keys.Diff):
 			return m, m.loadWorkspacesCmd
 		case key.Matches(msg, m.keys.PR):
-			if len(m.workspaces) > 0 {
-				ws := m.workspaces[m.cursor]
-				return m, m.createPRCmd(ws.Name, ws.Branch, ws.BaseBranch)
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				m.prCreating = true
+				m.prStep = 0
+				m.prWsName = ws.Name
+				m.prBranch = ws.Branch
+				m.prBase = ws.BaseBranch
+				m.input.Placeholder = "PR title"
+				m.input.SetValue(ws.Branch)
+				m.input.Focus()
+				return m, textinput.Blink
 			}
-		// Improvement 5: open PR URL in browser
 		case key.Matches(msg, m.keys.Open):
-			if len(m.workspaces) > 0 {
-				ws := m.workspaces[m.cursor]
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
 				if ws.PRURL != "" {
 					return m, openURLCmd(ws.PRURL)
 				}
 			}
-		// Improvement 1: show confirmation instead of immediate delete
+		case key.Matches(msg, m.keys.Select):
+			// Improvement 9: multi-select toggle
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.selected[ws.Name] {
+					delete(m.selected, ws.Name)
+				} else {
+					m.selected[ws.Name] = true
+				}
+				// Advance cursor
+				if m.cursor < len(visible)-1 {
+					m.cursor++
+				}
+			}
 		case key.Matches(msg, m.keys.Delete):
-			if len(m.workspaces) > 0 {
-				ws := m.workspaces[m.cursor]
+			if len(m.selected) > 0 {
+				// batch delete confirmation
+				m.deleting = true
+				m.deleteTarget = ""
+			} else if len(visible) > 0 {
+				ws := visible[m.cursor]
 				m.deleting = true
 				m.deleteTarget = ws.Name
 			}
+		case key.Matches(msg, m.keys.Filter):
+			// Improvement 4: enter filter mode
+			m.filtering = true
+			m.filterQuery = ""
+			m.cursor = 0
+		case key.Matches(msg, m.keys.Sort):
+			// Improvement 4: cycle sort mode
+			m.sortMode = (m.sortMode + 1) % 4
+			m.cursor = 0
+		case key.Matches(msg, m.keys.ErrLog):
+			// Improvement 10: toggle error log
+			m.showErrLog = !m.showErrLog
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 		}
 
 	case loadedWorkspacesMsg:
 		m.workspaces = msg.workspaces
-		if m.cursor >= len(m.workspaces) {
-			m.cursor = max(0, len(m.workspaces)-1)
+		visible := m.visibleWorkspaces()
+		if m.cursor >= len(visible) {
+			m.cursor = max(0, len(visible)-1)
 		}
-		// Refresh preview for the newly selected workspace
 		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
 		return m, m.loadWorkspacesCmd
 
 	case deletedWorkspaceMsg:
+		m.selected = make(map[string]bool)
 		return m, m.loadWorkspacesCmd
 
 	// Improvement 2: agent preview received
@@ -442,6 +649,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, ws := range m.workspaces {
 			if ws.PRURL != "" && ws.PRStatus != "merged" {
 				cmds = append(cmds, m.checkPRStatusCmd(ws.Name, ws.Branch))
+				cmds = append(cmds, m.checkCIStatusCmd(ws.Name, ws.Branch))
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -461,9 +669,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	// Improvement 1: CI status updated
+	case ciStatusCheckedMsg:
+		if m.ciStatus == nil {
+			m.ciStatus = make(map[string]string)
+		}
+		m.ciStatus[msg.wsName] = msg.ciStatus
+
 	case attachFinishedMsg:
 		if msg.err != nil {
 			m.err = msg.err
+			m.appendErrLog(msg.err.Error())
 			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 				return clearErrorMsg{}
 			})
@@ -472,6 +688,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg.err
+		m.appendErrLog(msg.err.Error())
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 			return clearErrorMsg{}
 		})
@@ -483,11 +700,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m *Model) appendErrLog(msg string) {
+	ts := time.Now().Format("15:04:05")
+	entry := fmt.Sprintf("[%s] %s", ts, msg)
+	m.errLog = append(m.errLog, entry)
+	if len(m.errLog) > 20 {
+		m.errLog = m.errLog[len(m.errLog)-20:]
+	}
+}
+
 func (m Model) View() string {
-	// Improvement 1: delete confirmation dialog
+	// Improvement 10: error log overlay
+	if m.showErrLog {
+		var sb strings.Builder
+		sb.WriteString(errLogTitleStyle.Render("Error Log") + "\n\n")
+		if len(m.errLog) == 0 {
+			sb.WriteString(errLogLineStyle.Render("No errors recorded."))
+		} else {
+			for _, entry := range m.errLog {
+				sb.WriteString(errLogLineStyle.Render(entry))
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString("\n" + helpStyle.Render("Any key to close"))
+		return appStyle.Render(sb.String())
+	}
+
+	// Delete confirmation dialog
 	if m.deleting {
-		body := dangerStyle.Render(fmt.Sprintf("Delete workspace %q?", m.deleteTarget)) +
-			"\n" +
+		var bodyMsg string
+		if m.deleteTarget != "" {
+			bodyMsg = dangerStyle.Render(fmt.Sprintf("Delete workspace %q?", m.deleteTarget))
+		} else {
+			names := make([]string, 0, len(m.selected))
+			for name := range m.selected {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			bodyMsg = dangerStyle.Render(fmt.Sprintf("Delete %d workspaces: %s?", len(names), strings.Join(names, ", ")))
+		}
+		body := bodyMsg + "\n" +
 			helpStyle.Render("The worktree, tmux window, and all local changes will be removed.")
 		footer := fmt.Sprintf("%s %s  •  %s %s",
 			confirmKeyStyle.Render("y"), helpStyle.Render("confirm"),
@@ -509,7 +761,7 @@ func (m Model) View() string {
 		))
 	}
 
-	// Improvement 4: two-step create dialog
+	// Two-step create dialog
 	if m.creating {
 		var stepLabel string
 		if m.createStep == 0 {
@@ -525,28 +777,61 @@ func (m Model) View() string {
 		))
 	}
 
+	// Improvement 5: PR creation dialog
+	if m.prCreating {
+		var stepLabel string
+		if m.prStep == 0 {
+			stepLabel = "Step 1/2 — PR title"
+		} else {
+			stepLabel = fmt.Sprintf("Step 2/2 — PR body  (title: %s)", m.prTitle)
+		}
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n%s\n\n%s",
+			titleStyle.Render(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase)),
+			stepLabelStyle.Render(stepLabel),
+			m.input.View(),
+			helpStyle.Render("Enter to continue • Esc to cancel"),
+		))
+	}
+
 	var s strings.Builder
 
-	// Header
-	s.WriteString(titleStyle.Render("OpenTree Workspaces"))
+	// Header with sort/filter info
+	header := "OpenTree Workspaces"
+	s.WriteString(titleStyle.Render(header))
 	s.WriteString("\n\n")
 
-	// Error message
+	// Improvement 4: filter prompt
+	if m.filtering {
+		prompt := filterPromptStyle.Render("/") + " " + m.filterQuery + "█"
+		s.WriteString(prompt + "\n\n")
+	} else if m.filterQuery != "" {
+		s.WriteString(filterPromptStyle.Render(fmt.Sprintf("filter: %q  (/ to change, esc to clear)", m.filterQuery)) + "\n\n")
+	}
+
+	// Error message (transient)
 	if m.err != nil {
 		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(fmt.Sprintf("Error: %v", m.err)))
 		s.WriteString("\n\n")
 	}
 
+	visible := m.visibleWorkspaces()
+
 	// Workspace list
-	if len(m.workspaces) == 0 {
-		s.WriteString(itemStyle.Render("No workspaces found. Press 'n' to create one."))
+	if len(visible) == 0 {
+		if m.filterQuery != "" {
+			s.WriteString(itemStyle.Render("No workspaces match the filter."))
+		} else {
+			s.WriteString(itemStyle.Render("No workspaces found. Press 'n' to create one."))
+		}
 		s.WriteString("\n")
 	} else {
-		for i, ws := range m.workspaces {
+		for i, ws := range visible {
 			style := itemStyle
 			if i == m.cursor {
 				style = selectedItemStyle
 			}
+
+			// Activity dot
 			status := "○"
 			statusColor := stoppedStyle
 			if ws.Active {
@@ -557,7 +842,15 @@ func (m Model) View() string {
 				statusColor = idleStyle
 			}
 
-			title := fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
+			// Multi-select mark
+			selectMark := "  "
+			if m.selected[ws.Name] {
+				selectMark = selectedMarkStyle.Render("✓ ")
+			}
+
+			title := selectMark + fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
+
+			// Badges
 			if ws.IssueNumber > 0 {
 				title += "  " + issueBadgeStyle.Render(fmt.Sprintf("#%d", ws.IssueNumber))
 			}
@@ -565,16 +858,47 @@ func (m Model) View() string {
 				title += "  " + mergedBadgeStyle.Render("merged · ready to delete")
 			} else if ws.PRStatus == "open" {
 				title += "  " + prOpenBadgeStyle.Render("PR open")
+				// Improvement 1: CI badge
+				if ci, ok := m.ciStatus[ws.Name]; ok {
+					switch ci {
+					case "success":
+						title += " " + ciSuccessStyle.Render("✓ CI")
+					case "failure":
+						title += " " + ciFailureStyle.Render("✗ CI")
+					case "pending":
+						title += " " + ciPendingStyle.Render("⟳ CI")
+					}
+				}
 			}
-			desc := fmt.Sprintf("  %s • %s • %s", ws.Branch, ws.DiffStat, formatAge(ws.CreatedAt))
+
+			// Description line
+			descParts := []string{ws.Branch, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
+
+			// Improvement 2: uncommitted changes
+			if ws.UncommittedCount > 0 {
+				descParts = append(descParts, uncommittedStyle.Render(fmt.Sprintf("~%d uncommitted", ws.UncommittedCount)))
+			}
+
+			// Improvement 8: last activity
+			if !ws.LastActivity.IsZero() {
+				descParts = append(descParts, "active "+formatAge(ws.LastActivity))
+			}
+
+			desc := "  " + strings.Join(descParts, " • ")
 
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
 			s.WriteString("\n")
+
+			// Improvement 7: merged cleanup hint
+			if ws.PRStatus == "merged" && i == m.cursor {
+				s.WriteString(mergedHintStyle.Render("  → Press x to clean up this merged workspace"))
+				s.WriteString("\n")
+			}
 		}
 
-		// Improvement 2: agent output preview for selected workspace
-		if m.agentPreview != "" {
-			wsName := m.workspaces[m.cursor].Name
+		// Agent output preview for selected workspace
+		if m.agentPreview != "" && m.cursor < len(visible) {
+			wsName := visible[m.cursor].Name
 			previewWidth := m.width - 8
 			if previewWidth < 20 {
 				previewWidth = 60
@@ -586,11 +910,94 @@ func (m Model) View() string {
 		}
 	}
 
-	// Footer
+	// Improvement 6: status bar
 	s.WriteString("\n")
+	s.WriteString(m.statusBar())
+	s.WriteString("\n")
+
+	// Help
 	s.WriteString(m.help.View(m.keys))
 
 	return appStyle.Render(s.String())
+}
+
+// statusBar renders the bottom stats line.
+func (m Model) statusBar() string {
+	total := len(m.workspaces)
+	active := 0
+	openPRs := 0
+	for _, ws := range m.workspaces {
+		if ws.Active {
+			active++
+		}
+		if ws.PRStatus == "open" {
+			openPRs++
+		}
+	}
+	parts := []string{
+		fmt.Sprintf("%d workspaces", total),
+		fmt.Sprintf("%d active", active),
+		fmt.Sprintf("%d open PRs", openPRs),
+		"sort: " + sortModeNames[m.sortMode],
+	}
+	if len(m.selected) > 0 {
+		parts = append(parts, fmt.Sprintf("%d selected", len(m.selected)))
+	}
+	if len(m.errLog) > 0 {
+		parts = append(parts, fmt.Sprintf("%d errors (E)", len(m.errLog)))
+	}
+	return statusBarStyle.Render(strings.Join(parts, "  •  "))
+}
+
+// visibleWorkspaces returns the sorted and filtered workspace list.
+func (m Model) visibleWorkspaces() []WorkspaceItem {
+	sorted := m.sortedWorkspaces()
+	if m.filterQuery == "" {
+		return sorted
+	}
+	q := strings.ToLower(m.filterQuery)
+	var out []WorkspaceItem
+	for _, ws := range sorted {
+		if strings.Contains(strings.ToLower(ws.Name), q) {
+			out = append(out, ws)
+		}
+	}
+	return out
+}
+
+// sortedWorkspaces returns a copy of m.workspaces sorted by m.sortMode.
+func (m Model) sortedWorkspaces() []WorkspaceItem {
+	ws := make([]WorkspaceItem, len(m.workspaces))
+	copy(ws, m.workspaces)
+	switch m.sortMode {
+	case sortByAge:
+		sort.Slice(ws, func(i, j int) bool {
+			return ws[i].CreatedAt.After(ws[j].CreatedAt)
+		})
+	case sortByActivity:
+		sort.Slice(ws, func(i, j int) bool {
+			return ws[i].LastActivity.After(ws[j].LastActivity)
+		})
+	case sortByPR:
+		prOrder := func(s string) int {
+			switch s {
+			case "open":
+				return 0
+			case "merged":
+				return 1
+			default:
+				return 2
+			}
+		}
+		sort.Slice(ws, func(i, j int) bool {
+			return prOrder(ws[i].PRStatus) < prOrder(ws[j].PRStatus)
+		})
+	default: // sortByName
+		sort.Slice(ws, func(i, j int) bool {
+			return ws[i].Name < ws[j].Name
+		})
+	}
+	return ws
 }
 
 // Messages
@@ -611,9 +1018,13 @@ type prStatusCheckedMsg struct {
 	prURL    string
 	prStatus string
 }
-type refreshTickMsg struct{}    // Improvement 3
-type previewTickMsg struct{}    // Improvement 2
-type capturePreviewMsg struct { // Improvement 2
+type ciStatusCheckedMsg struct {
+	wsName   string
+	ciStatus string
+}
+type refreshTickMsg struct{}
+type previewTickMsg struct{}
+type capturePreviewMsg struct {
 	lines string
 }
 
@@ -658,13 +1069,24 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 			item.WindowID = win.ID
 		}
 
+		// Improvement 2: count uncommitted changes
+		if ws.WorktreeDir != "" {
+			item.UncommittedCount = countUncommitted(ws.WorktreeDir)
+		}
+
+		// Improvement 8: last activity from tmux
+		if exists {
+			if t, err := m.tmuxCtrl.GetWindowActivity(ws.Name); err == nil {
+				item.LastActivity = t
+			}
+		}
+
 		items = append(items, item)
 	}
 
 	return loadedWorkspacesMsg{workspaces: items}
 }
 
-// Improvement 4: createWorkspaceCmd now accepts baseBranch instead of hardcoding "main"
 func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.worktreeMgr.Create(name, baseBranch); err != nil {
@@ -771,15 +1193,28 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 		if err := m.tmuxCtrl.KillWindow(name); err != nil {
 			// Continue even if window doesn't exist
 		}
-
 		if err := m.worktreeMgr.Delete(name, true); err != nil {
 			return errMsg{err}
 		}
-
 		if err := m.stateStore.DeleteWorkspace(name); err != nil {
 			return errMsg{err}
 		}
+		return deletedWorkspaceMsg{}
+	}
+}
 
+// Improvement 9: batch delete
+func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
+	return func() tea.Msg {
+		for _, name := range names {
+			_ = m.tmuxCtrl.KillWindow(name)
+			if err := m.worktreeMgr.Delete(name, true); err != nil {
+				return errMsg{fmt.Errorf("delete %s: %w", name, err)}
+			}
+			if err := m.stateStore.DeleteWorkspace(name); err != nil {
+				return errMsg{fmt.Errorf("delete state %s: %w", name, err)}
+			}
+		}
 		return deletedWorkspaceMsg{}
 	}
 }
@@ -796,9 +1231,10 @@ func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	}
 }
 
-func (m Model) createPRCmd(wsName, branch, baseBranch string) tea.Cmd {
+// Improvement 5: createPRCmd now accepts title and body.
+func (m Model) createPRCmd(wsName, branch, baseBranch, title, body string) tea.Cmd {
 	return func() tea.Msg {
-		prURL, err := m.prMgr.CreatePR(branch, baseBranch, "", "")
+		prURL, err := m.prMgr.CreatePR(branch, baseBranch, title, body)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -816,12 +1252,26 @@ func (m Model) checkPRStatusCmd(wsName, branch string) tea.Cmd {
 	}
 }
 
-// Improvement 2: capturePreviewCmd fetches the last 5 lines of agent output for the selected workspace.
+// Improvement 1: checkCIStatusCmd fetches CI check results for a PR.
+func (m Model) checkCIStatusCmd(wsName, branch string) tea.Cmd {
+	return func() tea.Msg {
+		status, err := m.prMgr.GetPRCIStatus(branch)
+		if err != nil || status == "" {
+			return nil
+		}
+		return ciStatusCheckedMsg{wsName: wsName, ciStatus: status}
+	}
+}
+
 func (m Model) capturePreviewCmd() tea.Cmd {
 	if len(m.workspaces) == 0 {
 		return nil
 	}
-	ws := m.workspaces[m.cursor]
+	visible := m.visibleWorkspaces()
+	if len(visible) == 0 || m.cursor >= len(visible) {
+		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
+	}
+	ws := visible[m.cursor]
 	if ws.WindowID == "" {
 		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
 	}
@@ -849,6 +1299,23 @@ func cleanPreview(s string) string {
 		out = out[len(out)-5:]
 	}
 	return strings.Join(out, "\n")
+}
+
+// Improvement 2: countUncommitted counts files with uncommitted changes in a worktree.
+func countUncommitted(worktreePath string) int {
+	cmd := exec.Command("git", "status", "--short")
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // openURLCmd opens a URL in the system default browser (fire-and-forget).

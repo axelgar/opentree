@@ -152,6 +152,45 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 	return parts[0], strings.ToLower(parts[1]), nil
 }
 
+// GetPRCIStatus returns the combined CI check status for the PR on the given branch.
+// Returns "success", "failure", "pending", or "" if no checks exist.
+func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
+	if !pm.IsInstalled() {
+		return "", nil
+	}
+	cmd := exec.Command("gh", "pr", "view", branch, "--json", "statusCheckRollup")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", nil
+	}
+	var result struct {
+		StatusCheckRollup []struct {
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"statusCheckRollup"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return "", nil
+	}
+	if len(result.StatusCheckRollup) == 0 {
+		return "", nil
+	}
+	for _, check := range result.StatusCheckRollup {
+		c := strings.ToUpper(check.Conclusion)
+		if c == "FAILURE" || c == "CANCELLED" || c == "TIMED_OUT" {
+			return "failure", nil
+		}
+	}
+	for _, check := range result.StatusCheckRollup {
+		s := strings.ToUpper(check.Status)
+		c := strings.ToUpper(check.Conclusion)
+		if s == "IN_PROGRESS" || s == "QUEUED" || s == "PENDING" || (c == "" && s == "IN_PROGRESS") {
+			return "pending", nil
+		}
+	}
+	return "success", nil
+}
+
 // IsInstalled reports whether the gh CLI is available on PATH.
 func (pm *PRManager) IsInstalled() bool {
 	return exec.Command("gh", "--version").Run() == nil
