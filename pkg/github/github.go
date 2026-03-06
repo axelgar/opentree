@@ -57,6 +57,23 @@ func (pm *PRManager) GetIssue(number int) (*Issue, error) {
 // issueBranchSlugRe matches any sequence of non-alphanumeric characters
 var issueBranchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
+// IssueTaskContent formats a GitHub issue as a TASK.md file for the AI agent.
+func IssueTaskContent(issue *Issue) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Issue #%d: %s\n\n", issue.Number, issue.Title))
+	if len(issue.Labels) > 0 {
+		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(issue.Labels, ", ")))
+	}
+	sb.WriteString("## Description\n\n")
+	if issue.Body != "" {
+		sb.WriteString(issue.Body)
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("_No description provided._\n")
+	}
+	return sb.String()
+}
+
 // IssueBranchName generates a Git branch name from an issue number and title.
 // e.g. issue #42 "Add dark mode" → "issue-42-add-dark-mode"
 func IssueBranchName(number int, title string) string {

@@ -200,8 +200,8 @@ func TestDeleteConfirmation_ViewContainsWorkspaceName(t *testing.T) {
 	if !strings.Contains(view, "myfeature") {
 		t.Errorf("View() does not contain workspace name %q\ngot: %s", "myfeature", view)
 	}
-	if !strings.Contains(view, "Delete Workspace") {
-		t.Errorf("View() does not contain 'Delete Workspace' header\ngot: %s", view)
+	if !strings.Contains(view, "Delete workspace") {
+		t.Errorf("View() does not contain 'Delete workspace' header\ngot: %s", view)
 	}
 }
 
@@ -696,7 +696,7 @@ func TestView_MainScreen_NoWorkspaces(t *testing.T) {
 	m := newTestModel()
 	view := m.View()
 
-	if !strings.Contains(view, "OpenTree Workspaces") {
+	if !strings.Contains(view, "Workspaces") {
 		t.Errorf("View() missing title\ngot: %s", view)
 	}
 	if !strings.Contains(view, "No workspaces") {

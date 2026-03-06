@@ -142,6 +142,5 @@ External tools on PATH: `git`, `tmux`, `gh` (optional), `opencode`
 
 - Built-in terminal emulator
 - Multi-repo support
-- Workspace from GitHub issue/PR
 - Agent activity monitoring / token usage
 - Workspace checkpoints / revert

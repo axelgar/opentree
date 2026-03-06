@@ -365,14 +365,17 @@ type Model struct {
 
 func NewModel() (*Model, error) {
 	wt := worktree.New()
-	st, err := state.New(".")
+
+	// Resolve the git repository root for state persistence
+	repoRoot := ""
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		repoRoot = strings.TrimSpace(string(out))
+	} else if wd, err2 := os.Getwd(); err2 == nil {
+		repoRoot = wd
+	}
+	st, err := state.New(repoRoot)
 	if err != nil {
-		if wd, err2 := os.Getwd(); err2 == nil {
-			st, err = state.New(wd)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize state: %w", err)
-		}
+		return nil, fmt.Errorf("failed to initialize state: %w", err)
 	}
 	cfg, err := config.Load("")
 	if err != nil {
@@ -1201,7 +1204,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 	var items []WorkspaceItem
 	for _, ws := range saved {
-		diff, _ := m.worktreeMgr.Diff(ws.Branch)
+		diff, _ := m.worktreeMgr.Diff(ws.Branch, ws.BaseBranch)
 		diffStat := "No changes"
 		lines := strings.Split(strings.TrimSpace(diff), "\n")
 		if len(lines) > 0 && lines[len(lines)-1] != "" {
@@ -1215,7 +1218,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 			win, exists = windowMap[sanitizedName]
 		}
 
-		fileChanges, _ := m.worktreeMgr.DiffFileStats(ws.Branch)
+		fileChanges, _ := m.worktreeMgr.DiffFileStats(ws.Branch, ws.BaseBranch)
 
 		item := WorkspaceItem{
 			Workspace:   ws,
@@ -1309,7 +1312,7 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
 
 		taskFile := filepath.Join(worktreePath, "TASK.md")
-		_ = os.WriteFile(taskFile, []byte(buildIssueTaskContent(issue)), 0644)
+		_ = os.WriteFile(taskFile, []byte(github.IssueTaskContent(issue)), 0644)
 
 		agentCmd := m.cfg.Agent.Command
 		if err := m.tmuxCtrl.CreateWindow(branchName, worktreePath, agentCmd, m.cfg.Agent.Args...); err != nil {
@@ -1333,22 +1336,6 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 
 		return createdWorkspaceMsg{}
 	}
-}
-
-func buildIssueTaskContent(issue *github.Issue) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Issue #%d: %s\n\n", issue.Number, issue.Title))
-	if len(issue.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(issue.Labels, ", ")))
-	}
-	sb.WriteString("## Description\n\n")
-	if issue.Body != "" {
-		sb.WriteString(issue.Body)
-		sb.WriteString("\n")
-	} else {
-		sb.WriteString("_No description provided._\n")
-	}
-	return sb.String()
 }
 
 func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
@@ -1510,7 +1497,7 @@ func cleanPreview(s string) string {
 
 func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 	return func() tea.Msg {
-		content, err := m.worktreeMgr.DiffFull(ws.Branch)
+		content, err := m.worktreeMgr.DiffFull(ws.Branch, ws.BaseBranch)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1602,27 +1589,24 @@ func countUncommitted(worktreePath string) int {
 }
 
 // openURLCmd opens a URL in the system default browser (fire-and-forget).
-func openURLCmd(url string) tea.Cmd {
+// Only opens http/https URLs to prevent command injection.
+func openURLCmd(rawURL string) tea.Cmd {
 	return func() tea.Msg {
+		if !strings.HasPrefix(rawURL, "https://") && !strings.HasPrefix(rawURL, "http://") {
+			return nil
+		}
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = exec.Command("open", url)
+			cmd = exec.Command("open", rawURL)
 		case "windows":
-			cmd = exec.Command("cmd", "/c", "start", url)
+			cmd = exec.Command("cmd", "/c", "start", rawURL)
 		default:
-			cmd = exec.Command("xdg-open", url)
+			cmd = exec.Command("xdg-open", rawURL)
 		}
 		_ = cmd.Start()
 		return nil
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // formatAge returns a human-readable age string for a given timestamp.

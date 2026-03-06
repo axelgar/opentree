@@ -75,7 +75,7 @@ into the new worktree so the AI agent can start working immediately.`,
 		worktreePath := filepath.Join(repoRoot, cfg.Worktree.BaseDir, dirName)
 
 		// Write TASK.md with issue context for the AI agent
-		taskContent := buildTaskContent(issue)
+		taskContent := ghpkg.IssueTaskContent(issue)
 		taskFile := filepath.Join(worktreePath, "TASK.md")
 		if err := os.WriteFile(taskFile, []byte(taskContent), 0644); err != nil {
 			fmt.Printf("Warning: could not write TASK.md: %v\n", err)
@@ -116,23 +116,6 @@ into the new worktree so the AI agent can start working immediately.`,
 		fmt.Printf("\nTo attach: opentree attach %s\n", branchName)
 		return nil
 	},
-}
-
-// buildTaskContent formats a GitHub issue as a TASK.md file for the AI agent.
-func buildTaskContent(issue *ghpkg.Issue) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Issue #%d: %s\n\n", issue.Number, issue.Title))
-	if len(issue.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(issue.Labels, ", ")))
-	}
-	sb.WriteString("## Description\n\n")
-	if issue.Body != "" {
-		sb.WriteString(issue.Body)
-		sb.WriteString("\n")
-	} else {
-		sb.WriteString("_No description provided._\n")
-	}
-	return sb.String()
 }
 
 func init() {

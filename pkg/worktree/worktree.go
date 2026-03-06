@@ -96,22 +96,28 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 	return nil
 }
 
-// Diff returns the diffstat for a worktree vs its base branch
-func (m *Manager) Diff(branchName string) (string, error) {
+// Diff returns the diffstat for a worktree vs its base branch.
+// If baseBranch is empty, it defaults to "main".
+func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) {
 	if err := m.ensureGitRepo(); err != nil {
 		return "", err
+	}
+
+	base := "main"
+	if len(baseBranch) > 0 && baseBranch[0] != "" {
+		base = baseBranch[0]
 	}
 
 	dirName := strings.ReplaceAll(branchName, "/", "-")
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	// Get the base branch (merge-base)
-	cmd := exec.Command("git", "merge-base", branchName, "main")
+	cmd := exec.Command("git", "merge-base", branchName, base)
 	cmd.Dir = worktreePath
 	baseOutput, err := cmd.CombinedOutput()
 	if err != nil {
-		// Fallback to origin/main
-		cmd = exec.Command("git", "diff", "--stat", "origin/main...HEAD")
+		// Fallback to origin/<base>
+		cmd = exec.Command("git", "diff", "--stat", "origin/"+base+"...HEAD")
 	} else {
 		baseCommit := strings.TrimSpace(string(baseOutput))
 		cmd = exec.Command("git", "diff", "--stat", baseCommit, "HEAD")
@@ -127,19 +133,25 @@ func (m *Manager) Diff(branchName string) (string, error) {
 }
 
 // DiffFull returns the full unified diff for a worktree vs its base branch.
-func (m *Manager) DiffFull(branchName string) (string, error) {
+// If baseBranch is empty, it defaults to "main".
+func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, error) {
 	if err := m.ensureGitRepo(); err != nil {
 		return "", err
+	}
+
+	base := "main"
+	if len(baseBranch) > 0 && baseBranch[0] != "" {
+		base = baseBranch[0]
 	}
 
 	dirName := strings.ReplaceAll(branchName, "/", "-")
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "merge-base", branchName, "main")
+	cmd := exec.Command("git", "merge-base", branchName, base)
 	cmd.Dir = worktreePath
 	baseOutput, err := cmd.CombinedOutput()
 	if err != nil {
-		cmd = exec.Command("git", "diff", "origin/main...HEAD")
+		cmd = exec.Command("git", "diff", "origin/"+base+"...HEAD")
 	} else {
 		baseCommit := strings.TrimSpace(string(baseOutput))
 		cmd = exec.Command("git", "diff", baseCommit, "HEAD")
@@ -239,19 +251,25 @@ type FileChange struct {
 }
 
 // DiffFileStats returns per-file change stats for a worktree vs its base branch.
-func (m *Manager) DiffFileStats(branchName string) ([]FileChange, error) {
+// If baseBranch is empty, it defaults to "main".
+func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]FileChange, error) {
 	if err := m.ensureGitRepo(); err != nil {
 		return nil, err
+	}
+
+	base := "main"
+	if len(baseBranch) > 0 && baseBranch[0] != "" {
+		base = baseBranch[0]
 	}
 
 	dirName := strings.ReplaceAll(branchName, "/", "-")
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "merge-base", branchName, "main")
+	cmd := exec.Command("git", "merge-base", branchName, base)
 	cmd.Dir = worktreePath
 	baseOutput, err := cmd.CombinedOutput()
 	if err != nil {
-		cmd = exec.Command("git", "diff", "--numstat", "origin/main...HEAD")
+		cmd = exec.Command("git", "diff", "--numstat", "origin/"+base+"...HEAD")
 	} else {
 		baseCommit := strings.TrimSpace(string(baseOutput))
 		cmd = exec.Command("git", "diff", "--numstat", baseCommit, "HEAD")

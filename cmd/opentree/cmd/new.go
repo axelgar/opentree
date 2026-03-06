@@ -26,6 +26,9 @@ var NewCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
+		if baseBranch == "" {
+			baseBranch = cfg.Worktree.DefaultBase
+		}
 		
 		// Step 1: Create git worktree
 		wt := worktree.New()
@@ -78,5 +81,5 @@ var NewCmd = &cobra.Command{
 }
 
 func init() {
-	NewCmd.Flags().StringP("base", "b", "main", "Base branch to create worktree from")
+	NewCmd.Flags().StringP("base", "b", "", "Base branch to create worktree from (default: config default)")
 }
