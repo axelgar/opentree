@@ -45,11 +45,13 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 		return fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
 	}
 
-	// Send command to the window
+	// Send command to the window, raising the file descriptor limit first
+	// so that tools like claude and opencode don't hit the default macOS limit.
 	fullCmd := command
 	if len(args) > 0 {
 		fullCmd = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
 	}
+	fullCmd = fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", fullCmd)
 	
 	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", sessionName, windowName), fullCmd, "Enter")
 	if output, err := sendCmd.CombinedOutput(); err != nil {
