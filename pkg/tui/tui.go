@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,6 +111,7 @@ type keyMap struct {
 	Up     key.Binding
 	Down   key.Binding
 	New    key.Binding
+	Issue  key.Binding
 	Enter  key.Binding
 	Diff   key.Binding
 	PR     key.Binding
@@ -119,12 +122,12 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.New, k.Enter, k.Diff, k.Delete, k.Quit, k.Help}
+	return []key.Binding{k.New, k.Issue, k.Enter, k.Diff, k.Delete, k.Quit, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.New, k.Enter},
+		{k.Up, k.Down, k.New, k.Issue, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Delete, k.Quit, k.Help},
 	}
 }
@@ -141,6 +144,10 @@ var keys = keyMap{
 	New: key.NewBinding(
 		key.WithKeys("n"),
 		key.WithHelp("n", "new workspace"),
+	),
+	Issue: key.NewBinding(
+		key.WithKeys("i"),
+		key.WithHelp("i", "from GH issue"),
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
@@ -194,6 +201,7 @@ type Model struct {
 	// Improvement 4: two-step create dialog
 	input         textinput.Model
 	creating      bool
+	issueMode     bool   // true when creating from a GH issue number
 	createStep    int    // 0 = branch name, 1 = base branch
 	newBranchName string // stores branch name between steps
 
@@ -282,13 +290,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Improvement 4: two-step create dialog
+		// Improvement 4: two-step create dialog (and issue mode)
 		if m.creating {
 			switch msg.String() {
 			case "enter":
 				val := m.input.Value()
 				if val == "" {
 					return m, nil
+				}
+				if m.issueMode {
+					m.creating = false
+					m.issueMode = false
+					m.input.SetValue("")
+					m.input.Placeholder = "New branch name"
+					return m, m.createWorkspaceFromIssueCmd(val)
 				}
 				if m.createStep == 0 {
 					// Advance to step 2: collect base branch
@@ -309,6 +324,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.createWorkspaceCmd(branchName, baseBranch)
 			case "esc":
 				m.creating = false
+				m.issueMode = false
 				m.createStep = 0
 				m.newBranchName = ""
 				m.input.SetValue("")
@@ -337,6 +353,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.creating = true
 			m.createStep = 0
 			m.input.Placeholder = "New branch name"
+			m.input.SetValue("")
+			m.input.Focus()
+			return m, textinput.Blink
+		case key.Matches(msg, m.keys.Issue):
+			m.creating = true
+			m.issueMode = true
+			m.input.Placeholder = "GitHub issue number"
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
@@ -474,6 +497,15 @@ func (m Model) View() string {
 			titleStyle.Render("Delete Workspace"),
 			body,
 			footer,
+		))
+	}
+
+	// Issue creation dialog
+	if m.creating && m.issueMode {
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
+			titleStyle.Render("Create Workspace from GitHub Issue"),
+			m.input.View(),
+			helpStyle.Render("Enter issue number • Esc to cancel"),
 		))
 	}
 
@@ -663,6 +695,75 @@ func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 
 		return createdWorkspaceMsg{}
 	}
+}
+
+func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
+	return func() tea.Msg {
+		issueNum, err := strconv.Atoi(strings.TrimSpace(issueNumStr))
+		if err != nil || issueNum <= 0 {
+			return errMsg{fmt.Errorf("invalid issue number: %s", issueNumStr)}
+		}
+		issue, err := m.prMgr.GetIssue(issueNum)
+		if err != nil {
+			return errMsg{err}
+		}
+
+		branchName := github.IssueBranchName(issue.Number, issue.Title)
+		baseBranch := m.cfg.Worktree.DefaultBase
+
+		if err := m.worktreeMgr.Create(branchName, baseBranch); err != nil {
+			return errMsg{err}
+		}
+
+		out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to get repo root: %w", err)}
+		}
+		repoRoot := strings.TrimSpace(string(out))
+		dirName := strings.ReplaceAll(branchName, "/", "-")
+		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
+
+		taskFile := filepath.Join(worktreePath, "TASK.md")
+		_ = os.WriteFile(taskFile, []byte(buildIssueTaskContent(issue)), 0644)
+
+		agentCmd := m.cfg.Agent.Command
+		if err := m.tmuxCtrl.CreateWindow(branchName, worktreePath, agentCmd, m.cfg.Agent.Args...); err != nil {
+			return errMsg{err}
+		}
+
+		ws := &state.Workspace{
+			Name:        branchName,
+			Branch:      branchName,
+			BaseBranch:  baseBranch,
+			CreatedAt:   time.Now(),
+			Status:      "active",
+			Agent:       agentCmd,
+			WorktreeDir: worktreePath,
+			IssueNumber: issue.Number,
+			IssueTitle:  issue.Title,
+		}
+		if err := m.stateStore.AddWorkspace(ws); err != nil {
+			return errMsg{err}
+		}
+
+		return createdWorkspaceMsg{}
+	}
+}
+
+func buildIssueTaskContent(issue *github.Issue) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Issue #%d: %s\n\n", issue.Number, issue.Title))
+	if len(issue.Labels) > 0 {
+		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(issue.Labels, ", ")))
+	}
+	sb.WriteString("## Description\n\n")
+	if issue.Body != "" {
+		sb.WriteString(issue.Body)
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("_No description provided._\n")
+	}
+	return sb.String()
 }
 
 func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
