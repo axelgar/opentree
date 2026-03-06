@@ -19,6 +19,7 @@ brews:
   - repository:
       owner: axelgar
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/axelgar/opentree"
     description: "Git worktree manager CLI"
     install: |
