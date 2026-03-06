@@ -297,12 +297,14 @@ type Model struct {
 	agentPreview string
 
 	// PR creation dialog (improvement 5)
-	prCreating bool
-	prStep     int // 0 = title, 1 = body
-	prTitle    string
-	prWsName   string
-	prBranch   string
-	prBase     string
+	prCreating     bool
+	prGenerating   bool
+	prStep         int // 0 = title, 1 = body
+	prTitle        string
+	prBodyPrefill  string
+	prWsName       string
+	prBranch       string
+	prBase         string
 
 	// CI status per workspace (improvement 1)
 	ciStatus map[string]string // wsName -> "success"/"failure"/"pending"/""
@@ -422,7 +424,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.prTitle = val
 					m.prStep = 1
 					m.input.Placeholder = "PR body (optional)"
-					m.input.SetValue("")
+					m.input.SetValue(m.prBodyPrefill)
 					return m, textinput.Blink
 				}
 				// step 1: body confirmed
@@ -441,6 +443,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prCreating = false
 				m.prStep = 0
 				m.prTitle = ""
+				m.prBodyPrefill = ""
 				m.input.SetValue("")
 				m.input.Placeholder = "New branch name"
 				return m, nil
@@ -552,15 +555,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PR):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
-				m.prCreating = true
-				m.prStep = 0
+				m.prGenerating = true
 				m.prWsName = ws.Name
 				m.prBranch = ws.Branch
 				m.prBase = ws.BaseBranch
-				m.input.Placeholder = "PR title"
-				m.input.SetValue(ws.Branch)
-				m.input.Focus()
-				return m, textinput.Blink
+				return m, m.generatePRContentCmd(ws)
 			}
 		case key.Matches(msg, m.keys.Open):
 			if len(visible) > 0 {
@@ -650,6 +649,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.stateStore.UpdateWorkspace(ws)
 		}
 		return m, tea.Batch(m.loadWorkspacesCmd, m.checkPRStatusCmd(msg.wsName, ""))
+
+	case prContentGeneratedMsg:
+		m.prGenerating = false
+		m.prCreating = true
+		m.prStep = 0
+		m.prBodyPrefill = msg.body
+		m.input.Placeholder = "PR title"
+		m.input.SetValue(msg.title)
+		m.input.Focus()
+		return m, textinput.Blink
 
 	case prStatusTickMsg:
 		cmds := []tea.Cmd{
@@ -782,6 +791,14 @@ func (m Model) View() string {
 			stepLabelStyle.Render(stepLabel),
 			m.input.View(),
 			helpStyle.Render("Enter to continue • Esc to cancel"),
+		))
+	}
+
+	// PR content generation in progress
+	if m.prGenerating {
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
+			titleStyle.Render(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase)),
+			helpStyle.Render("Generating title and description from commits…"),
 		))
 	}
 
@@ -1021,6 +1038,7 @@ type clearErrorMsg struct{}
 type attachFinishedMsg struct{ err error }
 type prStatusTickMsg struct{}
 type prCreatedMsg struct{ wsName, prURL string }
+type prContentGeneratedMsg struct{ title, body string }
 type prStatusCheckedMsg struct {
 	wsName   string
 	prURL    string
@@ -1237,6 +1255,50 @@ func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 			return attachFinishedMsg{err: err}
 		})()
 	}
+}
+
+func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
+	return func() tea.Msg {
+		title, body := generatePRContent(ws.Branch, ws.BaseBranch, ws.WorktreeDir, ws.IssueNumber, ws.IssueTitle)
+		return prContentGeneratedMsg{title: title, body: body}
+	}
+}
+
+func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, issueTitle string) (title, body string) {
+	var commits []string
+	if worktreeDir != "" {
+		cmd := exec.Command("git", "log", baseBranch+"..HEAD", "--format=%s", "--no-merges")
+		cmd.Dir = worktreeDir
+		if out, err := cmd.CombinedOutput(); err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if strings.TrimSpace(line) != "" {
+					commits = append(commits, strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+
+	if issueTitle != "" {
+		title = issueTitle
+	} else if len(commits) > 0 {
+		title = commits[0]
+	} else {
+		title = branch
+	}
+
+	var sb strings.Builder
+	if len(commits) > 0 {
+		sb.WriteString("## Changes\n\n")
+		for _, c := range commits {
+			sb.WriteString("- " + c + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	if issueNumber > 0 {
+		sb.WriteString(fmt.Sprintf("Closes #%d\n", issueNumber))
+	}
+	body = sb.String()
+	return
 }
 
 // Improvement 5: createPRCmd now accepts title and body.
