@@ -96,11 +96,20 @@ var (
 
 	// delete confirmation styles
 	dangerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196"))
+			Foreground(lipgloss.Color("196")).
+			Bold(true)
+
+	deleteDialogStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("196")).
+				Padding(1, 3)
 
 	confirmKeyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F4A261")).
 			Bold(true)
+
+	confirmLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#626262"))
 
 	// two-step create dialog
 	stepLabelStyle = lipgloss.NewStyle().
@@ -728,28 +737,27 @@ func (m Model) View() string {
 
 	// Delete confirmation dialog
 	if m.deleting {
-		var bodyMsg string
+		var titleMsg string
 		if m.deleteTarget != "" {
-			bodyMsg = dangerStyle.Render(fmt.Sprintf("Delete workspace %q?", m.deleteTarget))
+			titleMsg = fmt.Sprintf("Delete workspace %q?", m.deleteTarget)
 		} else {
 			names := make([]string, 0, len(m.selected))
 			for name := range m.selected {
 				names = append(names, name)
 			}
 			sort.Strings(names)
-			bodyMsg = dangerStyle.Render(fmt.Sprintf("Delete %d workspaces: %s?", len(names), strings.Join(names, ", ")))
+			titleMsg = fmt.Sprintf("Delete %d workspaces: %s?", len(names), strings.Join(names, ", "))
 		}
-		body := bodyMsg + "\n" +
-			helpStyle.Render("The worktree, tmux window, and all local changes will be removed.")
 		footer := fmt.Sprintf("%s %s  •  %s %s",
-			confirmKeyStyle.Render("y"), helpStyle.Render("confirm"),
-			confirmKeyStyle.Render("esc/n"), helpStyle.Render("cancel"),
+			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("confirm"),
+			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
 		)
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
-			titleStyle.Render("Delete Workspace"),
-			body,
+		content := fmt.Sprintf("%s\n\n%s\n\n%s",
+			dangerStyle.Render(titleMsg),
+			confirmLabelStyle.Render("The worktree, tmux window, and all local changes will be removed."),
 			footer,
-		))
+		)
+		return appStyle.Render(deleteDialogStyle.Render(content))
 	}
 
 	// Issue creation dialog
