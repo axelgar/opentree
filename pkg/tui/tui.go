@@ -32,6 +32,10 @@ var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]
 var (
 	appStyle = lipgloss.NewStyle().Padding(1, 2)
 
+	logoStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2A9D8F")).
+			Bold(true)
+
 	titleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFF7DB")).
 			Background(lipgloss.Color("#888B7E")).
@@ -919,8 +923,17 @@ func (m Model) View() string {
 
 	var s strings.Builder
 
+	// Logo
+	logo := logoStyle.Render(
+		"   ___  ___  ___ _ _| |_ _ _ ___ ___\n" +
+			"  / _ \\| . \\/ -_) ' \\  _| '_/ -_) -_)\n" +
+			"  \\___/|  _/\\___|_||_\\__|_| \\___\\___|\n" +
+			"       |_|")
+	s.WriteString(logo)
+	s.WriteString("\n\n")
+
 	// Header with sort/filter info
-	header := "OpenTree Workspaces"
+	header := "Workspaces"
 	s.WriteString(titleStyle.Render(header))
 	s.WriteString("\n\n")
 
