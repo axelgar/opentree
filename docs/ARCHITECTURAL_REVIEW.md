@@ -239,13 +239,15 @@ const (
 
 ---
 
-## 7. gh CLI Inefficiency
+## 7. ~~gh CLI Inefficiency~~ (DONE)
 
-**Current state**: `PRManager.IsInstalled()` runs `gh --version` on every call. Multiple methods check installation redundantly.
+~~**Current state**: `PRManager.IsInstalled()` runs `gh --version` on every call. Multiple methods check installation redundantly.~~
 
-**Proposed change**: Cache the result of `IsInstalled()` using `sync.Once`, similar to how tmux caches `repoName`.
+~~**Proposed change**: Cache the result of `IsInstalled()` using `sync.Once`, similar to how tmux caches `repoName`.~~
 
-**File to modify**: `pkg/github/github.go`
+**Implemented**: Added `sync.Once` + `ghInstalled bool` fields to `PRManager`. `IsInstalled()` now shells out once and caches the result for all subsequent calls.
+
+**File modified**: `pkg/github/github.go`
 
 ---
 
@@ -261,4 +263,4 @@ const (
 | **P2** | Wire config.BaseDir through to worktree | Fixes broken config option | Low |
 | **P3** | Split TUI into multiple files | Improves maintainability | Medium |
 | **P3** | Define agent completion signal | Enables reliable status tracking | Medium |
-| **P3** | Cache gh CLI availability | Minor performance fix | Trivial |
+| ~~**P3**~~ | ~~Cache gh CLI availability~~ | ~~Minor performance fix~~ | ~~Trivial~~ **DONE** |

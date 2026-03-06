@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Issue represents a GitHub issue
@@ -88,7 +89,10 @@ func IssueBranchName(number int, title string) string {
 }
 
 // PRManager handles GitHub PR operations
-type PRManager struct{}
+type PRManager struct {
+	ghOnce      sync.Once
+	ghInstalled bool
+}
 
 // New creates a new PR manager
 func New() *PRManager {
@@ -209,6 +213,10 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 }
 
 // IsInstalled reports whether the gh CLI is available on PATH.
+// The result is cached after the first check.
 func (pm *PRManager) IsInstalled() bool {
-	return exec.Command("gh", "--version").Run() == nil
+	pm.ghOnce.Do(func() {
+		pm.ghInstalled = exec.Command("gh", "--version").Run() == nil
+	})
+	return pm.ghInstalled
 }
