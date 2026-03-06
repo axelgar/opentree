@@ -126,6 +126,34 @@ func (m *Manager) Diff(branchName string) (string, error) {
 	return string(output), nil
 }
 
+// DiffFull returns the full unified diff for a worktree vs its base branch.
+func (m *Manager) DiffFull(branchName string) (string, error) {
+	if err := m.ensureGitRepo(); err != nil {
+		return "", err
+	}
+
+	dirName := strings.ReplaceAll(branchName, "/", "-")
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	cmd := exec.Command("git", "merge-base", branchName, "main")
+	cmd.Dir = worktreePath
+	baseOutput, err := cmd.CombinedOutput()
+	if err != nil {
+		cmd = exec.Command("git", "diff", "origin/main...HEAD")
+	} else {
+		baseCommit := strings.TrimSpace(string(baseOutput))
+		cmd = exec.Command("git", "diff", baseCommit)
+	}
+
+	cmd.Dir = worktreePath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get diff: %w", err)
+	}
+
+	return string(output), nil
+}
+
 // DiffBranches compares a worktree branch with a base branch
 func (m *Manager) DiffBranches(branchName, baseBranch string) (string, error) {
 	if err := m.ensureGitRepo(); err != nil {

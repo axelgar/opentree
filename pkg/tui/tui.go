@@ -157,6 +157,12 @@ var (
 	// uncommitted changes
 	uncommittedStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#E9C46A"))
+
+	// diff view
+	diffAddStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+	diffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	diffHunkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#88C0D0"))
+	diffFileStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Bold(true)
 )
 
 type keyMap struct {
@@ -317,6 +323,12 @@ type Model struct {
 	filtering   bool
 	filterQuery string
 
+	// diff view
+	diffViewing      bool
+	diffContent      string
+	diffScrollOffset int
+	diffWsName       string
+
 	// error log (improvement 10)
 	errLog     []string
 	showErrLog bool
@@ -386,6 +398,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Error log overlay swallows all keys
 		if m.showErrLog {
 			m.showErrLog = false
+			return m, nil
+		}
+
+		// Diff view mode
+		if m.diffViewing {
+			switch msg.String() {
+			case "esc", "q":
+				m.diffViewing = false
+				m.diffContent = ""
+				m.diffScrollOffset = 0
+				m.diffWsName = ""
+			case "up", "k":
+				if m.diffScrollOffset > 0 {
+					m.diffScrollOffset--
+				}
+			case "down", "j":
+				m.diffScrollOffset++
+			}
 			return m, nil
 		}
 
@@ -551,7 +581,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.attachWorkspaceCmd(ws.Name)
 			}
 		case key.Matches(msg, m.keys.Diff):
-			return m, m.loadWorkspacesCmd
+			if len(visible) > 0 {
+				return m, m.loadDiffCmd(visible[m.cursor])
+			}
 		case key.Matches(msg, m.keys.PR):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
@@ -711,6 +743,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return clearErrorMsg{}
 		})
 
+	case diffLoadedMsg:
+		m.diffViewing = true
+		m.diffContent = msg.content
+		m.diffScrollOffset = 0
+		m.diffWsName = msg.wsName
+
 	case clearErrorMsg:
 		m.err = nil
 	}
@@ -742,6 +780,47 @@ func (m Model) View() string {
 		}
 		sb.WriteString("\n" + helpStyle.Render("Any key to close"))
 		return appStyle.Render(sb.String())
+	}
+
+	// Diff view overlay
+	if m.diffViewing {
+		lines := strings.Split(m.diffContent, "\n")
+		availHeight := m.height - 8
+		if availHeight < 5 {
+			availHeight = 5
+		}
+		// clamp scroll
+		maxScroll := len(lines) - availHeight
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.diffScrollOffset > maxScroll {
+			m.diffScrollOffset = maxScroll
+		}
+		end := m.diffScrollOffset + availHeight
+		if end > len(lines) {
+			end = len(lines)
+		}
+		visible := lines[m.diffScrollOffset:end]
+
+		var sb strings.Builder
+		for _, line := range visible {
+			sb.WriteString(renderDiffLine(line))
+			sb.WriteString("\n")
+		}
+
+		scrollInfo := fmt.Sprintf("line %d/%d", m.diffScrollOffset+1, len(lines))
+		footer := fmt.Sprintf("%s  •  %s  •  %s",
+			helpStyle.Render("↑/k ↓/j scroll"),
+			helpStyle.Render("esc to close"),
+			helpStyle.Render(scrollInfo),
+		)
+		content := fmt.Sprintf("%s\n\n%s\n%s",
+			titleStyle.Render("Diff: "+m.diffWsName),
+			sb.String(),
+			footer,
+		)
+		return appStyle.Render(content)
 	}
 
 	// Delete confirmation dialog
@@ -1050,6 +1129,10 @@ type ciStatusCheckedMsg struct {
 }
 type refreshTickMsg struct{}
 type previewTickMsg struct{}
+type diffLoadedMsg struct {
+	content string
+	wsName  string
+}
 type capturePreviewMsg struct {
 	lines string
 }
@@ -1369,6 +1452,35 @@ func cleanPreview(s string) string {
 		out = out[len(out)-5:]
 	}
 	return strings.Join(out, "\n")
+}
+
+func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
+	return func() tea.Msg {
+		content, err := m.worktreeMgr.DiffFull(ws.Branch)
+		if err != nil {
+			return errMsg{err}
+		}
+		if strings.TrimSpace(content) == "" {
+			content = "No changes."
+		}
+		return diffLoadedMsg{content: content, wsName: ws.Name}
+	}
+}
+
+// renderDiffLine colorizes a single line of unified diff output.
+func renderDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ "):
+		return diffFileStyle.Render(line)
+	case strings.HasPrefix(line, "@@"):
+		return diffHunkStyle.Render(line)
+	case strings.HasPrefix(line, "+"):
+		return diffAddStyle.Render(line)
+	case strings.HasPrefix(line, "-"):
+		return diffRemoveStyle.Render(line)
+	default:
+		return line
+	}
 }
 
 // Improvement 2: countUncommitted counts files with uncommitted changes in a worktree.
