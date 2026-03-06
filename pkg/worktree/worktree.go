@@ -230,3 +230,65 @@ type Worktree struct {
 	Path   string
 	Branch string
 }
+
+// FileChange represents per-file diff stats.
+type FileChange struct {
+	FileName string
+	Added    int
+	Removed  int
+}
+
+// DiffFileStats returns per-file change stats for a worktree vs its base branch.
+func (m *Manager) DiffFileStats(branchName string) ([]FileChange, error) {
+	if err := m.ensureGitRepo(); err != nil {
+		return nil, err
+	}
+
+	dirName := strings.ReplaceAll(branchName, "/", "-")
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	cmd := exec.Command("git", "merge-base", branchName, "main")
+	cmd.Dir = worktreePath
+	baseOutput, err := cmd.CombinedOutput()
+	if err != nil {
+		cmd = exec.Command("git", "diff", "--numstat", "origin/main...HEAD")
+	} else {
+		baseCommit := strings.TrimSpace(string(baseOutput))
+		cmd = exec.Command("git", "diff", "--numstat", baseCommit)
+	}
+
+	cmd.Dir = worktreePath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file stats: %w", err)
+	}
+
+	return parseNumstat(string(output)), nil
+}
+
+func parseNumstat(output string) []FileChange {
+	var files []FileChange
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		added := 0
+		removed := 0
+		if parts[0] != "-" {
+			fmt.Sscanf(parts[0], "%d", &added)
+		}
+		if parts[1] != "-" {
+			fmt.Sscanf(parts[1], "%d", &removed)
+		}
+		files = append(files, FileChange{
+			FileName: parts[2],
+			Added:    added,
+			Removed:  removed,
+		})
+	}
+	return files
+}

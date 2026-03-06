@@ -163,6 +163,25 @@ var (
 	diffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	diffHunkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#88C0D0"))
 	diffFileStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Bold(true)
+
+	// file changes panel
+	fileChangesBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#444")).
+				Padding(0, 1).
+				MarginTop(1)
+
+	fileChangesTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888"))
+
+	fileNameStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#AAA"))
+
+	fileAddedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2A9D8F"))
+
+	fileRemovedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("196"))
 )
 
 type keyMap struct {
@@ -265,6 +284,7 @@ type WorkspaceItem struct {
 	WindowID         string
 	UncommittedCount int
 	LastActivity     time.Time
+	FileChanges      []worktree.FileChange
 }
 
 const (
@@ -1000,6 +1020,20 @@ func (m Model) View() string {
 			}
 		}
 
+		// Per-file changes panel for selected workspace
+		if m.cursor < len(visible) {
+			ws := visible[m.cursor]
+			if len(ws.FileChanges) > 0 {
+				previewWidth := m.width - 8
+				if previewWidth < 20 {
+					previewWidth = 60
+				}
+				content := m.renderFileChanges(ws.FileChanges, previewWidth)
+				s.WriteString(fileChangesBoxStyle.Width(previewWidth).Render(content))
+				s.WriteString("\n")
+			}
+		}
+
 		// Agent output preview for selected workspace
 		if m.agentPreview != "" && m.cursor < len(visible) {
 			wsName := visible[m.cursor].Name
@@ -1168,11 +1202,14 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 			win, exists = windowMap[sanitizedName]
 		}
 
+		fileChanges, _ := m.worktreeMgr.DiffFileStats(ws.Branch)
+
 		item := WorkspaceItem{
-			Workspace: ws,
-			DiffStat:  diffStat,
-			Active:    exists && win.Active,
-			WindowID:  "",
+			Workspace:   ws,
+			DiffStat:    diffStat,
+			Active:      exists && win.Active,
+			WindowID:    "",
+			FileChanges: fileChanges,
 		}
 		if exists {
 			item.WindowID = win.ID
@@ -1465,6 +1502,53 @@ func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 		}
 		return diffLoadedMsg{content: content, wsName: ws.Name}
 	}
+}
+
+// renderFileChanges builds the per-file changes panel content.
+func (m Model) renderFileChanges(files []worktree.FileChange, width int) string {
+	var sb strings.Builder
+	sb.WriteString(fileChangesTitleStyle.Render(fmt.Sprintf("Changed files (%d)", len(files))))
+	sb.WriteString("\n")
+
+	maxName := 0
+	for _, f := range files {
+		name := shortenPath(f.FileName, width-20)
+		if len(name) > maxName {
+			maxName = len(name)
+		}
+	}
+
+	for _, f := range files {
+		name := shortenPath(f.FileName, width-20)
+		padding := strings.Repeat(" ", maxName-len(name)+2)
+
+		addStr := fileAddedStyle.Render(fmt.Sprintf("+%d", f.Added))
+		remStr := fileRemovedStyle.Render(fmt.Sprintf("-%d", f.Removed))
+
+		sb.WriteString(fmt.Sprintf(" %s%s%s %s\n", fileNameStyle.Render(name), padding, addStr, remStr))
+	}
+
+	return sb.String()
+}
+
+// shortenPath truncates a file path from the left, keeping the filename and nearest directories.
+func shortenPath(path string, maxLen int) string {
+	if len(path) <= maxLen || maxLen <= 0 {
+		return path
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) <= 1 {
+		return path
+	}
+	result := parts[len(parts)-1]
+	for i := len(parts) - 2; i >= 0; i-- {
+		candidate := parts[i] + "/" + result
+		if len(candidate)+4 > maxLen {
+			return ".../" + result
+		}
+		result = candidate
+	}
+	return result
 }
 
 // renderDiffLine colorizes a single line of unified diff output.
