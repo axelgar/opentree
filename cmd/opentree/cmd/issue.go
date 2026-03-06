@@ -37,6 +37,9 @@ into the new worktree so the AI agent can start working immediately.`,
 
 		// Fetch issue details
 		ghMgr := ghpkg.New()
+		if !ghMgr.IsInstalled() {
+			return fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
+		}
 		issue, err := ghMgr.GetIssue(issueNum)
 		if err != nil {
 			return fmt.Errorf("failed to fetch issue: %w", err)

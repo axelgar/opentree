@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -225,10 +226,30 @@ func (c *Controller) CapturePane(name string, lines int) (string, error) {
 	return string(output), nil
 }
 
-// getSessionName returns the tmux session name for this repository
+// getSessionName returns the tmux session name for this repository.
+// It includes the repository directory name so multiple repos can coexist.
 func (c *Controller) getSessionName() string {
-	// TODO: Include repo name in session name to support multiple repos
-	return c.sessionPrefix
+	repoName := c.repoName()
+	if repoName == "" {
+		return c.sessionPrefix
+	}
+	if c.sessionPrefix == "" {
+		return repoName
+	}
+	return c.sessionPrefix + "-" + repoName
+}
+
+// repoName derives a short, sanitized name from the current git repository root.
+func (c *Controller) repoName() string {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	name := filepath.Base(strings.TrimSpace(string(out)))
+	// Replace characters that are problematic in tmux session names.
+	name = strings.ReplaceAll(name, ".", "-")
+	name = strings.ReplaceAll(name, ":", "-")
+	return name
 }
 
 // sessionExists checks if a tmux session exists

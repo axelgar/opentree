@@ -152,8 +152,12 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 	return parts[0], strings.ToLower(parts[1]), nil
 }
 
+// IsInstalled reports whether the gh CLI is available on PATH.
+func (pm *PRManager) IsInstalled() bool {
+	return exec.Command("gh", "--version").Run() == nil
+}
+
 // isGHInstalled checks if gh CLI is available
 func (pm *PRManager) isGHInstalled() bool {
-	cmd := exec.Command("gh", "--version")
-	return cmd.Run() == nil
+	return pm.IsInstalled()
 }
