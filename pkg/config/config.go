@@ -87,13 +87,11 @@ func Load(path string) (*Config, error) {
 		path = findConfigFile()
 	}
 
-	// If file doesn't exist, return defaults
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return cfg, nil
-	}
-	
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
 		return nil, err
 	}
 	
