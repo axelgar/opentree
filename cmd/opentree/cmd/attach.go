@@ -8,10 +8,11 @@ import (
 )
 
 var AttachCmd = &cobra.Command{
-	Use:   "attach <branch-name>",
-	Short: "Attach to a workspace's tmux window",
-	Args:  cobra.ExactArgs(1),
-	SilenceUsage: true,
+	Use:               "attach <branch-name>",
+	Short:             "Attach to a workspace's tmux window",
+	Args:              cobra.ExactArgs(1),
+	SilenceUsage:      true,
+	ValidArgsFunction: workspaceCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
 

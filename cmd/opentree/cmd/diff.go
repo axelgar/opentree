@@ -8,9 +8,10 @@ import (
 )
 
 var DiffCmd = &cobra.Command{
-	Use:   "diff <branch-name>",
-	Short: "Show diff for a workspace",
-	Args:  cobra.ExactArgs(1),
+	Use:               "diff <branch-name>",
+	Short:             "Show diff for a workspace",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: workspaceCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
 
