@@ -1,0 +1,25 @@
+version: 2
+
+builds:
+  - main: ./cmd/opentree
+    binary: opentree
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - format: tar.gz
+
+brews:
+  - repository:
+      owner: axelgar
+      name: homebrew-tap
+    homepage: "https://github.com/axelgar/opentree"
+    description: "Git worktree manager CLI"
+    install: |
+      bin.install "opentree"
