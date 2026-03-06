@@ -1239,9 +1239,13 @@ func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 			return errMsg{err}
 		}
 
+		out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to get repo root: %w", err)}
+		}
+		repoRoot := strings.TrimSpace(string(out))
 		dirName := strings.ReplaceAll(name, "/", "-")
-		wd, _ := os.Getwd()
-		worktreePath := fmt.Sprintf("%s/.opentree/%s", wd, dirName)
+		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
 
 		agentCmd := m.cfg.Agent.Command
 		if err := m.tmuxCtrl.CreateWindow(name, worktreePath, agentCmd, m.cfg.Agent.Args...); err != nil {
