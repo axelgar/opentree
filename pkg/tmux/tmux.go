@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
 // Controller manages tmux sessions and windows
@@ -282,11 +284,11 @@ func (c *Controller) getSessionName() string {
 // The result is computed once and cached.
 func (c *Controller) repoName() string {
 	c.repoNameOnce.Do(func() {
-		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+		root, err := gitutil.RepoRoot()
 		if err != nil {
 			return
 		}
-		name := filepath.Base(strings.TrimSpace(string(out)))
+		name := filepath.Base(root)
 		// Replace characters that are problematic in tmux session names.
 		name = strings.ReplaceAll(name, ".", "-")
 		name = strings.ReplaceAll(name, ":", "-")
@@ -312,10 +314,7 @@ func (c *Controller) createSession(name string) error {
 
 // sanitizeWindowName converts a branch name to a valid tmux window name
 func (c *Controller) sanitizeWindowName(name string) string {
-	// Replace invalid characters
-	name = strings.ReplaceAll(name, "/", "-")
-	name = strings.ReplaceAll(name, ":", "-")
-	return name
+	return gitutil.SanitizeBranchName(name)
 }
 
 // parseWindows parses tmux list-windows output

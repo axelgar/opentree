@@ -1,8 +1,10 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -247,5 +249,106 @@ func TestAddWorkspace_OverwritesExisting(t *testing.T) {
 	}
 	if len(store.ListWorkspaces()) != 1 {
 		t.Errorf("expected 1 workspace after overwrite, got %d", len(store.ListWorkspaces()))
+	}
+}
+
+func TestConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	const numWriters = 10
+
+	var wg sync.WaitGroup
+	errs := make(chan error, numWriters)
+
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			// Each goroutine gets its own Store instance (simulates separate processes).
+			store, err := New(dir)
+			if err != nil {
+				errs <- fmt.Errorf("writer %d: New() failed: %w", id, err)
+				return
+			}
+			ws := sampleWorkspace(fmt.Sprintf("concurrent-%d", id))
+			if err := store.AddWorkspace(ws); err != nil {
+				errs <- fmt.Errorf("writer %d: AddWorkspace() failed: %w", id, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	// Verify: reload from disk and check all workspaces survived.
+	final, err := New(dir)
+	if err != nil {
+		t.Fatalf("final New() failed: %v", err)
+	}
+	if got := len(final.ListWorkspaces()); got != numWriters {
+		t.Errorf("expected %d workspaces after concurrent writes, got %d", numWriters, got)
+	}
+}
+
+func TestAtomicWrite_NoPartialReads(t *testing.T) {
+	dir := t.TempDir()
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	// Seed with initial workspace.
+	if err := store.AddWorkspace(sampleWorkspace("seed")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	const iterations = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, iterations*2)
+
+	// Writer: continuously adds workspaces.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			s, err := New(dir)
+			if err != nil {
+				errs <- fmt.Errorf("writer iteration %d: New() failed: %w", i, err)
+				return
+			}
+			ws := sampleWorkspace(fmt.Sprintf("w-%d", i))
+			if err := s.AddWorkspace(ws); err != nil {
+				errs <- fmt.Errorf("writer iteration %d: AddWorkspace() failed: %w", i, err)
+				return
+			}
+		}
+	}()
+
+	// Reader: continuously reloads and verifies valid state.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			s, err := New(dir)
+			if err != nil {
+				errs <- fmt.Errorf("reader iteration %d: New() failed (partial/corrupt JSON?): %w", i, err)
+				return
+			}
+			// Verify state is non-empty (at least the seed workspace should exist).
+			if len(s.ListWorkspaces()) == 0 {
+				errs <- fmt.Errorf("reader iteration %d: got 0 workspaces (expected >= 1)", i)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatal(err)
 	}
 }

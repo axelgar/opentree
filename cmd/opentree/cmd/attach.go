@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"fmt"
+
 	"github.com/axelgar/opentree/pkg/config"
-	"github.com/axelgar/opentree/pkg/tmux"
+	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -17,14 +19,21 @@ var AttachCmd = &cobra.Command{
 		branchName := args[0]
 
 		cfg, err := config.Load("")
-
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		tmuxCtrl := tmux.New(cfg.Tmux.SessionPrefix)
+		repoRoot, err := gitutil.RepoRoot()
+		if err != nil {
+			return fmt.Errorf("failed to find repo root: %w", err)
+		}
 
-		if err := tmuxCtrl.AttachWindow(branchName); err != nil {
+		svc, err := workspace.New(repoRoot, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize workspace service: %w", err)
+		}
+
+		if err := svc.Process().AttachWindow(branchName); err != nil {
 			return fmt.Errorf("failed to attach to workspace: %w", err)
 		}
 

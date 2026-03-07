@@ -157,48 +157,6 @@ func TestParseWorktrees_TrailingNewline(t *testing.T) {
 	}
 }
 
-// ---- ensureGitRepo ----
-
-func TestEnsureGitRepo_OutsideRepo(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-
-	m := New()
-	// Override working dir to a non-git directory.
-	m.repoRoot = "" // force re-detection
-
-	// Use a temp dir that is definitely not a git repo.
-	dir := t.TempDir()
-	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
-	os.Chdir(dir)
-
-	err := m.ensureGitRepo()
-	if err == nil {
-		t.Fatal("ensureGitRepo() expected error outside git repo, got nil")
-	}
-}
-
-func TestEnsureGitRepo_InsideRepo(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-
-	repoDir := initGitRepo(t)
-	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
-	os.Chdir(repoDir)
-
-	m := New()
-	if err := m.ensureGitRepo(); err != nil {
-		t.Fatalf("ensureGitRepo() failed: %v", err)
-	}
-	if m.repoRoot == "" {
-		t.Error("repoRoot not set after ensureGitRepo()")
-	}
-}
-
 // ---- Create ----
 
 func TestCreate_NewWorktree(t *testing.T) {
@@ -207,14 +165,8 @@ func TestCreate_NewWorktree(t *testing.T) {
 	}
 
 	repoDir := initGitRepo(t)
-	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
-	os.Chdir(repoDir)
 
-	m := New()
-	if err := m.ensureGitRepo(); err != nil {
-		t.Fatalf("ensureGitRepo() failed: %v", err)
-	}
+	m := New(repoDir, ".opentree")
 
 	branchName := "feature/new-thing"
 	if err := m.Create(branchName, "HEAD"); err != nil {
@@ -238,8 +190,7 @@ func TestCreate_AlreadyExists(t *testing.T) {
 	defer os.Chdir(origDir)
 	os.Chdir(repoDir)
 
-	m := New()
-	m.ensureGitRepo()
+	m := New(repoDir, ".opentree")
 
 	if err := m.Create("dup-branch", "HEAD"); err != nil {
 		t.Fatalf("Create() first call failed: %v", err)
@@ -258,11 +209,8 @@ func TestList_Empty(t *testing.T) {
 	}
 
 	repoDir := initGitRepo(t)
-	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
-	os.Chdir(repoDir)
 
-	m := New()
+	m := New(repoDir, ".opentree")
 	wts, err := m.List()
 	if err != nil {
 		t.Fatalf("List() failed: %v", err)
@@ -283,8 +231,7 @@ func TestList_AfterCreate(t *testing.T) {
 	defer os.Chdir(origDir)
 	os.Chdir(repoDir)
 
-	m := New()
-	m.ensureGitRepo()
+	m := New(repoDir, ".opentree")
 
 	branches := []string{"list-a", "list-b"}
 	for _, b := range branches {
@@ -314,8 +261,7 @@ func TestDelete_RemovesWorktree(t *testing.T) {
 	defer os.Chdir(origDir)
 	os.Chdir(repoDir)
 
-	m := New()
-	m.ensureGitRepo()
+	m := New(repoDir, ".opentree")
 
 	branchName := "to-delete"
 	if err := m.Create(branchName, "HEAD"); err != nil {
@@ -413,14 +359,8 @@ func initWorktreeRepo(t *testing.T) (string, string, *Manager) {
 	}
 
 	repoDir := initGitRepo(t)
-	origDir, _ := os.Getwd()
-	t.Cleanup(func() { os.Chdir(origDir) })
-	os.Chdir(repoDir)
 
-	m := New()
-	if err := m.ensureGitRepo(); err != nil {
-		t.Fatalf("ensureGitRepo: %v", err)
-	}
+	m := New(repoDir, ".opentree")
 
 	branch := "diff-test"
 	if err := m.Create(branch, "HEAD"); err != nil {
@@ -543,8 +483,7 @@ func TestDelete_WithDeleteBranch(t *testing.T) {
 	defer os.Chdir(origDir)
 	os.Chdir(repoDir)
 
-	m := New()
-	m.ensureGitRepo()
+	m := New(repoDir, ".opentree")
 
 	branchName := "branch-to-delete"
 	if err := m.Create(branchName, "HEAD"); err != nil {
