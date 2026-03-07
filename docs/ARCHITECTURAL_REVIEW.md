@@ -49,46 +49,16 @@ The existing tmux code becomes `TmuxProcessManager` implementing this interface.
 
 ---
 
-## 2. The Dead Agent Abstraction
+## 2. ~~The Dead Agent Abstraction~~ (DONE)
 
-**Current state**: `pkg/agent/agent.go` defines an `Agent` interface with `Start(workdir) (*exec.Cmd, error)`, but the returned `*exec.Cmd` is **never executed**. Instead, the tmux controller receives the command name as a string and runs it via `send-keys`. The entire agent package is dead code in terms of its actual contract.
+~~**Current state**: `pkg/agent/agent.go` defines an `Agent` interface with `Start(workdir) (*exec.Cmd, error)`, but the returned `*exec.Cmd` is **never executed**. Instead, the tmux controller receives the command name as a string and runs it via `send-keys`. The entire agent package is dead code in terms of its actual contract.~~
 
-**Problems**:
-- `OpenCodeAgent.Start()` creates an `exec.Cmd` that nobody runs — it's a misleading API
-- `OpenCodeAgent.Name()` returns hardcoded `"opencode"` even when configured with a different command
-- The agent package doesn't participate in the actual launch flow at all — `cmd/new.go` directly passes `cfg.Agent.Command` to the tmux controller
-- There's no validation that the agent binary exists before creating a workspace
+**Implemented**: Deleted `pkg/agent/` entirely (was never imported by any consumer). Added `Validate()` and `CommandLine()` methods to the existing `config.AgentConfig` which was already the real source of truth. `Validate()` checks the agent binary exists on PATH via `exec.LookPath`. Tests added.
 
-**Proposed change**: Either make the Agent interface meaningful or remove it:
-
-**Option A (Recommended)**: Simplify agent to a value type — it's just configuration, not behavior:
-```go
-// In pkg/config or pkg/agent
-type AgentConfig struct {
-    Command string
-    Args    []string
-}
-
-func (a AgentConfig) Validate() error { /* check binary exists on PATH */ }
-func (a AgentConfig) CommandLine() string { /* return full command string */ }
-```
-
-Remove the `Start()` method entirely. The process manager handles launching.
-
-**Option B**: If you want agents to control their own launch semantics (e.g., some agents need env vars, pre-launch setup, TASK.md writing), make the interface actually participate:
-```go
-type Agent interface {
-    Name() string
-    PreLaunch(workdir string) error  // write TASK.md, set up env
-    Command() string
-    Args() []string
-}
-```
-
-**Files to modify**:
-- `pkg/agent/agent.go` — simplify or redesign
-- `cmd/opentree/cmd/new.go` — use agent properly
-- `cmd/opentree/cmd/issue.go` — TASK.md writing currently in github package, should be agent's responsibility
+**Files modified**:
+- `pkg/agent/` — deleted (dead code)
+- `pkg/config/config.go` — added `Validate()` and `CommandLine()` methods
+- `pkg/config/config_test.go` — added 5 new tests
 
 ---
 
@@ -257,7 +227,7 @@ const (
 |----------|-------|--------|--------|
 | **P0** | Extract `WorkspaceService` from TUI | Enables testability, removes duplication between TUI and CLI | Medium |
 | **P1** | Add file locking to state store | Prevents data corruption in real usage | Low |
-| **P1** | Fix agent abstraction (dead code) | Removes confusion, enables proper validation | Low |
+| ~~**P1**~~ | ~~Fix agent abstraction (dead code)~~ | ~~Removes confusion, enables proper validation~~ | ~~Low~~ **DONE** |
 | **P2** | Introduce `ProcessManager` interface | Enables testing, future flexibility beyond tmux | Medium |
 | **P2** | Centralize repo root + name sanitization | Eliminates subtle divergence bugs | Low |
 | **P2** | Wire config.BaseDir through to worktree | Fixes broken config option | Low |

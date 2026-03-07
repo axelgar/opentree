@@ -180,6 +180,43 @@ func TestSave_And_Load_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentConfig_Validate_EmptyCommand(t *testing.T) {
+	a := AgentConfig{Command: ""}
+	if err := a.Validate(); err == nil {
+		t.Fatal("Validate() with empty command expected error, got nil")
+	}
+}
+
+func TestAgentConfig_Validate_MissingBinary(t *testing.T) {
+	a := AgentConfig{Command: "nonexistent-binary-xyz-12345"}
+	if err := a.Validate(); err == nil {
+		t.Fatal("Validate() with missing binary expected error, got nil")
+	}
+}
+
+func TestAgentConfig_Validate_ValidBinary(t *testing.T) {
+	// "go" should be available in any Go test environment.
+	a := AgentConfig{Command: "go"}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("Validate() with valid binary failed: %v", err)
+	}
+}
+
+func TestAgentConfig_CommandLine_NoArgs(t *testing.T) {
+	a := AgentConfig{Command: "opencode"}
+	if got := a.CommandLine(); got != "opencode" {
+		t.Errorf("CommandLine() = %q, want %q", got, "opencode")
+	}
+}
+
+func TestAgentConfig_CommandLine_WithArgs(t *testing.T) {
+	a := AgentConfig{Command: "claude", Args: []string{"--flag", "value"}}
+	want := "claude --flag value"
+	if got := a.CommandLine(); got != want {
+		t.Errorf("CommandLine() = %q, want %q", got, want)
+	}
+}
+
 func TestSave_CreatesParentDirectory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "dir", "opentree.toml")

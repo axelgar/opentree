@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -19,6 +22,25 @@ type Config struct {
 type AgentConfig struct {
 	Command string   `toml:"command"`
 	Args    []string `toml:"args"`
+}
+
+// Validate checks that the agent command exists on PATH.
+func (a AgentConfig) Validate() error {
+	if a.Command == "" {
+		return fmt.Errorf("agent command is empty")
+	}
+	if _, err := exec.LookPath(a.Command); err != nil {
+		return fmt.Errorf("agent command %q not found on PATH: %w", a.Command, err)
+	}
+	return nil
+}
+
+// CommandLine returns the full command string (command + args) for shell execution.
+func (a AgentConfig) CommandLine() string {
+	if len(a.Args) == 0 {
+		return a.Command
+	}
+	return a.Command + " " + strings.Join(a.Args, " ")
 }
 
 // WorktreeConfig configures git worktree behavior
