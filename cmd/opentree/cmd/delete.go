@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -21,12 +21,10 @@ var DeleteCmd = &cobra.Command{
 	ValidArgsFunction: workspaceCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
-		cmdExec := exec.Command("git", "rev-parse", "--show-toplevel")
-		output, err := cmdExec.CombinedOutput()
+		repoRoot, err := gitutil.RepoRoot()
 		if err != nil {
-			return fmt.Errorf("not in a git repository")
+			return err
 		}
-		repoRoot := strings.TrimSpace(string(output))
 		cfg, err := config.Load("")
 
 		if err != nil {
@@ -45,7 +43,7 @@ var DeleteCmd = &cobra.Command{
 			fmt.Printf("Warning: workspace not in state, proceeding anyway\n")
 		}
 
-		wt := worktree.New()
+		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
 
 		// Check for diff between base branch and worktree branch
 		var baseBranch string

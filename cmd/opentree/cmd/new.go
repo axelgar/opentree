@@ -2,12 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -29,37 +28,34 @@ var NewCmd = &cobra.Command{
 		if baseBranch == "" {
 			baseBranch = cfg.Worktree.DefaultBase
 		}
-		
+
+		repoRoot, err := gitutil.RepoRoot()
+		if err != nil {
+			return err
+		}
+
 		// Step 1: Create git worktree
-		wt := worktree.New()
+		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
 		if err := wt.Create(branchName, baseBranch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
-		
-		// Get repo root and worktree path
-		cmdExec := exec.Command("git", "rev-parse", "--show-toplevel")
-		output, err := cmdExec.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to get repo root: %w", err)
-		}
-		repoRoot := strings.TrimSpace(string(output))
-		
-		dirName := strings.ReplaceAll(branchName, "/", "-")
+
+		dirName := gitutil.SanitizeBranchName(branchName)
 		worktreePath := filepath.Join(repoRoot, cfg.Worktree.BaseDir, dirName)
-		
+
 		// Step 2: Initialize state store
 		store, err := state.New(repoRoot)
 		if err != nil {
 			return fmt.Errorf("failed to initialize state: %w", err)
 		}
-		
+
 		// Step 3: Create tmux window and launch agent
 		tmuxCtrl := tmux.New(cfg.Tmux.SessionPrefix)
 		agentCmd := cfg.Agent.Command
 		if err := tmuxCtrl.CreateWindow(branchName, worktreePath, agentCmd, cfg.Agent.Args...); err != nil {
 			return fmt.Errorf("failed to create tmux window: %w", err)
 		}
-		
+
 		// Step 4: Save workspace to state
 		ws := &state.Workspace{
 			Name:        branchName,

@@ -3,13 +3,12 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	ghpkg "github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
@@ -58,20 +57,18 @@ into the new worktree so the AI agent can start working immediately.`,
 			baseBranch = cfg.Worktree.DefaultBase
 		}
 
+		repoRoot, err := gitutil.RepoRoot()
+		if err != nil {
+			return err
+		}
+
 		// Create git worktree
-		wt := worktree.New()
+		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
 		if err := wt.Create(branchName, baseBranch); err != nil {
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
 
-		// Resolve paths
-		cmdExec := exec.Command("git", "rev-parse", "--show-toplevel")
-		output, err := cmdExec.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to get repo root: %w", err)
-		}
-		repoRoot := strings.TrimSpace(string(output))
-		dirName := strings.ReplaceAll(branchName, "/", "-")
+		dirName := gitutil.SanitizeBranchName(branchName)
 		worktreePath := filepath.Join(repoRoot, cfg.Worktree.BaseDir, dirName)
 
 		// Write TASK.md with issue context for the AI agent

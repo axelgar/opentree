@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
 // Manager handles git worktree operations
@@ -14,21 +16,17 @@ type Manager struct {
 	baseDir  string
 }
 
-// New creates a new worktree manager
-func New() *Manager {
+// New creates a new worktree manager with explicit repo root and base directory.
+func New(repoRoot, baseDir string) *Manager {
 	return &Manager{
-		baseDir: ".opentree",
+		repoRoot: repoRoot,
+		baseDir:  baseDir,
 	}
 }
 
 // Create creates a new git worktree for the given branch
 func (m *Manager) Create(branchName, baseBranch string) error {
-	if err := m.ensureGitRepo(); err != nil {
-		return err
-	}
-
-	// Sanitize branch name for directory
-	dirName := strings.ReplaceAll(branchName, "/", "-")
+	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	// Check if worktree already exists
@@ -36,10 +34,10 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 		return fmt.Errorf("worktree already exists: %s", worktreePath)
 	}
 
-	// Create .opentree directory if it doesn't exist
+	// Create base directory if it doesn't exist
 	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
 	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .opentree directory: %w", err)
+		return fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
 	}
 
 	// Create git worktree
@@ -54,10 +52,6 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 
 // List returns all opentree-managed worktrees
 func (m *Manager) List() ([]Worktree, error) {
-	if err := m.ensureGitRepo(); err != nil {
-		return nil, err
-	}
-
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")
 	cmd.Dir = m.repoRoot
 	output, err := cmd.CombinedOutput()
@@ -70,11 +64,7 @@ func (m *Manager) List() ([]Worktree, error) {
 
 // Delete removes a worktree and optionally deletes the branch
 func (m *Manager) Delete(branchName string, deleteBranch bool) error {
-	if err := m.ensureGitRepo(); err != nil {
-		return err
-	}
-
-	dirName := strings.ReplaceAll(branchName, "/", "-")
+	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	// Remove worktree
@@ -100,16 +90,12 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 // Includes both committed and uncommitted changes (compares merge-base to working tree).
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) {
-	if err := m.ensureGitRepo(); err != nil {
-		return "", err
-	}
-
 	base := "main"
 	if len(baseBranch) > 0 && baseBranch[0] != "" {
 		base = baseBranch[0]
 	}
 
-	dirName := strings.ReplaceAll(branchName, "/", "-")
+	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	baseCommit := m.resolveBase(branchName, base, worktreePath)
@@ -127,16 +113,12 @@ func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) 
 // DiffFull returns the full unified diff for a worktree vs its base branch.
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, error) {
-	if err := m.ensureGitRepo(); err != nil {
-		return "", err
-	}
-
 	base := "main"
 	if len(baseBranch) > 0 && baseBranch[0] != "" {
 		base = baseBranch[0]
 	}
 
-	dirName := strings.ReplaceAll(branchName, "/", "-")
+	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	cmd := exec.Command("git", "merge-base", branchName, base)
@@ -160,10 +142,6 @@ func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, err
 
 // DiffBranches compares a worktree branch with a base branch
 func (m *Manager) DiffBranches(branchName, baseBranch string) (string, error) {
-	if err := m.ensureGitRepo(); err != nil {
-		return "", err
-	}
-
 	// Use git diff to compare the two branches
 	cmd := exec.Command("git", "diff", "--stat", baseBranch+"..."+branchName)
 	cmd.Dir = m.repoRoot
@@ -173,22 +151,6 @@ func (m *Manager) DiffBranches(branchName, baseBranch string) (string, error) {
 	}
 
 	return string(output), nil
-}
-
-// ensureGitRepo finds the git repository root
-func (m *Manager) ensureGitRepo() error {
-	if m.repoRoot != "" {
-		return nil
-	}
-
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("not in a git repository")
-	}
-
-	m.repoRoot = strings.TrimSpace(string(output))
-	return nil
 }
 
 // parseWorktrees parses the output of git worktree list --porcelain
@@ -203,7 +165,6 @@ func (m *Manager) parseWorktrees(output string) ([]Worktree, error) {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			if current != nil {
-				// Only include worktrees in .opentree directory
 				if strings.HasPrefix(current.Path, opentreePrefix) {
 					worktrees = append(worktrees, *current)
 				}
@@ -247,20 +208,15 @@ type FileChange struct {
 // Includes both committed and uncommitted changes, with each file marked accordingly.
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]FileChange, error) {
-	if err := m.ensureGitRepo(); err != nil {
-		return nil, err
-	}
-
 	base := "main"
 	if len(baseBranch) > 0 && baseBranch[0] != "" {
 		base = baseBranch[0]
 	}
 
-	dirName := strings.ReplaceAll(branchName, "/", "-")
+	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	baseCommit := m.resolveBase(branchName, base, worktreePath)
-	// Compare merge-base to working tree (includes uncommitted changes)
 	cmd := exec.Command("git", "diff", "--numstat", baseCommit)
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
@@ -270,7 +226,6 @@ func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]File
 
 	files := parseNumstat(string(output))
 
-	// Mark files that have uncommitted changes
 	uncommitted := uncommittedFiles(worktreePath)
 	for i := range files {
 		if uncommitted[files[i].FileName] {
@@ -295,11 +250,7 @@ func (m *Manager) resolveBase(branchName, base, worktreePath string) string {
 
 // DiffUncommitted returns the unified diff of uncommitted changes (HEAD vs working tree).
 func (m *Manager) DiffUncommitted(branchName string) (string, error) {
-	if err := m.ensureGitRepo(); err != nil {
-		return "", err
-	}
-
-	dirName := strings.ReplaceAll(branchName, "/", "-")
+	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	cmd := exec.Command("git", "diff", "HEAD")

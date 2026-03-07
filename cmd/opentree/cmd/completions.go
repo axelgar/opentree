@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"os/exec"
-	"strings"
-
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/spf13/cobra"
 )
@@ -13,11 +11,10 @@ func workspaceCompletions(cmd *cobra.Command, args []string, toComplete string) 
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	repoRoot, err := gitutil.RepoRoot()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	repoRoot := strings.TrimSpace(string(out))
 
 	store, err := state.New(repoRoot)
 	if err != nil {

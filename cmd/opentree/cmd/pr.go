@@ -2,9 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
 
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/spf13/cobra"
@@ -20,13 +19,10 @@ var PrCmd = &cobra.Command{
 		title, _ := cmd.Flags().GetString("title")
 		body, _ := cmd.Flags().GetString("body")
 
-		cmdExec := exec.Command("git", "rev-parse", "--show-toplevel")
-
-		output, err := cmdExec.CombinedOutput()
+		repoRoot, err := gitutil.RepoRoot()
 		if err != nil {
-			return fmt.Errorf("not in a git repository")
+			return err
 		}
-		repoRoot := strings.TrimSpace(string(output))
 
 		store, err := state.New(repoRoot)
 

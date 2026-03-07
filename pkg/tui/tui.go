@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
@@ -371,22 +372,21 @@ type Model struct {
 }
 
 func NewModel() (*Model, error) {
-	wt := worktree.New()
-
 	// Resolve the git repository root for state persistence
-	repoRoot := ""
-	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		repoRoot = strings.TrimSpace(string(out))
-	} else if wd, err2 := os.Getwd(); err2 == nil {
-		repoRoot = wd
-	}
-	st, err := state.New(repoRoot)
+	repoRoot, err := gitutil.RepoRoot()
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize state: %w", err)
+		if wd, err2 := os.Getwd(); err2 == nil {
+			repoRoot = wd
+		}
 	}
 	cfg, err := config.Load("")
 	if err != nil {
 		cfg = config.Default()
+	}
+	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
+	st, err := state.New(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize state store: %w", err)
 	}
 	tm := tmux.New(cfg.Tmux.SessionPrefix)
 
@@ -1219,8 +1219,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		}
 
 		win, exists := windowMap[ws.Name]
-		sanitizedName := strings.ReplaceAll(ws.Name, "/", "-")
-		sanitizedName = strings.ReplaceAll(sanitizedName, ":", "-")
+		sanitizedName := gitutil.SanitizeBranchName(ws.Name)
 		if !exists {
 			win, exists = windowMap[sanitizedName]
 		}
@@ -1262,12 +1261,11 @@ func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
+		repoRoot, err := gitutil.RepoRoot()
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to get repo root: %w", err)}
 		}
-		repoRoot := strings.TrimSpace(string(out))
-		dirName := strings.ReplaceAll(name, "/", "-")
+		dirName := gitutil.SanitizeBranchName(name)
 		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
 
 		agentCmd := m.cfg.Agent.Command
@@ -1310,12 +1308,11 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
+		repoRoot, err := gitutil.RepoRoot()
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to get repo root: %w", err)}
 		}
-		repoRoot := strings.TrimSpace(string(out))
-		dirName := strings.ReplaceAll(branchName, "/", "-")
+		dirName := gitutil.SanitizeBranchName(branchName)
 		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
 
 		taskFile := filepath.Join(worktreePath, "TASK.md")

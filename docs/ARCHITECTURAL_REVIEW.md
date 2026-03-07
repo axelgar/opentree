@@ -139,35 +139,38 @@ const (
 
 ---
 
-## 5. Duplicated Concepts and Leaky Abstractions
+## 5. ~~Duplicated Concepts and Leaky Abstractions~~ (CENTRALIZATION DONE)
 
-**Current state**: Several concepts are duplicated across packages with subtle inconsistencies.
+~~**Current state**: Several concepts are duplicated across packages with subtle inconsistencies.~~
 
-**Problems**:
+~~**Problems**:~~
 
-- **Branch name → directory name mapping** (`/` → `-`) is done in both `worktree.go:31` and `tmux.go:314-318`, plus in multiple CLI commands. If these ever diverge, workspaces break silently.
+~~- **Branch name → directory name mapping** (`/` → `-`) is done in both `worktree.go:31` and `tmux.go:314-318`, plus in multiple CLI commands. If these ever diverge, workspaces break silently.~~
 
-- **Git repo root discovery** happens independently in `worktree.Manager.ensureGitRepo()` and `tmux.Controller.repoName()`. Both shell out to `git rev-parse --show-toplevel`.
+~~- **Git repo root discovery** happens independently in `worktree.Manager.ensureGitRepo()` and `tmux.Controller.repoName()`. Both shell out to `git rev-parse --show-toplevel`.~~
 
-- **Config's `BaseDir` field is ignored.** `config.WorktreeConfig.BaseDir` can be set to any value, but `worktree.New()` hardcodes `.opentree`. The config value is never passed through.
+~~- **Config's `BaseDir` field is ignored.** `config.WorktreeConfig.BaseDir` can be set to any value, but `worktree.New()` hardcodes `.opentree`. The config value is never passed through.~~
 
-- **Diff inconsistency.** `Diff()` compares merge-base to working tree (includes uncommitted), while `DiffFull()` compares merge-base to HEAD (excludes uncommitted). There's also a separate `DiffUncommitted()`. The naming doesn't communicate this difference.
+**Implemented**:
+1. Created `pkg/gitutil/gitutil.go` with `RepoRoot()` and `SanitizeBranchName()` — single source of truth for repo root discovery and branch name sanitization (both `/` and `:` → `-`).
+2. Changed `worktree.New()` signature to `New(repoRoot, baseDir string)` — no more self-discovery or hardcoded `.opentree`. Config's `BaseDir` is now properly wired through.
+3. Removed `worktree.Manager.ensureGitRepo()` entirely.
+4. Updated all CLI commands (`new`, `issue`, `delete`, `pr`, `list`, `diff`, `completions`) and TUI to resolve repo root once via `gitutil.RepoRoot()` and pass it to constructors.
+5. `tmux.Controller.repoName()` and `tmux.sanitizeWindowName()` now delegate to `gitutil` instead of reimplementing.
 
-**Proposed changes**:
+**Files created**:
+- `pkg/gitutil/gitutil.go` — `RepoRoot()`, `SanitizeBranchName()`
+- `pkg/gitutil/gitutil_test.go` — tests
 
-1. **Centralize name sanitization** into a single utility function that both worktree and tmux packages use.
+**Files modified**:
+- `pkg/worktree/worktree.go` — new signature `New(repoRoot, baseDir)`
+- `pkg/worktree/worktree_test.go` — updated for new signature
+- `pkg/tmux/tmux.go` — delegates to `gitutil`
+- `pkg/tui/tui.go` — uses `gitutil.RepoRoot()`, `gitutil.SanitizeBranchName()`
+- `cmd/opentree/cmd/new.go`, `issue.go`, `delete.go`, `pr.go`, `list.go`, `diff.go`, `completions.go` — all updated
 
-2. **Pass repo root as a constructor parameter** to all packages instead of each one discovering it. The CLI/TUI should resolve it once and inject it.
-
-3. **Wire up the config properly.** `worktree.New()` should accept `baseDir` as a parameter from config.
-
-4. **Clarify diff API naming**: `DiffStat()`, `DiffFull()` → `DiffFullCommitted()`, `DiffIncludingWorktree()`, or similar names that communicate scope.
-
-**Files to modify**:
-- `pkg/worktree/worktree.go` — accept baseDir and repoRoot params
-- `pkg/tmux/tmux.go` — accept repoRoot, share sanitization
-- `cmd/opentree/cmd/*.go` — resolve repo root once, pass to constructors
-- `pkg/config/config.go` — no changes needed, just wire it through
+**Still open** (separate work item):
+- Diff API naming inconsistency (`Diff()` vs `DiffFull()` vs `DiffUncommitted()`) — names don't communicate scope difference
 
 ---
 
@@ -219,8 +222,8 @@ const (
 | ~~**P1**~~ | ~~Add file locking to state store~~ | ~~Prevents data corruption in real usage~~ | ~~Low~~ **DONE** |
 | ~~**P1**~~ | ~~Fix agent abstraction (dead code)~~ | ~~Removes confusion, enables proper validation~~ | ~~Low~~ **DONE** |
 | **P2** | Introduce `ProcessManager` interface | Enables testing, future flexibility beyond tmux | Medium |
-| **P2** | Centralize repo root + name sanitization | Eliminates subtle divergence bugs | Low |
-| **P2** | Wire config.BaseDir through to worktree | Fixes broken config option | Low |
+| ~~**P2**~~ | ~~Centralize repo root + name sanitization~~ | ~~Eliminates subtle divergence bugs~~ | ~~Low~~ **DONE** |
+| ~~**P2**~~ | ~~Wire config.BaseDir through to worktree~~ | ~~Fixes broken config option~~ | ~~Low~~ **DONE** |
 | **P3** | Split TUI into multiple files | Improves maintainability | Medium |
 | **P3** | Define agent completion signal | Enables reliable status tracking | Medium |
 | ~~**P3**~~ | ~~Cache gh CLI availability~~ | ~~Minor performance fix~~ | ~~Trivial~~ **DONE** |
