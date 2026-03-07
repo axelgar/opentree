@@ -201,3 +201,65 @@ func formatAge(t time.Time) string {
 		return fmt.Sprintf("%dd ago", days)
 	}
 }
+
+// renderLogo returns the opencode-style block-pixel logo for opentree.
+// The logo uses raw ANSI escape codes to render two panels: "open" (dim left)
+// and "tree" (bright right), matching the opencode CLI colour scheme.
+func renderLogo() string {
+	const reset = "\x1b[0m"
+	type panel struct{ fg, shadow, bg string }
+	left := panel{
+		fg:     "\x1b[90m",
+		shadow: "\x1b[38;5;235m",
+		bg:     "\x1b[48;5;235m",
+	}
+	right := panel{
+		fg:     reset,
+		shadow: "\x1b[38;5;238m",
+		bg:     "\x1b[48;5;238m",
+	}
+	drawLine := func(line, fg, shadow, bg string) string {
+		var b strings.Builder
+		for _, ch := range line {
+			switch ch {
+			case '_':
+				b.WriteString(bg + " " + reset)
+			case '^':
+				b.WriteString(fg + bg + "\u2580" + reset)
+			case '~':
+				b.WriteString(shadow + "\u2580" + reset)
+			case ' ':
+				b.WriteRune(' ')
+			default:
+				b.WriteString(fg + string(ch) + reset)
+			}
+		}
+		return b.String()
+	}
+	glyphsLeft := []string{
+		"                   ",
+		"\u2588\u2580\u2580\u2588 \u2588\u2580\u2580\u2588 \u2588\u2580\u2580\u2588 \u2588\u2580\u2580\u2584",
+		"\u2588__\u2588 \u2588__\u2588 \u2588^^^ \u2588__\u2588",
+		"\u2580\u2580\u2580\u2580 \u2588\u2580\u2580\u2580 \u2580\u2580\u2580\u2580 \u2580~~\u2580",
+	}
+	glyphsRight := []string{
+		" \u2584               ",
+		"\u2580\u2588\u2580\u2580 \u2588\u2580\u2580\u2584 \u2588\u2580\u2580\u2588 \u2588\u2580\u2580\u2588",
+		"_\u2588__ \u2588^^^ \u2588^^^ \u2588^^^",
+		"_\u2580\u2580\u2580 \u2580    \u2580\u2580\u2580\u2580 \u2580\u2580\u2580\u2580",
+	}
+	var sb strings.Builder
+	for i, row := range glyphsLeft {
+		other := ""
+		if i < len(glyphsRight) {
+			other = glyphsRight[i]
+		}
+		sb.WriteString(drawLine(row, left.fg, left.shadow, left.bg))
+		sb.WriteString(" ")
+		sb.WriteString(drawLine(other, right.fg, right.shadow, right.bg))
+		if i < len(glyphsLeft)-1 {
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
