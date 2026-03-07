@@ -143,13 +143,8 @@ func (m Model) View() string {
 	var s strings.Builder
 
 	// Logo
-	logo := logoStyle.Render(
-		"   ___  ___  ___ _ _| |_ _ _ ___ ___\n" +
-			"  / _ \\| . \\/ -_) ' \\  _| '_/ -_) -_)\n" +
-			"  \\___/|  _/\\___|_||_\\__|_| \\___\\___|\n" +
-			"       |_|")
-	s.WriteString(logo)
-	s.WriteString("\n\n")
+s.WriteString(renderLogo())
+s.WriteString("\n\n")
 
 	// Header with sort/filter info
 	header := "Workspaces"
