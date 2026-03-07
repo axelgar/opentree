@@ -174,4 +174,23 @@ var (
 	diffSectionStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#F4A261")).
 				Bold(true)
+
+	// agent completion badges
+	agentSuccessStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#2A9D8F")).
+				Padding(0, 1)
+
+	agentFailureStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("196")).
+				Padding(0, 1)
+
+	agentErrorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFF")).
+			Background(lipgloss.Color("#E76F51")).
+			Padding(0, 1)
+
+	agentInProgressStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#E9C46A"))
 )

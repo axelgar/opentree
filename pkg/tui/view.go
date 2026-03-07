@@ -227,6 +227,20 @@ func (m Model) View() string {
 				}
 			}
 
+			// Agent completion badge
+			if ws.AgentStatus != nil {
+				switch ws.AgentStatus.Status {
+				case "success":
+					title += "  " + agentSuccessStyle.Render("done")
+				case "failure":
+					title += "  " + agentFailureStyle.Render("failed")
+				case "error":
+					title += "  " + agentErrorStyle.Render("error")
+				case "in_progress":
+					title += "  " + agentInProgressStyle.Render("working...")
+				}
+			}
+
 			// Description line
 			descParts := []string{ws.Branch, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
 
@@ -236,6 +250,10 @@ func (m Model) View() string {
 
 			if !ws.LastActivity.IsZero() {
 				descParts = append(descParts, "active "+formatAge(ws.LastActivity))
+			}
+
+			if ws.AgentStatus != nil && ws.AgentStatus.Message != "" {
+				descParts = append(descParts, ws.AgentStatus.Message)
 			}
 
 			desc := "  " + strings.Join(descParts, " • ")
@@ -294,6 +312,7 @@ func (m Model) statusBar() string {
 	total := len(m.workspaces)
 	active := 0
 	openPRs := 0
+	doneCount := 0
 	for _, ws := range m.workspaces {
 		if ws.Active {
 			active++
@@ -301,12 +320,18 @@ func (m Model) statusBar() string {
 		if ws.PRStatus == "open" {
 			openPRs++
 		}
+		if ws.AgentStatus != nil && (ws.AgentStatus.Status == "success" || ws.AgentStatus.Status == "failure" || ws.AgentStatus.Status == "error") {
+			doneCount++
+		}
 	}
 	parts := []string{
 		fmt.Sprintf("%d workspaces", total),
 		fmt.Sprintf("%d active", active),
 		fmt.Sprintf("%d open PRs", openPRs),
 		"sort: " + sortModeNames[m.sortMode],
+	}
+	if doneCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", doneCount))
 	}
 	if len(m.selected) > 0 {
 		parts = append(parts, fmt.Sprintf("%d selected", len(m.selected)))

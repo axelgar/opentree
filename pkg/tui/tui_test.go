@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -886,5 +888,100 @@ func TestView_IssueBadge_MultipleWorkspaces(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "#99") {
 		t.Errorf("View() should show badge for issue workspace\ngot: %s", view)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Agent Status Tests
+// ---------------------------------------------------------------------------
+
+func TestReadAgentStatus_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	data := `{"status":"success","message":"All tests pass"}`
+	if err := os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+	s := readAgentStatus(dir)
+	if s == nil {
+		t.Fatal("expected non-nil AgentStatus")
+	}
+	if s.Status != "success" {
+		t.Errorf("Status = %q, want %q", s.Status, "success")
+	}
+	if s.Message != "All tests pass" {
+		t.Errorf("Message = %q, want %q", s.Message, "All tests pass")
+	}
+}
+
+func TestReadAgentStatus_MissingFile(t *testing.T) {
+	s := readAgentStatus(t.TempDir())
+	if s != nil {
+		t.Errorf("expected nil for missing file, got %+v", s)
+	}
+}
+
+func TestReadAgentStatus_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte("not json"), 0644)
+	s := readAgentStatus(dir)
+	if s != nil {
+		t.Errorf("expected nil for invalid JSON, got %+v", s)
+	}
+}
+
+func TestReadAgentStatus_UnknownStatus(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(`{"status":"unknown"}`), 0644)
+	s := readAgentStatus(dir)
+	if s != nil {
+		t.Errorf("expected nil for unknown status, got %+v", s)
+	}
+}
+
+func TestReadAgentStatus_AllValidStatuses(t *testing.T) {
+	for _, status := range []string{"success", "failure", "error", "in_progress"} {
+		dir := t.TempDir()
+		data := fmt.Sprintf(`{"status":"%s"}`, status)
+		os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644)
+		s := readAgentStatus(dir)
+		if s == nil || s.Status != status {
+			t.Errorf("readAgentStatus(%q): expected status %q, got %+v", status, status, s)
+		}
+	}
+}
+
+func TestView_AgentStatusBadge_Success(t *testing.T) {
+	ws := testWS("done-branch")
+	ws.AgentStatus = &AgentStatus{Status: "success", Message: "All done"}
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "done") {
+		t.Errorf("View() should show 'done' badge for success status\ngot: %s", view)
+	}
+	if !strings.Contains(view, "All done") {
+		t.Errorf("View() should show agent message in description\ngot: %s", view)
+	}
+}
+
+func TestView_AgentStatusBadge_Failure(t *testing.T) {
+	ws := testWS("fail-branch")
+	ws.AgentStatus = &AgentStatus{Status: "failure"}
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "failed") {
+		t.Errorf("View() should show 'failed' badge\ngot: %s", view)
+	}
+}
+
+func TestView_StatusBar_DoneCount(t *testing.T) {
+	ws1 := testWS("branch-a")
+	ws1.AgentStatus = &AgentStatus{Status: "success"}
+	ws2 := testWS("branch-b")
+	ws2.AgentStatus = &AgentStatus{Status: "failure"}
+	ws3 := testWS("branch-c") // no agent status
+	m := newTestModel(ws1, ws2, ws3)
+	bar := m.statusBar()
+	if !strings.Contains(bar, "2 done") {
+		t.Errorf("statusBar() should show '2 done', got: %s", bar)
 	}
 }

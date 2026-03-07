@@ -27,6 +27,7 @@ type WorkspaceItem struct {
 	UncommittedCount int
 	LastActivity     time.Time
 	FileChanges      []worktree.FileChange
+	AgentStatus      *AgentStatus
 }
 
 const (

@@ -1,8 +1,10 @@
 package workspace
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,6 +254,36 @@ func TestSanitizeBranchNameInPath(t *testing.T) {
 	expected := filepath.Join("/repo", ".opentree", gitutil.SanitizeBranchName("feature/auth:v2"))
 	if path != expected {
 		t.Errorf("WorktreePath = %q, want %q", path, expected)
+	}
+}
+
+func TestCreate_WritesAgentsFile(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	ws, err := svc.Create("agents-test", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	agentsFile := filepath.Join(ws.WorktreeDir, "AGENTS.md")
+	data, err := os.ReadFile(agentsFile)
+	if err != nil {
+		t.Fatalf("AGENTS.md should exist after Create: %v", err)
+	}
+	if !strings.Contains(string(data), ".opentree-status.json") {
+		t.Error("AGENTS.md should mention .opentree-status.json")
 	}
 }
 

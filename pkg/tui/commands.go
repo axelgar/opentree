@@ -55,6 +55,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 		if ws.WorktreeDir != "" {
 			item.UncommittedCount = countUncommitted(ws.WorktreeDir)
+			item.AgentStatus = readAgentStatus(ws.WorktreeDir)
 		}
 
 		if exists {

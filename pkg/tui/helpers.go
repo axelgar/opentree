@@ -1,16 +1,47 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
+
+// AgentStatus represents the completion signal an agent writes to
+// .opentree-status.json in its worktree directory.
+type AgentStatus struct {
+	Status    string `json:"status"`
+	Message   string `json:"message,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// readAgentStatus reads the .opentree-status.json file from a worktree directory.
+// Returns nil if the file is missing, unreadable, or has an invalid status value.
+func readAgentStatus(worktreeDir string) *AgentStatus {
+	data, err := os.ReadFile(filepath.Join(worktreeDir, workspace.StatusFileName))
+	if err != nil {
+		return nil
+	}
+	var s AgentStatus
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil
+	}
+	switch s.Status {
+	case "success", "failure", "error", "in_progress":
+		return &s
+	default:
+		return nil
+	}
+}
 
 // cleanPreview strips ANSI codes and returns the last 5 non-empty lines.
 func cleanPreview(s string) string {
