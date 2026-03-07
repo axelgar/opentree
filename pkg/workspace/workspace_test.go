@@ -4,10 +4,45 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
+
+// mockProcessManager is a test double for ProcessManager that records calls
+// and returns configurable results.
+type mockProcessManager struct {
+	createWindowCalls []string
+	killWindowCalls   []string
+	killSessionCalled bool
+}
+
+func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ...string) error {
+	m.createWindowCalls = append(m.createWindowCalls, name)
+	return nil
+}
+
+func (m *mockProcessManager) ListWindows() ([]Window, error) { return nil, nil }
+func (m *mockProcessManager) SelectWindow(name string) error  { return nil }
+func (m *mockProcessManager) AttachWindow(name string) error   { return nil }
+func (m *mockProcessManager) AttachCmd(name string) (*exec.Cmd, error) {
+	return exec.Command("echo", "mock"), nil
+}
+func (m *mockProcessManager) KillWindow(name string) error {
+	m.killWindowCalls = append(m.killWindowCalls, name)
+	return nil
+}
+func (m *mockProcessManager) KillSession() error {
+	m.killSessionCalled = true
+	return nil
+}
+func (m *mockProcessManager) CapturePane(name string, lines int) (string, error) { return "", nil }
+func (m *mockProcessManager) GetWindowActivity(name string) (time.Time, error) {
+	return time.Time{}, nil
+}
 
 func TestWorktreePath(t *testing.T) {
 	cfg := config.Default()
@@ -83,21 +118,15 @@ func TestCreateAndDelete(t *testing.T) {
 	cfg := config.Default()
 	cfg.Worktree.BaseDir = ".opentree"
 
-	svc, err := New(repoDir, cfg)
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("newWithMock: %v", err)
 	}
 
-	// Create workspace — tmux will fail (no server), but worktree + state should succeed up to that point.
-	// We test the parts that don't require tmux by checking the worktree was created.
 	ws, err := svc.Create("test-branch", "main")
 	if err != nil {
-		// tmux failure is expected in tests — check if worktree was at least created
-		worktreePath := svc.WorktreePath("test-branch")
-		if !dirExists(worktreePath) {
-			t.Fatalf("Create failed and worktree not created: %v", err)
-		}
-		t.Skipf("Create partially succeeded (tmux unavailable): %v", err)
+		t.Fatalf("Create: %v", err)
 	}
 
 	if ws.Name != "test-branch" {
@@ -105,6 +134,9 @@ func TestCreateAndDelete(t *testing.T) {
 	}
 	if ws.BaseBranch != "main" {
 		t.Errorf("ws.BaseBranch = %q, want %q", ws.BaseBranch, "main")
+	}
+	if len(mock.createWindowCalls) != 1 || mock.createWindowCalls[0] != "test-branch" {
+		t.Errorf("expected CreateWindow called with test-branch, got %v", mock.createWindowCalls)
 	}
 
 	worktreePath := svc.WorktreePath("test-branch")
@@ -125,6 +157,55 @@ func TestCreateAndDelete(t *testing.T) {
 	if len(workspaces) != 0 {
 		t.Errorf("expected 0 workspaces after Delete, got %d", len(workspaces))
 	}
+	if !mock.killSessionCalled {
+		t.Error("expected KillSession to be called when last workspace deleted")
+	}
+}
+
+func TestDeleteMultiple(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	// Create two workspaces
+	if _, err := svc.Create("branch-a", "main"); err != nil {
+		t.Fatalf("Create branch-a: %v", err)
+	}
+	if _, err := svc.Create("branch-b", "main"); err != nil {
+		t.Fatalf("Create branch-b: %v", err)
+	}
+
+	// Delete both
+	if err := svc.DeleteMultiple([]string{"branch-a", "branch-b"}); err != nil {
+		t.Fatalf("DeleteMultiple: %v", err)
+	}
+
+	if len(mock.killWindowCalls) != 2 {
+		t.Errorf("expected 2 KillWindow calls, got %d", len(mock.killWindowCalls))
+	}
+	if !mock.killSessionCalled {
+		t.Error("expected KillSession after deleting all workspaces")
+	}
+}
+
+// newWithMock creates a Service with a mock ProcessManager for testing.
+func newWithMock(repoRoot string, cfg *config.Config, pm ProcessManager) (*Service, error) {
+	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
+	st, err := state.New(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	return NewService(repoRoot, cfg, wt, pm, st, nil), nil
 }
 
 func TestHasChanges_NoWorkspace(t *testing.T) {

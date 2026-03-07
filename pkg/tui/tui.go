@@ -311,7 +311,6 @@ var sortModeNames = []string{"name", "age", "activity", "PR"}
 type Model struct {
 	svc         *workspace.Service
 	worktreeMgr *worktree.Manager
-	tmuxCtrl    *tmux.Controller
 	stateStore  *state.Store
 	prMgr       *github.PRManager
 	cfg         *config.Config
@@ -391,7 +390,8 @@ func NewModel() (*Model, error) {
 	}
 	tm := tmux.New(cfg.Tmux.SessionPrefix)
 	gh := github.New()
-	svc := workspace.NewService(repoRoot, cfg, wt, tm, st, gh)
+	pm := workspace.NewTmuxProcessManager(tm)
+	svc := workspace.NewService(repoRoot, cfg, wt, pm, st, gh)
 
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
@@ -401,7 +401,6 @@ func NewModel() (*Model, error) {
 	return &Model{
 		svc:         svc,
 		worktreeMgr: wt,
-		tmuxCtrl:    tm,
 		stateStore:  st,
 		prMgr:       gh,
 		cfg:         cfg,
@@ -1201,12 +1200,12 @@ type capturePreviewMsg struct {
 func (m Model) loadWorkspacesCmd() tea.Msg {
 	saved := m.stateStore.ListWorkspaces()
 
-	windows, err := m.tmuxCtrl.ListWindows()
+	windows, err := m.svc.Process().ListWindows()
 	if err != nil {
 		// Log error but continue
 	}
 
-	windowMap := make(map[string]tmux.Window)
+	windowMap := make(map[string]workspace.Window)
 	for _, w := range windows {
 		windowMap[w.Name] = w
 	}
@@ -1246,7 +1245,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 		// Improvement 8: last activity from tmux
 		if exists {
-			if t, err := m.tmuxCtrl.GetWindowActivity(ws.Name); err == nil {
+			if t, err := m.svc.Process().GetWindowActivity(ws.Name); err == nil {
 				item.LastActivity = t
 			}
 		}
@@ -1299,7 +1298,7 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		cmd, err := m.tmuxCtrl.AttachCmd(name)
+		cmd, err := m.svc.Process().AttachCmd(name)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1399,7 +1398,7 @@ func (m Model) capturePreviewCmd() tea.Cmd {
 	}
 	wsName := ws.Name
 	return func() tea.Msg {
-		output, err := m.tmuxCtrl.CapturePane(wsName, 5)
+		output, err := m.svc.Process().CapturePane(wsName, 5)
 		if err != nil {
 			return capturePreviewMsg{lines: ""}
 		}

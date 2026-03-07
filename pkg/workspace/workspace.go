@@ -14,12 +14,15 @@ import (
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
+// Compile-time check that TmuxProcessManager satisfies ProcessManager.
+var _ ProcessManager = (*TmuxProcessManager)(nil)
+
 // Service orchestrates workspace lifecycle operations across worktree,
 // tmux, state, and github packages. Both the TUI and CLI commands
 // delegate to this service instead of orchestrating packages directly.
 type Service struct {
 	worktrees *worktree.Manager
-	tmux      *tmux.Controller
+	process   ProcessManager
 	state     *state.Store
 	github    *github.PRManager
 	cfg       *config.Config
@@ -34,22 +37,28 @@ func New(repoRoot string, cfg *config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize state: %w", err)
 	}
-	tm := tmux.New(cfg.Tmux.SessionPrefix)
+	tm := NewTmuxProcessManager(tmux.New(cfg.Tmux.SessionPrefix))
 	gh := github.New()
 	return NewService(repoRoot, cfg, wt, tm, st, gh), nil
 }
 
 // NewService creates a workspace service with pre-constructed dependencies.
 // Use this when you need to share dependencies with other components (e.g., TUI).
-func NewService(repoRoot string, cfg *config.Config, wt *worktree.Manager, tm *tmux.Controller, st *state.Store, gh *github.PRManager) *Service {
+func NewService(repoRoot string, cfg *config.Config, wt *worktree.Manager, pm ProcessManager, st *state.Store, gh *github.PRManager) *Service {
 	return &Service{
 		worktrees: wt,
-		tmux:      tm,
+		process:   pm,
 		state:     st,
 		github:    gh,
 		cfg:       cfg,
 		repoRoot:  repoRoot,
 	}
+}
+
+// Process returns the underlying ProcessManager for read-only access
+// (e.g., listing windows, capturing pane output for display).
+func (s *Service) Process() ProcessManager {
+	return s.process
 }
 
 // WorktreePath returns the filesystem path for a workspace's worktree directory.
@@ -66,7 +75,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	worktreePath := s.WorktreePath(name)
 
 	agentCmd := s.cfg.Agent.Command
-	if err := s.tmux.CreateWindow(name, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
+	if err := s.process.CreateWindow(name, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
 		return nil, fmt.Errorf("failed to create tmux window: %w", err)
 	}
 
@@ -130,7 +139,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 // If this was the last workspace, the tmux session is also killed.
 func (s *Service) Delete(name string) error {
 	// Kill tmux window (ignore error if window doesn't exist)
-	_ = s.tmux.KillWindow(name)
+	_ = s.process.KillWindow(name)
 
 	if err := s.worktrees.Delete(name, true); err != nil {
 		return fmt.Errorf("failed to delete worktree: %w", err)
@@ -142,7 +151,7 @@ func (s *Service) Delete(name string) error {
 
 	// Clean up tmux session if no workspaces remain
 	if len(s.state.ListWorkspaces()) == 0 {
-		_ = s.tmux.KillSession()
+		_ = s.process.KillSession()
 	}
 
 	return nil
@@ -151,7 +160,7 @@ func (s *Service) Delete(name string) error {
 // DeleteMultiple removes multiple workspaces in sequence.
 func (s *Service) DeleteMultiple(names []string) error {
 	for _, name := range names {
-		_ = s.tmux.KillWindow(name)
+		_ = s.process.KillWindow(name)
 		if err := s.worktrees.Delete(name, true); err != nil {
 			return fmt.Errorf("delete %s: %w", name, err)
 		}
@@ -161,7 +170,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 	}
 
 	if len(s.state.ListWorkspaces()) == 0 {
-		_ = s.tmux.KillSession()
+		_ = s.process.KillSession()
 	}
 
 	return nil
