@@ -62,29 +62,19 @@ The existing tmux code becomes `TmuxProcessManager` implementing this interface.
 
 ---
 
-## 3. State Management: Race Conditions and State Drift
+## 3. ~~State Management: Race Conditions and State Drift~~ (FILE LOCKING DONE)
 
-**Current state**: `pkg/state/state.go` uses a JSON file with no file locking. Every mutation reads, modifies, and writes the entire file.
+~~**No file locking.** If the TUI is running and a user runs `opentree new` from another terminal, both can write to `state.json` simultaneously, causing data loss.~~
 
-**Problems**:
+**Implemented**: Added `syscall.Flock`-based file locking via `.opentree/state.lock`. All mutating operations (`AddWorkspace`, `UpdateWorkspace`, `DeleteWorkspace`) now perform atomic read-modify-write under an exclusive lock — reloading fresh state from disk before applying changes. `Load()` uses a shared lock. Writes use atomic temp-file-and-rename pattern to prevent partial reads. Concurrency tests prove no data loss under 10 parallel writers.
 
-- **No file locking.** If the TUI is running and a user runs `opentree new` from another terminal, both can write to `state.json` simultaneously, causing data loss. This is a real scenario since the tool is designed for power users running multiple terminals.
+**Files modified**:
+- `pkg/state/state.go` — added `withFileLock()`, `mutate()`, `loadFromDisk()`, `atomicWrite()`
+- `pkg/state/state_test.go` — added `TestConcurrentWriters`, `TestAtomicWrite_NoPartialReads`
 
-- **State drifts from reality.** The `Status` field (active/idle/stopped) is set manually but never reconciled with tmux state. If a user kills a tmux window with `Ctrl-C` or `tmux kill-window`, the state file still says "active." The TUI does some reconciliation during refresh, but the CLI commands don't.
-
-- **Every write serializes the full state.** With many workspaces, this becomes increasingly wasteful, though admittedly the file is small.
-
-**Proposed changes**:
-
-1. **Add file locking** using `syscall.Flock` or a `.lock` file pattern. This prevents concurrent corruption.
-
-2. **Derive status from tmux state** instead of storing it. The `Status` field should be computed by checking if the tmux window exists and has recent activity, not manually set. This eliminates state drift entirely.
-
-3. **Add a `Reconcile()` method** that validates state against git worktrees and tmux windows on startup, removing orphaned entries.
-
-**Files to modify**:
-- `pkg/state/state.go` — add file locking, reconcile method
-- `pkg/tui/tui.go` — simplify status computation (already partially does this)
+**Still open** (separate work items):
+- State drifts from reality — `Status` field is manually set, not derived from tmux state
+- No `Reconcile()` method to clean up orphaned entries on startup
 
 ---
 
@@ -226,7 +216,7 @@ const (
 | Priority | Issue | Impact | Effort |
 |----------|-------|--------|--------|
 | **P0** | Extract `WorkspaceService` from TUI | Enables testability, removes duplication between TUI and CLI | Medium |
-| **P1** | Add file locking to state store | Prevents data corruption in real usage | Low |
+| ~~**P1**~~ | ~~Add file locking to state store~~ | ~~Prevents data corruption in real usage~~ | ~~Low~~ **DONE** |
 | ~~**P1**~~ | ~~Fix agent abstraction (dead code)~~ | ~~Removes confusion, enables proper validation~~ | ~~Low~~ **DONE** |
 | **P2** | Introduce `ProcessManager` interface | Enables testing, future flexibility beyond tmux | Medium |
 | **P2** | Centralize repo root + name sanitization | Eliminates subtle divergence bugs | Low |
