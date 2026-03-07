@@ -2,14 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
-	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
-	"github.com/axelgar/opentree/pkg/state"
-	"github.com/axelgar/opentree/pkg/tmux"
-	"github.com/axelgar/opentree/pkg/worktree"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -34,44 +30,19 @@ var NewCmd = &cobra.Command{
 			return err
 		}
 
-		// Step 1: Create git worktree
-		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
-		if err := wt.Create(branchName, baseBranch); err != nil {
-			return fmt.Errorf("failed to create worktree: %w", err)
-		}
-
-		dirName := gitutil.SanitizeBranchName(branchName)
-		worktreePath := filepath.Join(repoRoot, cfg.Worktree.BaseDir, dirName)
-
-		// Step 2: Initialize state store
-		store, err := state.New(repoRoot)
+		svc, err := workspace.New(repoRoot, cfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize state: %w", err)
+			return err
 		}
 
-		// Step 3: Create tmux window and launch agent
-		tmuxCtrl := tmux.New(cfg.Tmux.SessionPrefix)
-		agentCmd := cfg.Agent.Command
-		if err := tmuxCtrl.CreateWindow(branchName, worktreePath, agentCmd, cfg.Agent.Args...); err != nil {
-			return fmt.Errorf("failed to create tmux window: %w", err)
+		ws, err := svc.Create(branchName, baseBranch)
+		if err != nil {
+			return err
 		}
 
-		// Step 4: Save workspace to state
-		ws := &state.Workspace{
-			Name:        branchName,
-			Branch:      branchName,
-			BaseBranch:  baseBranch,
-			CreatedAt:   time.Now(),
-			Status:      "active",
-			Agent:       agentCmd,
-			WorktreeDir: worktreePath,
-		}
-		if err := store.AddWorkspace(ws); err != nil {
-			return fmt.Errorf("failed to save workspace state: %w", err)
-		}
-		fmt.Printf("✓ Created workspace '%s' based on '%s'\n", branchName, baseBranch)
-		fmt.Printf("✓ Launched %s in tmux window\n", agentCmd)
-		fmt.Printf("\nTo attach: opentree attach %s\n", branchName)
+		fmt.Printf("✓ Created workspace '%s' based on '%s'\n", ws.Name, ws.BaseBranch)
+		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
+		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
 		return nil
 	},
 }

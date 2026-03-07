@@ -2,17 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
-	ghpkg "github.com/axelgar/opentree/pkg/github"
-	"github.com/axelgar/opentree/pkg/state"
-	"github.com/axelgar/opentree/pkg/tmux"
-	"github.com/axelgar/opentree/pkg/worktree"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -34,27 +28,9 @@ into the new worktree so the AI agent can start working immediately.`,
 		}
 		baseBranch, _ := cmd.Flags().GetString("base")
 
-		// Fetch issue details
-		ghMgr := ghpkg.New()
-		if !ghMgr.IsInstalled() {
-			return fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
-		}
-		issue, err := ghMgr.GetIssue(issueNum)
-		if err != nil {
-			return fmt.Errorf("failed to fetch issue: %w", err)
-		}
-
-		branchName := ghpkg.IssueBranchName(issue.Number, issue.Title)
-		fmt.Printf("Issue #%d: %s\n", issue.Number, issue.Title)
-		fmt.Printf("Branch:   %s\n\n", branchName)
-
-		// Load config
 		cfg, err := config.Load("")
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
-		}
-		if baseBranch == "" {
-			baseBranch = cfg.Worktree.DefaultBase
 		}
 
 		repoRoot, err := gitutil.RepoRoot()
@@ -62,55 +38,22 @@ into the new worktree so the AI agent can start working immediately.`,
 			return err
 		}
 
-		// Create git worktree
-		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
-		if err := wt.Create(branchName, baseBranch); err != nil {
-			return fmt.Errorf("failed to create worktree: %w", err)
-		}
-
-		dirName := gitutil.SanitizeBranchName(branchName)
-		worktreePath := filepath.Join(repoRoot, cfg.Worktree.BaseDir, dirName)
-
-		// Write TASK.md with issue context for the AI agent
-		taskContent := ghpkg.IssueTaskContent(issue)
-		taskFile := filepath.Join(worktreePath, "TASK.md")
-		if err := os.WriteFile(taskFile, []byte(taskContent), 0644); err != nil {
-			fmt.Printf("Warning: could not write TASK.md: %v\n", err)
-		}
-
-		// Initialize state store
-		store, err := state.New(repoRoot)
+		svc, err := workspace.New(repoRoot, cfg)
 		if err != nil {
-			return fmt.Errorf("failed to initialize state: %w", err)
+			return err
 		}
 
-		// Create tmux window and launch agent
-		tmuxCtrl := tmux.New(cfg.Tmux.SessionPrefix)
-		agentCmd := cfg.Agent.Command
-		if err := tmuxCtrl.CreateWindow(branchName, worktreePath, agentCmd, cfg.Agent.Args...); err != nil {
-			return fmt.Errorf("failed to create tmux window: %w", err)
+		ws, err := svc.CreateFromIssue(issueNum, baseBranch)
+		if err != nil {
+			return err
 		}
 
-		// Persist workspace with issue metadata
-		ws := &state.Workspace{
-			Name:        branchName,
-			Branch:      branchName,
-			BaseBranch:  baseBranch,
-			CreatedAt:   time.Now(),
-			Status:      "active",
-			Agent:       agentCmd,
-			WorktreeDir: worktreePath,
-			IssueNumber: issue.Number,
-			IssueTitle:  issue.Title,
-		}
-		if err := store.AddWorkspace(ws); err != nil {
-			return fmt.Errorf("failed to save workspace state: %w", err)
-		}
-
-		fmt.Printf("✓ Created workspace '%s'\n", branchName)
+		fmt.Printf("Issue #%d: %s\n", ws.IssueNumber, ws.IssueTitle)
+		fmt.Printf("Branch:   %s\n\n", ws.Branch)
+		fmt.Printf("✓ Created workspace '%s'\n", ws.Name)
 		fmt.Printf("✓ Wrote issue context to TASK.md\n")
-		fmt.Printf("✓ Launched %s in tmux window\n", agentCmd)
-		fmt.Printf("\nTo attach: opentree attach %s\n", branchName)
+		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
+		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
 		return nil
 	},
 }

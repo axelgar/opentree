@@ -3,9 +3,9 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
-	"github.com/axelgar/opentree/pkg/github"
-	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -24,25 +24,19 @@ var PrCmd = &cobra.Command{
 			return err
 		}
 
-		store, err := state.New(repoRoot)
-
+		cfg, err := config.Load("")
 		if err != nil {
-			return fmt.Errorf("failed to load state: %w", err)
+			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ws, err := store.GetWorkspace(branchName)
+		svc, err := workspace.New(repoRoot, cfg)
 		if err != nil {
-			return fmt.Errorf("workspace not found: %w", err)
+			return err
 		}
 
-		gh := github.New()
-		if !gh.IsInstalled() {
-			return fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
-		}
-
-		prURL, err := gh.CreatePR(branchName, ws.BaseBranch, title, body)
+		prURL, err := svc.CreatePR(branchName, title, body)
 		if err != nil {
-			return fmt.Errorf("failed to create PR: %w", err)
+			return err
 		}
 
 		fmt.Printf("✓ Created PR: %s\n", prURL)

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -24,6 +23,7 @@ import (
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
+	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 // ansiEscapeRe strips ANSI escape sequences from tmux pane output.
@@ -309,6 +309,7 @@ const (
 var sortModeNames = []string{"name", "age", "activity", "PR"}
 
 type Model struct {
+	svc         *workspace.Service
 	worktreeMgr *worktree.Manager
 	tmuxCtrl    *tmux.Controller
 	stateStore  *state.Store
@@ -389,6 +390,8 @@ func NewModel() (*Model, error) {
 		return nil, fmt.Errorf("failed to initialize state store: %w", err)
 	}
 	tm := tmux.New(cfg.Tmux.SessionPrefix)
+	gh := github.New()
+	svc := workspace.NewService(repoRoot, cfg, wt, tm, st, gh)
 
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
@@ -396,10 +399,11 @@ func NewModel() (*Model, error) {
 	ti.Width = 30
 
 	return &Model{
+		svc:         svc,
 		worktreeMgr: wt,
 		tmuxCtrl:    tm,
 		stateStore:  st,
-		prMgr:       github.New(),
+		prMgr:       gh,
 		cfg:         cfg,
 		input:       ti,
 		help:        help.New(),
@@ -493,8 +497,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// step 1: body confirmed
 				wsName := m.prWsName
-				branch := m.prBranch
-				base := m.prBase
 				title := m.prTitle
 				body := val
 				m.prCreating = false
@@ -502,7 +504,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prTitle = ""
 				m.input.SetValue("")
 				m.input.Placeholder = "New branch name"
-				return m, m.createPRCmd(wsName, branch, base, title, body)
+				return m, m.createPRCmd(wsName, title, body)
 			case "esc":
 				m.prCreating = false
 				m.prStep = 0
@@ -1257,35 +1259,9 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.worktreeMgr.Create(name, baseBranch); err != nil {
+		if _, err := m.svc.Create(name, baseBranch); err != nil {
 			return errMsg{err}
 		}
-
-		repoRoot, err := gitutil.RepoRoot()
-		if err != nil {
-			return errMsg{fmt.Errorf("failed to get repo root: %w", err)}
-		}
-		dirName := gitutil.SanitizeBranchName(name)
-		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
-
-		agentCmd := m.cfg.Agent.Command
-		if err := m.tmuxCtrl.CreateWindow(name, worktreePath, agentCmd, m.cfg.Agent.Args...); err != nil {
-			return errMsg{err}
-		}
-
-		ws := &state.Workspace{
-			Name:        name,
-			Branch:      name,
-			BaseBranch:  baseBranch,
-			CreatedAt:   time.Now(),
-			Status:      "active",
-			Agent:       agentCmd,
-			WorktreeDir: worktreePath,
-		}
-		if err := m.stateStore.AddWorkspace(ws); err != nil {
-			return errMsg{err}
-		}
-
 		return createdWorkspaceMsg{}
 	}
 }
@@ -1296,88 +1272,26 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 		if err != nil || issueNum <= 0 {
 			return errMsg{fmt.Errorf("invalid issue number: %s", issueNumStr)}
 		}
-		issue, err := m.prMgr.GetIssue(issueNum)
-		if err != nil {
+		if _, err := m.svc.CreateFromIssue(issueNum, m.cfg.Worktree.DefaultBase); err != nil {
 			return errMsg{err}
 		}
-
-		branchName := github.IssueBranchName(issue.Number, issue.Title)
-		baseBranch := m.cfg.Worktree.DefaultBase
-
-		if err := m.worktreeMgr.Create(branchName, baseBranch); err != nil {
-			return errMsg{err}
-		}
-
-		repoRoot, err := gitutil.RepoRoot()
-		if err != nil {
-			return errMsg{fmt.Errorf("failed to get repo root: %w", err)}
-		}
-		dirName := gitutil.SanitizeBranchName(branchName)
-		worktreePath := filepath.Join(repoRoot, m.cfg.Worktree.BaseDir, dirName)
-
-		taskFile := filepath.Join(worktreePath, "TASK.md")
-		_ = os.WriteFile(taskFile, []byte(github.IssueTaskContent(issue)), 0644)
-
-		agentCmd := m.cfg.Agent.Command
-		if err := m.tmuxCtrl.CreateWindow(branchName, worktreePath, agentCmd, m.cfg.Agent.Args...); err != nil {
-			return errMsg{err}
-		}
-
-		ws := &state.Workspace{
-			Name:        branchName,
-			Branch:      branchName,
-			BaseBranch:  baseBranch,
-			CreatedAt:   time.Now(),
-			Status:      "active",
-			Agent:       agentCmd,
-			WorktreeDir: worktreePath,
-			IssueNumber: issue.Number,
-			IssueTitle:  issue.Title,
-		}
-		if err := m.stateStore.AddWorkspace(ws); err != nil {
-			return errMsg{err}
-		}
-
 		return createdWorkspaceMsg{}
 	}
 }
 
 func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.tmuxCtrl.KillWindow(name); err != nil {
-			// Continue even if window doesn't exist
-		}
-		if err := m.worktreeMgr.Delete(name, true); err != nil {
+		if err := m.svc.Delete(name); err != nil {
 			return errMsg{err}
-		}
-		if err := m.stateStore.DeleteWorkspace(name); err != nil {
-			return errMsg{err}
-		}
-		
-		// If this was the last workspace, kill the tmux session
-		if len(m.stateStore.ListWorkspaces()) == 0 {
-			_ = m.tmuxCtrl.KillSession()
 		}
 		return deletedWorkspaceMsg{}
 	}
 }
 
-// Improvement 9: batch delete
 func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 	return func() tea.Msg {
-		for _, name := range names {
-			_ = m.tmuxCtrl.KillWindow(name)
-			if err := m.worktreeMgr.Delete(name, true); err != nil {
-				return errMsg{fmt.Errorf("delete %s: %w", name, err)}
-			}
-			if err := m.stateStore.DeleteWorkspace(name); err != nil {
-				return errMsg{fmt.Errorf("delete state %s: %w", name, err)}
-			}
-		}
-		
-		// If this was the last workspace, kill the tmux session
-		if len(m.stateStore.ListWorkspaces()) == 0 {
-			_ = m.tmuxCtrl.KillSession()
+		if err := m.svc.DeleteMultiple(names); err != nil {
+			return errMsg{err}
 		}
 		return deletedWorkspaceMsg{}
 	}
@@ -1440,9 +1354,9 @@ func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, 
 }
 
 // Improvement 5: createPRCmd now accepts title and body.
-func (m Model) createPRCmd(wsName, branch, baseBranch, title, body string) tea.Cmd {
+func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {
 	return func() tea.Msg {
-		prURL, err := m.prMgr.CreatePR(branch, baseBranch, title, body)
+		prURL, err := m.svc.CreatePR(wsName, title, body)
 		if err != nil {
 			return errMsg{err}
 		}

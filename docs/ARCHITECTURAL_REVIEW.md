@@ -78,64 +78,32 @@ The existing tmux code becomes `TmuxProcessManager` implementing this interface.
 
 ---
 
-## 4. The 1706-Line TUI Monolith
+## 4. The TUI Monolith (WORKSPACE SERVICE EXTRACTED)
 
-**Current state**: `pkg/tui/tui.go` contains ALL TUI logic: model definition, 40+ message types, update handler (giant switch statement), view rendering, styles, async commands, and business logic.
+~~**Untestable business logic.** Workspace creation, deletion, PR creation — all embedded in TUI command functions that return `tea.Msg`. You can't test "create a workspace" without the entire Bubble Tea runtime.~~
 
-**Problems**:
+~~**Mixed responsibilities.** The TUI file directly constructs worktree managers, tmux controllers, state stores, and github clients. It's both the presentation layer and the application layer.~~
 
-- **Untestable business logic.** Workspace creation, deletion, PR creation — all embedded in TUI command functions that return `tea.Msg`. You can't test "create a workspace" without the entire Bubble Tea runtime.
+**Implemented**: Extracted `pkg/workspace/workspace.go` with a `Service` struct that orchestrates worktree + tmux + state + github for all workspace lifecycle operations. Both TUI and CLI commands now delegate to this service instead of orchestrating packages directly.
 
-- **State machine complexity.** The model has 15+ boolean/enum flags (`creating`, `prCreating`, `deleting`, `diffViewing`, `confirmingDelete`, `confirmingBatchDelete`, `batchDeleteStep`, etc.) that interact in undocumented ways. This is a classic symptom of a state machine that needs explicit states.
+Service methods: `Create()`, `CreateFromIssue()`, `Delete()`, `DeleteMultiple()`, `HasChanges()`, `CreatePR()`, `WorktreePath()`.
 
-- **Mixed responsibilities.** The TUI file directly constructs worktree managers, tmux controllers, state stores, and github clients. It's both the presentation layer and the application layer.
+Two constructors: `New(repoRoot, cfg)` for CLI commands (constructs all deps), `NewService(...)` for TUI (shares pre-built deps).
 
-**Proposed changes**:
+**Files created**:
+- `pkg/workspace/workspace.go` — service layer
+- `pkg/workspace/workspace_test.go` — 6 tests
 
-1. **Extract business logic into a `pkg/workspace/` package** — a `WorkspaceService` that encapsulates the create/delete/diff/PR workflow. The TUI and CLI commands both call this service instead of directly orchestrating multiple packages.
+**Files modified**:
+- `cmd/opentree/cmd/new.go` — uses `workspace.New()` + `svc.Create()`
+- `cmd/opentree/cmd/issue.go` — uses `svc.CreateFromIssue()`
+- `cmd/opentree/cmd/delete.go` — uses `svc.HasChanges()` + `svc.Delete()`
+- `cmd/opentree/cmd/pr.go` — uses `svc.CreatePR()`
+- `pkg/tui/tui.go` — delegates to `svc` for create/delete/PR commands
 
-```go
-type WorkspaceService struct {
-    worktrees  *worktree.Manager
-    processes  process.ProcessManager
-    state      *state.Store
-    github     *github.PRManager
-    config     *config.Config
-}
-
-func (s *WorkspaceService) Create(name, baseBranch string) (*state.Workspace, error)
-func (s *WorkspaceService) Delete(name string, deleteBranch bool) error
-func (s *WorkspaceService) CreatePR(name, title, body string) (string, error)
-func (s *WorkspaceService) List() ([]*WorkspaceInfo, error)  // enriched with tmux/git state
-```
-
-2. **Split the TUI file** into at least:
-   - `pkg/tui/model.go` — model struct, messages, init
-   - `pkg/tui/update.go` — update logic
-   - `pkg/tui/view.go` — rendering
-   - `pkg/tui/styles.go` — style definitions
-   - `pkg/tui/commands.go` — async tea.Cmd functions
-
-3. **Replace boolean flags with explicit view states**:
-```go
-type ViewState int
-const (
-    ViewList ViewState = iota
-    ViewCreating
-    ViewCreatingFromIssue
-    ViewDeleting
-    ViewBatchDeleting
-    ViewDiff
-    ViewPRCreating
-    ViewHelp
-    ViewError
-)
-```
-
-**Files to modify**:
-- Create `pkg/workspace/workspace.go` — service layer
-- Split `pkg/tui/tui.go` into multiple files
-- Update `cmd/opentree/cmd/*.go` to use workspace service
+**Still open** (separate work items):
+- Split TUI file into multiple files (model, update, view, styles, commands)
+- Replace boolean flags with explicit view states
 
 ---
 
@@ -218,7 +186,7 @@ const (
 
 | Priority | Issue | Impact | Effort |
 |----------|-------|--------|--------|
-| **P0** | Extract `WorkspaceService` from TUI | Enables testability, removes duplication between TUI and CLI | Medium |
+| ~~**P0**~~ | ~~Extract `WorkspaceService` from TUI~~ | ~~Enables testability, removes duplication between TUI and CLI~~ | ~~Medium~~ **DONE** |
 | ~~**P1**~~ | ~~Add file locking to state store~~ | ~~Prevents data corruption in real usage~~ | ~~Low~~ **DONE** |
 | ~~**P1**~~ | ~~Fix agent abstraction (dead code)~~ | ~~Removes confusion, enables proper validation~~ | ~~Low~~ **DONE** |
 | **P2** | Introduce `ProcessManager` interface | Enables testing, future flexibility beyond tmux | Medium |
