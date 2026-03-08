@@ -212,6 +212,83 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 	return "success", nil
 }
 
+// BranchStatus holds the combined branch push and PR status for a workspace.
+type BranchStatus struct {
+	Pushed         bool
+	RemoteDeleted  bool   // branch was previously pushed but no longer exists in remote
+	PRURL          string
+	PRState        string // "open", "merged", "closed", ""
+	MergeConflicts bool
+	CIStatus       string // "success", "failure", "pending", ""
+}
+
+// GetBranchAndPRStatus returns the combined remote branch existence and PR status
+// for the given branch. repoDir is used as the working directory for git commands.
+// wasPushed should reflect the previously known BranchPushed state so RemoteDeleted
+// can be set correctly when the branch disappears from remote.
+func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool) (BranchStatus, error) {
+	var status BranchStatus
+
+	// Check remote branch existence via git ls-remote (fast, no API rate limit).
+	lsCmd := exec.Command("git", "ls-remote", "--heads", "origin", branch)
+	if repoDir != "" {
+		lsCmd.Dir = repoDir
+	}
+	lsOut, _ := lsCmd.Output()
+	remoteExists := strings.TrimSpace(string(lsOut)) != ""
+	status.Pushed = remoteExists
+	if wasPushed && !remoteExists {
+		status.RemoteDeleted = true
+	}
+
+	// Fetch PR info in a single gh call if available.
+	if !pm.IsInstalled() {
+		return status, nil
+	}
+	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// No PR found for this branch — not an error.
+		return status, nil
+	}
+	var raw struct {
+		URL      string `json:"url"`
+		State    string `json:"state"`
+		Mergeable string `json:"mergeable"`
+		StatusCheckRollup []struct {
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"statusCheckRollup"`
+	}
+	if err := json.Unmarshal(output, &raw); err != nil {
+		return status, nil
+	}
+	status.PRURL = raw.URL
+	status.PRState = strings.ToLower(raw.State)
+	status.MergeConflicts = strings.ToUpper(raw.Mergeable) == "CONFLICTING"
+
+	// Derive CI status (same logic as GetPRCIStatus).
+	for _, check := range raw.StatusCheckRollup {
+		c := strings.ToUpper(check.Conclusion)
+		if c == "FAILURE" || c == "CANCELLED" || c == "TIMED_OUT" {
+			status.CIStatus = "failure"
+			return status, nil
+		}
+	}
+	for _, check := range raw.StatusCheckRollup {
+		s := strings.ToUpper(check.Status)
+		if s == "IN_PROGRESS" || s == "QUEUED" || s == "PENDING" {
+			status.CIStatus = "pending"
+			return status, nil
+		}
+	}
+	if len(raw.StatusCheckRollup) > 0 {
+		status.CIStatus = "success"
+	}
+
+	return status, nil
+}
+
 // IsInstalled reports whether the gh CLI is available on PATH.
 // The result is cached after the first check.
 func (pm *PRManager) IsInstalled() bool {

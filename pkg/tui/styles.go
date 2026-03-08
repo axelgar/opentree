@@ -175,6 +175,30 @@ var (
 				Foreground(lipgloss.Color("#F4A261")).
 				Bold(true)
 
+	// branch status badges
+	notPushedBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#666")).
+				Padding(0, 1)
+
+	pushedBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#0A6EBD")).
+				Padding(0, 1)
+
+	conflictsBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#E76F51")).
+				Padding(0, 1)
+
+	closedBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888")).
+				Padding(0, 1)
+
+	remoteDeletedBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("196")).
+				Padding(0, 1)
+
 	// agent completion badges
 	agentSuccessStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFF")).
