@@ -6,7 +6,7 @@ Think [Conductor](https://conductor.build), but for the terminal.
 
 opentree is a cross-platform CLI tool that manages multiple AI coding agent sessions. Each session runs in an isolated git worktree with its own branch, orchestrated via tmux. Perfect for working on multiple features/fixes simultaneously without context-switching overhead.
 
-![opentree TUI](docs/screenshot.png)
+<img src="docs/screenshot.png" style="max-width: 100%;">
 
 ## Features
 
@@ -82,10 +82,12 @@ opentree
 ```
 
 **Navigation:**
+
 - `↑`/`k` - move up
 - `↓`/`j` - move down
 
 **Actions:**
+
 - `n` - Create new workspace (prompts for branch name, then base branch)
 - `i` - Create workspace from a GitHub issue number
 - `Enter` - Attach to selected workspace
@@ -115,6 +117,7 @@ opentree new fix/login-bug --base dev # Branch off 'dev' instead of 'main'
 ```
 
 Creates:
+
 1. Git worktree at `.opentree/<branch-name>/`
 2. New branch (or checks out existing)
 3. tmux window in `opentree-<repo>` session
@@ -273,6 +276,7 @@ opentree must be run from inside a git repository. Navigate to your project root
 ### "Error: tmux not found"
 
 Install tmux:
+
 - **macOS**: `brew install tmux`
 - **Ubuntu/Debian**: `sudo apt install tmux`
 - **Arch**: `sudo pacman -S tmux`
