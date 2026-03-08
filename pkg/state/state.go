@@ -30,10 +30,13 @@ type Workspace struct {
 	Status      string    `json:"status"` // active, idle, stopped
 	Agent       string    `json:"agent"`
 	WorktreeDir string    `json:"worktree_dir"`
-	PRURL       string    `json:"pr_url,omitempty"`
-	PRStatus    string    `json:"pr_status,omitempty"` // "open", "merged", "closed"
-	IssueNumber int       `json:"issue_number,omitempty"`
-	IssueTitle  string    `json:"issue_title,omitempty"`
+	PRURL          string `json:"pr_url,omitempty"`
+	PRStatus       string `json:"pr_status,omitempty"` // "open", "merged", "closed"
+	IssueNumber    int    `json:"issue_number,omitempty"`
+	IssueTitle     string `json:"issue_title,omitempty"`
+	BranchPushed   bool   `json:"branch_pushed,omitempty"`
+	MergeConflicts bool   `json:"merge_conflicts,omitempty"`
+	RemoteDeleted  bool   `json:"remote_deleted,omitempty"`
 }
 
 // New creates a new state store

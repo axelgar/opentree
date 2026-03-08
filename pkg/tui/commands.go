@@ -72,10 +72,11 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := m.svc.Create(name, baseBranch); err != nil {
+		ws, err := m.svc.Create(name, baseBranch)
+		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
 	}
 }
 
@@ -85,10 +86,11 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 		if err != nil || issueNum <= 0 {
 			return errMsg{fmt.Errorf("invalid issue number: %s", issueNumStr)}
 		}
-		if _, err := m.svc.CreateFromIssue(issueNum, m.cfg.Worktree.DefaultBase); err != nil {
+		ws, err := m.svc.CreateFromIssue(issueNum, m.cfg.Worktree.DefaultBase)
+		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
 	}
 }
 
@@ -193,6 +195,16 @@ func (m Model) checkCIStatusCmd(wsName, branch string) tea.Cmd {
 			return nil
 		}
 		return ciStatusCheckedMsg{wsName: wsName, ciStatus: status}
+	}
+}
+
+func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bool) tea.Cmd {
+	return func() tea.Msg {
+		status, err := m.prMgr.GetBranchAndPRStatus(branch, repoDir, wasPushed)
+		if err != nil {
+			return nil
+		}
+		return branchStatusCheckedMsg{wsName: wsName, status: status}
 	}
 }
 

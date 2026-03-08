@@ -205,11 +205,15 @@ s.WriteString("\n\n")
 			if ws.IssueNumber > 0 {
 				title += "  " + issueBadgeStyle.Render(fmt.Sprintf("#%d", ws.IssueNumber))
 			}
-			if ws.PRStatus == "merged" {
+			switch {
+			case ws.PRStatus == "merged":
 				title += "  " + mergedBadgeStyle.Render("merged · ready to delete")
-			} else if ws.PRStatus == "open" {
-				title += "  " + prOpenBadgeStyle.Render("PR open")
-				// CI badge
+			case ws.PRStatus == "closed":
+				title += "  " + closedBadgeStyle.Render("PR closed")
+			case ws.RemoteDeleted:
+				title += "  " + remoteDeletedBadgeStyle.Render("remote deleted")
+			case ws.PRStatus == "open" && ws.MergeConflicts:
+				title += "  " + conflictsBadgeStyle.Render("PR open · conflicts")
 				if ci, ok := m.ciStatus[ws.Name]; ok {
 					switch ci {
 					case "success":
@@ -220,6 +224,22 @@ s.WriteString("\n\n")
 						title += " " + ciPendingStyle.Render("⟳ CI")
 					}
 				}
+			case ws.PRStatus == "open":
+				title += "  " + prOpenBadgeStyle.Render("PR open")
+				if ci, ok := m.ciStatus[ws.Name]; ok {
+					switch ci {
+					case "success":
+						title += " " + ciSuccessStyle.Render("✓ CI")
+					case "failure":
+						title += " " + ciFailureStyle.Render("✗ CI")
+					case "pending":
+						title += " " + ciPendingStyle.Render("⟳ CI")
+					}
+				}
+			case ws.BranchPushed:
+				title += "  " + pushedBadgeStyle.Render("pushed")
+			default:
+				title += "  " + notPushedBadgeStyle.Render("not pushed")
 			}
 
 			// Agent completion badge

@@ -267,7 +267,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
-		return m, m.loadWorkspacesCmd
+		cmds := []tea.Cmd{m.loadWorkspacesCmd}
+		if msg.wsName != "" {
+			cmds = append(cmds, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false))
+		}
+		return m, tea.Batch(cmds...)
 
 	case deletedWorkspaceMsg:
 		m.selected = make(map[string]bool)
@@ -295,7 +299,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ws.PRStatus = "open"
 			_ = m.stateStore.UpdateWorkspace(ws)
 		}
-		return m, tea.Batch(m.loadWorkspacesCmd, m.checkPRStatusCmd(msg.wsName, ""))
+		var branch, worktreeDir string
+		var wasPushed bool
+		for _, item := range m.workspaces {
+			if item.Name == msg.wsName {
+				branch = item.Branch
+				worktreeDir = item.WorktreeDir
+				wasPushed = item.BranchPushed
+				break
+			}
+		}
+		return m, tea.Batch(m.loadWorkspacesCmd, m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed))
 
 	case prContentGeneratedMsg:
 		m.prGenerating = false
@@ -312,10 +326,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		}
 		for _, ws := range m.workspaces {
-			if ws.PRURL != "" && ws.PRStatus != "merged" {
-				cmds = append(cmds, m.checkPRStatusCmd(ws.Name, ws.Branch))
-				cmds = append(cmds, m.checkCIStatusCmd(ws.Name, ws.Branch))
+			// Skip workspaces that are fully done (merged PR and remote branch gone).
+			if ws.PRStatus == "merged" && ws.RemoteDeleted {
+				continue
 			}
+			cmds = append(cmds, m.checkBranchStatusCmd(ws.Name, ws.Branch, ws.WorktreeDir, ws.BranchPushed))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -339,6 +354,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ciStatus = make(map[string]string)
 		}
 		m.ciStatus[msg.wsName] = msg.ciStatus
+
+	case branchStatusCheckedMsg:
+		ws, err := m.stateStore.GetWorkspace(msg.wsName)
+		if err == nil {
+			ws.BranchPushed = msg.status.Pushed
+			ws.RemoteDeleted = msg.status.RemoteDeleted
+			ws.MergeConflicts = msg.status.MergeConflicts
+			if msg.status.PRURL != "" {
+				ws.PRURL = msg.status.PRURL
+			}
+			if msg.status.PRState != "" {
+				ws.PRStatus = msg.status.PRState
+			}
+			_ = m.stateStore.UpdateWorkspace(ws)
+		}
+		for i, item := range m.workspaces {
+			if item.Name == msg.wsName {
+				m.workspaces[i].BranchPushed = msg.status.Pushed
+				m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
+				m.workspaces[i].MergeConflicts = msg.status.MergeConflicts
+				if msg.status.PRURL != "" {
+					m.workspaces[i].PRURL = msg.status.PRURL
+				}
+				if msg.status.PRState != "" {
+					m.workspaces[i].PRStatus = msg.status.PRState
+				}
+				break
+			}
+		}
+		if msg.status.CIStatus != "" {
+			if m.ciStatus == nil {
+				m.ciStatus = make(map[string]string)
+			}
+			m.ciStatus[msg.wsName] = msg.status.CIStatus
+		}
 
 	case attachFinishedMsg:
 		if msg.err != nil {

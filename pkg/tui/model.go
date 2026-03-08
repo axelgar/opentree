@@ -109,7 +109,11 @@ type loadedWorkspacesMsg struct {
 	workspaces []WorkspaceItem
 }
 
-type createdWorkspaceMsg struct{}
+type createdWorkspaceMsg struct {
+	wsName      string
+	branch      string
+	worktreeDir string
+}
 type deletedWorkspaceMsg struct{}
 type errMsg struct{ err error }
 type clearErrorMsg struct{}
@@ -125,6 +129,10 @@ type prStatusCheckedMsg struct {
 type ciStatusCheckedMsg struct {
 	wsName   string
 	ciStatus string
+}
+type branchStatusCheckedMsg struct {
+	wsName string
+	status github.BranchStatus
 }
 type refreshTickMsg struct{}
 type previewTickMsg struct{}
