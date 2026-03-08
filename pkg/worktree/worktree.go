@@ -50,6 +50,45 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 	return nil
 }
 
+// CreateFromRemote creates a new git worktree for a branch that already exists on the remote.
+// It fetches the branch from origin and checks it out into a new worktree directory.
+func (m *Manager) CreateFromRemote(branchName string) error {
+	dirName := gitutil.SanitizeBranchName(branchName)
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	// Check if worktree already exists
+	if _, err := os.Stat(worktreePath); err == nil {
+		return fmt.Errorf("worktree already exists: %s", worktreePath)
+	}
+
+	// Create base directory if it doesn't exist
+	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
+	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
+	}
+
+	// Fetch the remote branch
+	fetchCmd := exec.Command("git", "fetch", "origin", branchName)
+	fetchCmd.Dir = m.repoRoot
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to fetch remote branch %q: %w\nOutput: %s", branchName, err, output)
+	}
+
+	// Try to create worktree tracking the remote branch (creates local branch)
+	cmd := exec.Command("git", "worktree", "add", "--track", "-b", branchName, worktreePath, "origin/"+branchName)
+	cmd.Dir = m.repoRoot
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// Local branch may already exist; fall back to checking it out directly
+		cmd2 := exec.Command("git", "worktree", "add", worktreePath, branchName)
+		cmd2.Dir = m.repoRoot
+		if output2, err2 := cmd2.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("failed to create git worktree: %w\nOutput: %s\nFallback output: %s", err, output, output2)
+		}
+	}
+
+	return nil
+}
+
 // List returns all opentree-managed worktrees
 func (m *Manager) List() ([]Worktree, error) {
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")

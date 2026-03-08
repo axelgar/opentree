@@ -125,7 +125,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Two-step workspace create / issue mode
+		// Two-step workspace create / issue / remote branch mode
 		if m.creating {
 			switch msg.String() {
 			case "enter":
@@ -139,6 +139,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.SetValue("")
 					m.input.Placeholder = "New branch name"
 					return m, m.createWorkspaceFromIssueCmd(val)
+				}
+				if m.remoteBranchMode {
+					m.creating = false
+					m.remoteBranchMode = false
+					m.input.SetValue("")
+					m.input.Placeholder = "New branch name"
+					return m, m.createWorkspaceFromRemoteCmd(val)
 				}
 				if m.createStep == 0 {
 					m.newBranchName = val
@@ -158,6 +165,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.creating = false
 				m.issueMode = false
+				m.remoteBranchMode = false
 				m.createStep = 0
 				m.newBranchName = ""
 				m.input.SetValue("")
@@ -194,6 +202,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.creating = true
 			m.issueMode = true
 			m.input.Placeholder = "GitHub issue number"
+			m.input.SetValue("")
+			m.input.Focus()
+			return m, textinput.Blink
+		case key.Matches(msg, m.keys.Remote):
+			m.creating = true
+			m.remoteBranchMode = true
+			m.input.Placeholder = "Remote branch name"
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink

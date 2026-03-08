@@ -80,6 +80,16 @@ func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 	}
 }
 
+func (m Model) createWorkspaceFromRemoteCmd(branchName string) tea.Cmd {
+	return func() tea.Msg {
+		ws, err := m.svc.CreateFromRemoteBranch(branchName)
+		if err != nil {
+			return errMsg{err}
+		}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+	}
+}
+
 func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 	return func() tea.Msg {
 		issueNum, err := strconv.Atoi(strings.TrimSpace(issueNumStr))

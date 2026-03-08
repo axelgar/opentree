@@ -53,11 +53,12 @@ type Model struct {
 	height     int
 
 	// two-step create dialog
-	input         textinput.Model
-	creating      bool
-	issueMode     bool
-	createStep    int
-	newBranchName string
+	input            textinput.Model
+	creating         bool
+	issueMode        bool
+	remoteBranchMode bool
+	createStep       int
+	newBranchName    string
 
 	// delete confirmation (single or batch)
 	deleting     bool

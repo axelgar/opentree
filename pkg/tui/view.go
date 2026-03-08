@@ -100,6 +100,15 @@ func (m Model) View() string {
 		))
 	}
 
+	// Remote branch creation dialog
+	if m.creating && m.remoteBranchMode {
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
+			titleStyle.Render("Create Workspace from Remote Branch"),
+			m.input.View(),
+			helpStyle.Render("Enter remote branch name • Esc to cancel"),
+		))
+	}
+
 	// Two-step create dialog
 	if m.creating {
 		var stepLabel string

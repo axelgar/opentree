@@ -15,14 +15,12 @@ var NewCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
-		baseBranch, _ := cmd.Flags().GetString("base")
+		fromRemote, _ := cmd.Flags().GetBool("remote")
+
 		// Load config
 		cfg, err := config.Load("")
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
-		}
-		if baseBranch == "" {
-			baseBranch = cfg.Worktree.DefaultBase
 		}
 
 		repoRoot, err := gitutil.RepoRoot()
@@ -33,6 +31,22 @@ var NewCmd = &cobra.Command{
 		svc, err := workspace.New(repoRoot, cfg)
 		if err != nil {
 			return err
+		}
+
+		if fromRemote {
+			ws, err := svc.CreateFromRemoteBranch(branchName)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Checked out remote branch '%s' into new workspace\n", ws.Name)
+			fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
+			fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
+			return nil
+		}
+
+		baseBranch, _ := cmd.Flags().GetString("base")
+		if baseBranch == "" {
+			baseBranch = cfg.Worktree.DefaultBase
 		}
 
 		ws, err := svc.Create(branchName, baseBranch)
@@ -49,4 +63,5 @@ var NewCmd = &cobra.Command{
 
 func init() {
 	NewCmd.Flags().StringP("base", "b", "", "Base branch to create worktree from (default: config default)")
+	NewCmd.Flags().BoolP("remote", "r", false, "Check out an existing remote branch instead of creating a new one")
 }
