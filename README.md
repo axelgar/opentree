@@ -6,7 +6,7 @@ Think [Conductor](https://conductor.build), but for the terminal.
 
 opentree is a cross-platform CLI tool that manages multiple AI coding agent sessions. Each session runs in an isolated git worktree with its own branch, orchestrated via tmux. Perfect for working on multiple features/fixes simultaneously without context-switching overhead.
 
-<img src="docs/screenshot.png" style="max-width: 100%;">
+<img src="docs/screenshot.png" style="width: 100%;max-width: 100%;">
 
 ## Features
 
