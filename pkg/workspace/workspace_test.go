@@ -210,6 +210,80 @@ func newWithMock(repoRoot string, cfg *config.Config, pm ProcessManager) (*Servi
 	return NewService(repoRoot, cfg, wt, pm, st, nil), nil
 }
 
+// initRepoWithRemote creates a bare "origin" repo, clones it locally, and
+// pushes branchName to origin. Returns the local clone directory.
+func initRepoWithRemote(t *testing.T, branchName string) string {
+	t.Helper()
+	remoteDir := t.TempDir()
+	localDir := t.TempDir()
+
+	runIn := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	runIn(remoteDir, "git", "init", "--bare")
+	runIn(localDir, "git", "clone", remoteDir, ".")
+	runIn(localDir, "git", "config", "user.email", "test@example.com")
+	runIn(localDir, "git", "config", "user.name", "Test")
+	runIn(localDir, "git", "config", "commit.gpgsign", "false")
+	runIn(localDir, "git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "init")
+	runIn(localDir, "git", "push", "origin", "HEAD:main")
+	runIn(localDir, "git", "checkout", "-b", branchName)
+	runIn(localDir, "git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "feat commit")
+	runIn(localDir, "git", "push", "origin", branchName)
+	runIn(localDir, "git", "checkout", "main")
+	return localDir
+}
+
+func TestCreateFromRemoteBranch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t, "feat/remote-thing")
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(localDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	ws, err := svc.CreateFromRemoteBranch("feat/remote-thing")
+	if err != nil {
+		t.Fatalf("CreateFromRemoteBranch: %v", err)
+	}
+
+	if ws.Name != "feat/remote-thing" {
+		t.Errorf("ws.Name = %q, want %q", ws.Name, "feat/remote-thing")
+	}
+	if ws.BaseBranch != "" {
+		t.Errorf("ws.BaseBranch = %q, want empty string", ws.BaseBranch)
+	}
+	if !ws.BranchPushed {
+		t.Error("ws.BranchPushed should be true for a remote branch workspace")
+	}
+	if len(mock.createWindowCalls) != 1 || mock.createWindowCalls[0] != "feat/remote-thing" {
+		t.Errorf("expected CreateWindow called with feat/remote-thing, got %v", mock.createWindowCalls)
+	}
+
+	worktreePath := svc.WorktreePath("feat/remote-thing")
+	if !dirExists(worktreePath) {
+		t.Error("worktree directory should exist after CreateFromRemoteBranch")
+	}
+
+	agentsFile := filepath.Join(worktreePath, "AGENTS.md")
+	if _, err := os.Stat(agentsFile); err != nil {
+		t.Errorf("AGENTS.md not created: %v", err)
+	}
+}
+
 func TestHasChanges_NoWorkspace(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
