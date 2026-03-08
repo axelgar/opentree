@@ -160,6 +160,40 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 	return ws, nil
 }
 
+// CreateFromRemoteBranch creates a workspace from an existing remote branch.
+// The branch is fetched from origin and checked out into a new worktree.
+func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, error) {
+	if err := s.worktrees.CreateFromRemote(branchName); err != nil {
+		return nil, fmt.Errorf("failed to create worktree from remote: %w", err)
+	}
+
+	worktreePath := s.WorktreePath(branchName)
+
+	// Write AGENTS.md so agents discover the status-file convention
+	_ = os.WriteFile(filepath.Join(worktreePath, "AGENTS.md"), []byte(agentsInstructions), 0644)
+
+	agentCmd := s.cfg.Agent.Command
+	if err := s.process.CreateWindow(branchName, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
+		return nil, fmt.Errorf("failed to create tmux window: %w", err)
+	}
+
+	ws := &state.Workspace{
+		Name:         branchName,
+		Branch:       branchName,
+		BaseBranch:   "",
+		CreatedAt:    time.Now(),
+		Status:       "active",
+		Agent:        agentCmd,
+		WorktreeDir:  worktreePath,
+		BranchPushed: true,
+	}
+	if err := s.state.AddWorkspace(ws); err != nil {
+		return nil, fmt.Errorf("failed to save workspace state: %w", err)
+	}
+
+	return ws, nil
+}
+
 // Delete removes a workspace: kills tmux window, removes worktree and branch, deletes state.
 // If this was the last workspace, the tmux session is also killed.
 func (s *Service) Delete(name string) error {

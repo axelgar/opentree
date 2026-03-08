@@ -201,6 +201,90 @@ func TestCreate_AlreadyExists(t *testing.T) {
 	}
 }
 
+// ---- CreateFromRemote ----
+
+// initRepoWithRemote creates a bare "origin" repo, clones it locally, and
+// pushes branchName to origin. Returns the local clone directory.
+func initRepoWithRemote(t *testing.T, branchName string) string {
+	t.Helper()
+	remoteDir := t.TempDir()
+	localDir := t.TempDir()
+
+	runIn := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	runIn(remoteDir, "git", "init", "--bare")
+	runIn(localDir, "git", "clone", remoteDir, ".")
+	runIn(localDir, "git", "config", "user.email", "test@example.com")
+	runIn(localDir, "git", "config", "user.name", "Test")
+	runIn(localDir, "git", "config", "commit.gpgsign", "false")
+	runIn(localDir, "git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "init")
+	runIn(localDir, "git", "push", "origin", "HEAD:main")
+	runIn(localDir, "git", "checkout", "-b", branchName)
+	runIn(localDir, "git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "feat commit")
+	runIn(localDir, "git", "push", "origin", branchName)
+	runIn(localDir, "git", "checkout", "main")
+	return localDir
+}
+
+func TestCreateFromRemote_Success(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t, "feat/remote-thing")
+	m := New(localDir, ".opentree")
+
+	if err := m.CreateFromRemote("feat/remote-thing"); err != nil {
+		t.Fatalf("CreateFromRemote() failed: %v", err)
+	}
+
+	expectedDir := filepath.Join(localDir, ".opentree", "feat-remote-thing")
+	if _, err := os.Stat(expectedDir); err != nil {
+		t.Errorf("worktree directory not created at %q: %v", expectedDir, err)
+	}
+}
+
+func TestCreateFromRemote_AlreadyExists(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t, "feat/dup-remote")
+	m := New(localDir, ".opentree")
+
+	if err := m.CreateFromRemote("feat/dup-remote"); err != nil {
+		t.Fatalf("CreateFromRemote() first call failed: %v", err)
+	}
+	err := m.CreateFromRemote("feat/dup-remote")
+	if err == nil {
+		t.Fatal("CreateFromRemote() second call expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "worktree already exists") {
+		t.Errorf("expected 'worktree already exists' in error, got: %v", err)
+	}
+}
+
+func TestCreateFromRemote_NonExistentBranch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t, "real-branch")
+	m := New(localDir, ".opentree")
+
+	err := m.CreateFromRemote("no-such-branch")
+	if err == nil {
+		t.Fatal("CreateFromRemote() expected error for non-existent branch, got nil")
+	}
+}
+
 // ---- List ----
 
 func TestList_Empty(t *testing.T) {

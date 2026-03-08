@@ -125,8 +125,63 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Two-step workspace create / issue mode
+		// Two-step workspace create / issue / remote branch mode
 		if m.creating {
+			// Remote branch mode: handle suggestion navigation before input
+			if m.remoteBranchMode {
+				switch msg.String() {
+				case "up":
+					if m.branchSuggestionCursor > 0 {
+						m.branchSuggestionCursor--
+					}
+					return m, nil
+				case "down":
+					if m.branchSuggestionCursor < len(m.filteredBranches)-1 {
+						m.branchSuggestionCursor++
+					}
+					return m, nil
+				case "tab":
+					if len(m.filteredBranches) > 0 {
+						m.input.SetValue(m.filteredBranches[m.branchSuggestionCursor])
+						m.filteredBranches = filterBranches(m.remoteBranches, m.input.Value())
+						m.branchSuggestionCursor = 0
+					}
+					return m, nil
+				case "enter":
+					var branchName string
+					if m.branchSuggestionCursor < len(m.filteredBranches) {
+						branchName = m.filteredBranches[m.branchSuggestionCursor]
+					} else {
+						branchName = m.input.Value()
+					}
+					if branchName == "" {
+						return m, nil
+					}
+					m.creating = false
+					m.remoteBranchMode = false
+					m.remoteBranches = nil
+					m.filteredBranches = nil
+					m.branchSuggestionCursor = 0
+					m.input.SetValue("")
+					m.input.Placeholder = "New branch name"
+					return m, m.createWorkspaceFromRemoteCmd(branchName)
+				case "esc":
+					m.creating = false
+					m.remoteBranchMode = false
+					m.remoteBranches = nil
+					m.filteredBranches = nil
+					m.branchSuggestionCursor = 0
+					m.input.SetValue("")
+					m.input.Placeholder = "New branch name"
+					return m, nil
+				default:
+					m.input, cmd = m.input.Update(msg)
+					m.filteredBranches = filterBranches(m.remoteBranches, m.input.Value())
+					m.branchSuggestionCursor = 0
+					return m, cmd
+				}
+			}
+
 			switch msg.String() {
 			case "enter":
 				val := m.input.Value()
@@ -197,6 +252,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
+		case key.Matches(msg, m.keys.Remote):
+			m.creating = true
+			m.remoteBranchMode = true
+			m.remoteBranches = nil
+			m.filteredBranches = nil
+			m.branchSuggestionCursor = 0
+			m.input.Placeholder = "Remote branch name"
+			m.input.SetValue("")
+			m.input.Focus()
+			return m, tea.Batch(textinput.Blink, m.loadRemoteBranchesCmd())
 		case key.Matches(msg, m.keys.Enter):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
@@ -257,6 +322,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 		}
+
+	case remoteBranchesLoadedMsg:
+		m.remoteBranches = msg.branches
+		m.filteredBranches = filterBranches(msg.branches, m.input.Value())
+		m.branchSuggestionCursor = 0
 
 	case loadedWorkspacesMsg:
 		m.workspaces = msg.workspaces

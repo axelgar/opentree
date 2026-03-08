@@ -7,6 +7,7 @@ type keyMap struct {
 	Down   key.Binding
 	New    key.Binding
 	Issue  key.Binding
+	Remote key.Binding
 	Enter  key.Binding
 	Diff   key.Binding
 	PR     key.Binding
@@ -21,12 +22,12 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.New, k.Issue, k.Enter, k.Diff, k.Delete, k.Quit, k.Help}
+	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Delete, k.Quit, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.New, k.Issue, k.Enter},
+		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Select, k.Delete},
 		{k.Filter, k.Sort, k.ErrLog, k.Quit, k.Help},
 	}
@@ -48,6 +49,10 @@ var keys = keyMap{
 	Issue: key.NewBinding(
 		key.WithKeys("i"),
 		key.WithHelp("i", "from GH issue"),
+	),
+	Remote: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "from remote branch"),
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),

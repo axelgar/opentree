@@ -985,3 +985,220 @@ func TestView_StatusBar_DoneCount(t *testing.T) {
 		t.Errorf("statusBar() should show '2 done', got: %s", bar)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Remote branch mode (combobox suggestions)
+// ---------------------------------------------------------------------------
+
+func TestFilterBranches_EmptyQueryReturnsAll(t *testing.T) {
+	branches := []string{"main", "feat/alpha", "feat/beta", "fix/bug"}
+	got := filterBranches(branches, "")
+	if len(got) != len(branches) {
+		t.Errorf("filterBranches with empty query: got %d, want %d", len(got), len(branches))
+	}
+}
+
+func TestFilterBranches_CaseInsensitive(t *testing.T) {
+	branches := []string{"feat/Alpha", "feat/beta", "Fix/Bug"}
+	got := filterBranches(branches, "FEAT")
+	if len(got) != 2 {
+		t.Errorf("filterBranches('FEAT'): got %d results, want 2; results: %v", len(got), got)
+	}
+}
+
+func TestFilterBranches_SubstringMatch(t *testing.T) {
+	branches := []string{"feat/login", "feat/logout", "fix/crash", "main"}
+	got := filterBranches(branches, "log")
+	if len(got) != 2 {
+		t.Errorf("filterBranches('log'): got %d results, want 2; results: %v", len(got), got)
+	}
+}
+
+func TestFilterBranches_NoMatch(t *testing.T) {
+	branches := []string{"feat/alpha", "fix/bug"}
+	got := filterBranches(branches, "zzz")
+	if len(got) != 0 {
+		t.Errorf("filterBranches('zzz'): got %d results, want 0", len(got))
+	}
+}
+
+func TestRemoteBranchMode_RKeyEntersMode(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, keyMsg("r"))
+
+	if !m.creating {
+		t.Error("expected creating=true after pressing r")
+	}
+	if !m.remoteBranchMode {
+		t.Error("expected remoteBranchMode=true after pressing r")
+	}
+}
+
+func TestRemoteBranchMode_EscResets(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.remoteBranches = []string{"feat/a", "feat/b"}
+	m.filteredBranches = []string{"feat/a", "feat/b"}
+	m.branchSuggestionCursor = 1
+
+	m, cmd := applyUpdate(m, keyMsg("esc"))
+
+	if m.creating {
+		t.Error("expected creating=false after esc")
+	}
+	if m.remoteBranchMode {
+		t.Error("expected remoteBranchMode=false after esc")
+	}
+	if len(m.remoteBranches) != 0 {
+		t.Errorf("remoteBranches should be cleared after esc, got %v", m.remoteBranches)
+	}
+	if m.branchSuggestionCursor != 0 {
+		t.Errorf("branchSuggestionCursor = %d, want 0 after esc", m.branchSuggestionCursor)
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd after esc")
+	}
+}
+
+func TestRemoteBranchMode_DownMovescursor(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.filteredBranches = []string{"feat/a", "feat/b", "feat/c"}
+	m.branchSuggestionCursor = 0
+
+	m, _ = applyUpdate(m, keyMsg("down"))
+
+	if m.branchSuggestionCursor != 1 {
+		t.Errorf("branchSuggestionCursor = %d, want 1 after down", m.branchSuggestionCursor)
+	}
+}
+
+func TestRemoteBranchMode_UpMovescursor(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.filteredBranches = []string{"feat/a", "feat/b"}
+	m.branchSuggestionCursor = 1
+
+	m, _ = applyUpdate(m, keyMsg("up"))
+
+	if m.branchSuggestionCursor != 0 {
+		t.Errorf("branchSuggestionCursor = %d, want 0 after up", m.branchSuggestionCursor)
+	}
+}
+
+func TestRemoteBranchMode_UpClampsAtZero(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.filteredBranches = []string{"feat/a", "feat/b"}
+	m.branchSuggestionCursor = 0
+
+	m, _ = applyUpdate(m, keyMsg("up"))
+
+	if m.branchSuggestionCursor != 0 {
+		t.Errorf("branchSuggestionCursor = %d, want 0 (clamped)", m.branchSuggestionCursor)
+	}
+}
+
+func TestRemoteBranchMode_DownClampsAtEnd(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.filteredBranches = []string{"feat/a", "feat/b"}
+	m.branchSuggestionCursor = 1
+
+	m, _ = applyUpdate(m, keyMsg("down"))
+
+	if m.branchSuggestionCursor != 1 {
+		t.Errorf("branchSuggestionCursor = %d, want 1 (clamped at end)", m.branchSuggestionCursor)
+	}
+}
+
+func TestRemoteBranchMode_TabSelectsSuggestion(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.remoteBranches = []string{"feat/alpha", "feat/beta"}
+	m.filteredBranches = []string{"feat/alpha", "feat/beta"}
+	m.branchSuggestionCursor = 1
+
+	m, _ = applyUpdate(m, keyMsg("tab"))
+
+	if m.input.Value() != "feat/beta" {
+		t.Errorf("input value after tab = %q, want %q", m.input.Value(), "feat/beta")
+	}
+	if m.branchSuggestionCursor != 0 {
+		t.Errorf("cursor should reset to 0 after tab, got %d", m.branchSuggestionCursor)
+	}
+}
+
+func TestRemoteBranchMode_EnterWithHighlightedSuggestion(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.filteredBranches = []string{"feat/alpha", "feat/beta"}
+	m.branchSuggestionCursor = 1
+
+	m, cmd := applyUpdate(m, keyMsg("enter"))
+
+	if m.creating {
+		t.Error("expected creating=false after enter")
+	}
+	if m.remoteBranchMode {
+		t.Error("expected remoteBranchMode=false after enter")
+	}
+	if cmd == nil {
+		t.Error("expected non-nil cmd (createWorkspaceFromRemoteCmd) after enter")
+	}
+}
+
+func TestRemoteBranchMode_LoadedBranchesMsgSetsFields(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+
+	m, _ = applyUpdate(m, remoteBranchesLoadedMsg{branches: []string{"feat/a", "feat/b"}})
+
+	if len(m.remoteBranches) != 2 {
+		t.Errorf("remoteBranches len = %d, want 2", len(m.remoteBranches))
+	}
+	if len(m.filteredBranches) != 2 {
+		t.Errorf("filteredBranches len = %d, want 2", len(m.filteredBranches))
+	}
+}
+
+func TestRemoteBranchMode_ViewShowsTitle(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+
+	view := m.View()
+
+	if !strings.Contains(view, "Create Workspace from Remote Branch") {
+		t.Errorf("View() does not show remote branch title\ngot: %s", view)
+	}
+}
+
+func TestRemoteBranchMode_ViewShowsSuggestions(t *testing.T) {
+	m := newTestModel()
+	m.creating = true
+	m.remoteBranchMode = true
+	m.filteredBranches = []string{"feat/alpha", "feat/beta"}
+	m.branchSuggestionCursor = 0
+
+	view := m.View()
+
+	if !strings.Contains(view, "feat/alpha") {
+		t.Errorf("View() does not show suggestion 'feat/alpha'\ngot: %s", view)
+	}
+	if !strings.Contains(view, "feat/beta") {
+		t.Errorf("View() does not show suggestion 'feat/beta'\ngot: %s", view)
+	}
+	// Highlighted item should have "▶"
+	if !strings.Contains(view, "▶") {
+		t.Errorf("View() does not show selection indicator '▶'\ngot: %s", view)
+	}
+}

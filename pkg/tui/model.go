@@ -46,6 +46,7 @@ type Model struct {
 	stateStore  *state.Store
 	prMgr       *github.PRManager
 	cfg         *config.Config
+	repoRoot    string
 
 	workspaces []WorkspaceItem
 	cursor     int
@@ -53,11 +54,17 @@ type Model struct {
 	height     int
 
 	// two-step create dialog
-	input         textinput.Model
-	creating      bool
-	issueMode     bool
-	createStep    int
-	newBranchName string
+	input            textinput.Model
+	creating         bool
+	issueMode        bool
+	remoteBranchMode bool
+	createStep       int
+	newBranchName    string
+
+	// remote branch suggestion list (used in remoteBranchMode)
+	remoteBranches         []string
+	filteredBranches       []string
+	branchSuggestionCursor int
 
 	// delete confirmation (single or batch)
 	deleting     bool
@@ -107,6 +114,10 @@ type Model struct {
 
 type loadedWorkspacesMsg struct {
 	workspaces []WorkspaceItem
+}
+
+type remoteBranchesLoadedMsg struct {
+	branches []string
 }
 
 type createdWorkspaceMsg struct {
@@ -178,6 +189,7 @@ func NewModel() (*Model, error) {
 		stateStore:  st,
 		prMgr:       gh,
 		cfg:         cfg,
+		repoRoot:    repoRoot,
 		input:       ti,
 		help:        help.New(),
 		keys:        keys,
