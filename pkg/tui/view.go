@@ -100,13 +100,31 @@ func (m Model) View() string {
 		))
 	}
 
-	// Remote branch creation dialog
+	// Remote branch creation dialog with suggestion list
 	if m.creating && m.remoteBranchMode {
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
-			titleStyle.Render("Create Workspace from Remote Branch"),
-			m.input.View(),
-			helpStyle.Render("Enter remote branch name • Esc to cancel"),
-		))
+		var sb strings.Builder
+		sb.WriteString(titleStyle.Render("Create Workspace from Remote Branch"))
+		sb.WriteString("\n\n")
+		sb.WriteString(m.input.View())
+		sb.WriteString("\n")
+		if len(m.filteredBranches) > 0 {
+			sb.WriteString("\n")
+			for i, b := range m.filteredBranches {
+				if i == m.branchSuggestionCursor {
+					sb.WriteString(selectedItemStyle.Render("▶ " + b))
+				} else {
+					sb.WriteString(itemStyle.Render("  " + b))
+				}
+				sb.WriteString("\n")
+			}
+		} else if len(m.remoteBranches) == 0 {
+			sb.WriteString("\n")
+			sb.WriteString(helpStyle.Render("  loading branches…"))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render("↑/↓ navigate • Tab select • Enter confirm • Esc cancel"))
+		return appStyle.Render(sb.String())
 	}
 
 	// Two-step create dialog

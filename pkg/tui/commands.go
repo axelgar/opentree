@@ -90,6 +90,29 @@ func (m Model) createWorkspaceFromRemoteCmd(branchName string) tea.Cmd {
 	}
 }
 
+func (m Model) loadRemoteBranchesCmd() tea.Cmd {
+	return func() tea.Msg {
+		branches, _ := gitutil.ListRemoteBranches(m.repoRoot, 10)
+		return remoteBranchesLoadedMsg{branches: branches}
+	}
+}
+
+// filterBranches returns the subset of branches that contain query (case-insensitive).
+// If query is empty, all branches are returned.
+func filterBranches(branches []string, query string) []string {
+	if query == "" {
+		return branches
+	}
+	q := strings.ToLower(query)
+	var out []string
+	for _, b := range branches {
+		if strings.Contains(strings.ToLower(b), q) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 	return func() tea.Msg {
 		issueNum, err := strconv.Atoi(strings.TrimSpace(issueNumStr))
