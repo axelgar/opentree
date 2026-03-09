@@ -9,20 +9,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// configKeys maps dot-notation keys to their description and section.
 var configKeys = map[string]string{
-	"agent.command":        "Command to run as the coding agent",
-	"agent.args":           "Extra arguments passed to the agent (comma-separated)",
-	"worktree.base_dir":    "Directory to store worktrees",
+	"agent.command":         "Command to run as the coding agent",
+	"agent.args":            "Extra arguments passed to the agent (comma-separated)",
+	"worktree.base_dir":     "Directory to store worktrees",
 	"worktree.default_base": "Default base branch for new workspaces",
-	"tmux.session_prefix":  "Prefix for tmux session names",
-	"github.auto_push":     "Auto-push branch before creating PR (true/false)",
+	"tmux.session_prefix":   "Prefix for tmux session names",
+	"github.auto_push":      "Auto-push branch before creating PR (true/false)",
 }
 
 var ConfigCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage opentree configuration",
 	Long: `View and modify opentree configuration.
+
+Configuration is loaded in order of precedence (highest wins):
+  1. Repo config:   opentree.toml in the repository root
+  2. Global config: ~/.config/opentree/opentree.toml
+  3. Defaults:      built-in defaults
+
+Use --global to read/write the global config instead of the repo config.
 
 Available keys:
   agent.command          Command to run as the coding agent
@@ -36,35 +42,62 @@ Available keys:
 	},
 }
 
+var configListGlobal bool
+
 var configListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all configuration values",
+	Use:     "list",
+	Short:   "List all configuration values",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load("")
+		if configListGlobal {
+			cfg, err := config.LoadGlobal()
+			if err != nil {
+				return fmt.Errorf("failed to load global config: %w", err)
+			}
+			fmt.Printf("agent.command = %s\n", cfg.Agent.Command)
+			fmt.Printf("agent.args = %s\n", strings.Join(cfg.Agent.Args, ","))
+			fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
+			fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
+			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
+			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush)
+			return nil
+		}
+
+		cfg, sources, err := config.LoadWithSources("")
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		fmt.Printf("agent.command = %s\n", cfg.Agent.Command)
-		fmt.Printf("agent.args = %s\n", strings.Join(cfg.Agent.Args, ","))
-		fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
-		fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
-		fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
-		fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush)
+		fmt.Printf("agent.command = %s  (%s)\n", cfg.Agent.Command, sources.AgentCommand)
+		fmt.Printf("agent.args = %s  (%s)\n", strings.Join(cfg.Agent.Args, ","), sources.AgentArgs)
+		fmt.Printf("worktree.base_dir = %s  (%s)\n", cfg.Worktree.BaseDir, sources.WorktreeBaseDir)
+		fmt.Printf("worktree.default_base = %s  (%s)\n", cfg.Worktree.DefaultBase, sources.WorktreeDefaultBase)
+		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
+		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush, sources.GitHubAutoPush)
 		return nil
 	},
 }
 
+var configGetGlobal bool
+
 var configGetCmd = &cobra.Command{
-	Use:   "get <key>",
-	Short: "Get a configuration value",
-	Args:  cobra.ExactArgs(1),
+	Use:               "get <key>",
+	Short:             "Get a configuration value",
+	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: configKeyCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load("")
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
+		var cfg *config.Config
+		var err error
+		if configGetGlobal {
+			cfg, err = config.LoadGlobal()
+			if err != nil {
+				return fmt.Errorf("failed to load global config: %w", err)
+			}
+		} else {
+			cfg, err = config.Load("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
 		}
 
 		val, err := getConfigValue(cfg, args[0])
@@ -76,16 +109,33 @@ var configGetCmd = &cobra.Command{
 	},
 }
 
+var configSetGlobal bool
+
 var configSetCmd = &cobra.Command{
-	Use:   "set <key> <value>",
-	Short: "Set a configuration value",
-	Args:  cobra.ExactArgs(2),
+	Use:               "set <key> <value>",
+	Short:             "Set a configuration value",
+	Args:              cobra.ExactArgs(2),
 	ValidArgsFunction: configKeyCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
 
 		if _, ok := configKeys[key]; !ok {
 			return fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
+		}
+
+		if configSetGlobal {
+			cfg, err := config.LoadGlobal()
+			if err != nil {
+				return fmt.Errorf("failed to load global config: %w", err)
+			}
+			if err := setConfigValue(cfg, key, value); err != nil {
+				return err
+			}
+			if err := config.SaveGlobal(cfg); err != nil {
+				return fmt.Errorf("failed to save global config: %w", err)
+			}
+			fmt.Printf("%s = %s  (global)\n", key, value)
+			return nil
 		}
 
 		cfgPath := config.FindConfigFile()
@@ -166,6 +216,10 @@ func configKeyCompletions(cmd *cobra.Command, args []string, toComplete string) 
 }
 
 func init() {
+	configListCmd.Flags().BoolVar(&configListGlobal, "global", false, "List values from the global config only")
+	configGetCmd.Flags().BoolVar(&configGetGlobal, "global", false, "Get value from the global config")
+	configSetCmd.Flags().BoolVar(&configSetGlobal, "global", false, "Set value in the global config (~/.config/opentree/opentree.toml)")
+
 	ConfigCmd.AddCommand(configListCmd)
 	ConfigCmd.AddCommand(configGetCmd)
 	ConfigCmd.AddCommand(configSetCmd)

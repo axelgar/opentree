@@ -229,3 +229,166 @@ func TestSave_CreatesParentDirectory(t *testing.T) {
 		t.Fatalf("Config file not created at %q: %v", path, err)
 	}
 }
+
+
+func TestGlobalConfigPath_UsesXDG(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	got := GlobalConfigPath()
+	want := filepath.Join(dir, "opentree", "opentree.toml")
+	if got != want {
+		t.Errorf("GlobalConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGlobalConfigPath_FallsBackToHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	got := GlobalConfigPath()
+	if got == "" {
+		t.Fatal("GlobalConfigPath() returned empty string")
+	}
+	if filepath.Base(filepath.Dir(got)) != "opentree" {
+		t.Errorf("GlobalConfigPath() = %q, expected .../opentree/opentree.toml", got)
+	}
+}
+
+func TestLoadGlobal_NonExistent_ReturnsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfg, err := LoadGlobal()
+	if err != nil {
+		t.Fatalf("LoadGlobal() failed: %v", err)
+	}
+	defaults := Default()
+	if cfg.Agent.Command != defaults.Agent.Command {
+		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, defaults.Agent.Command)
+	}
+}
+
+func TestSaveGlobal_And_LoadGlobal_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	original := &Config{
+		Agent:    AgentConfig{Command: "my-agent", Args: []string{"-v"}},
+		Worktree: WorktreeConfig{BaseDir: ".trees", DefaultBase: "develop"},
+		Tmux:     TmuxConfig{SessionPrefix: "proj"},
+		GitHub:   GitHubConfig{AutoPush: true},
+	}
+
+	if err := SaveGlobal(original); err != nil {
+		t.Fatalf("SaveGlobal() failed: %v", err)
+	}
+
+	loaded, err := LoadGlobal()
+	if err != nil {
+		t.Fatalf("LoadGlobal() after SaveGlobal() failed: %v", err)
+	}
+
+	if loaded.Agent.Command != original.Agent.Command {
+		t.Errorf("Agent.Command = %q, want %q", loaded.Agent.Command, original.Agent.Command)
+	}
+	if loaded.Worktree.DefaultBase != original.Worktree.DefaultBase {
+		t.Errorf("Worktree.DefaultBase = %q, want %q", loaded.Worktree.DefaultBase, original.Worktree.DefaultBase)
+	}
+}
+
+func TestLoadWithSources_GlobalOverridesDefault(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+
+	globalToml := `
+[agent]
+command = "global-agent"
+`
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte(globalToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+
+	if cfg.Agent.Command != "global-agent" {
+		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, "global-agent")
+	}
+	if sources.AgentCommand != SourceGlobal {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceGlobal)
+	}
+	if sources.WorktreeBaseDir != SourceDefault {
+		t.Errorf("sources.WorktreeBaseDir = %q, want %q", sources.WorktreeBaseDir, SourceDefault)
+	}
+}
+
+func TestLoadWithSources_RepoOverridesGlobal(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+
+	globalToml := `
+[agent]
+command = "global-agent"
+
+[worktree]
+default_base = "develop"
+`
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte(globalToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoToml := `
+[agent]
+command = "repo-agent"
+`
+	repoPath := filepath.Join(t.TempDir(), "opentree.toml")
+	if err := os.WriteFile(repoPath, []byte(repoToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(repoPath)
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+
+	if cfg.Agent.Command != "repo-agent" {
+		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, "repo-agent")
+	}
+	if sources.AgentCommand != SourceRepo {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceRepo)
+	}
+	if cfg.Worktree.DefaultBase != "develop" {
+		t.Errorf("Worktree.DefaultBase = %q, want %q (global value not merged)", cfg.Worktree.DefaultBase, "develop")
+	}
+	if sources.WorktreeDefaultBase != SourceGlobal {
+		t.Errorf("sources.WorktreeDefaultBase = %q, want %q", sources.WorktreeDefaultBase, SourceGlobal)
+	}
+}
+
+func TestLoadWithSources_DefaultsWhenNeitherConfigExists(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+
+	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+
+	defaults := Default()
+	if cfg.Agent.Command != defaults.Agent.Command {
+		t.Errorf("Agent.Command = %q, want default %q", cfg.Agent.Command, defaults.Agent.Command)
+	}
+	if sources.AgentCommand != SourceDefault {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceDefault)
+	}
+	if sources.WorktreeBaseDir != SourceDefault {
+		t.Errorf("sources.WorktreeBaseDir = %q, want %q", sources.WorktreeBaseDir, SourceDefault)
+	}
+}
