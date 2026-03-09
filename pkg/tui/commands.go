@@ -5,10 +5,12 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/workspace"
 )
 
@@ -25,47 +27,53 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		windowMap[w.Name] = w
 	}
 
-	var items []WorkspaceItem
-	for _, ws := range saved {
-		diff, _ := m.worktreeMgr.Diff(ws.Branch, ws.BaseBranch)
-		diffStat := "No changes"
-		lines := strings.Split(strings.TrimSpace(diff), "\n")
-		if len(lines) > 0 && lines[len(lines)-1] != "" {
-			diffStat = lines[len(lines)-1]
-		}
+	items := make([]WorkspaceItem, len(saved))
 
-		win, exists := windowMap[ws.Name]
-		sanitizedName := gitutil.SanitizeBranchName(ws.Name)
-		if !exists {
-			win, exists = windowMap[sanitizedName]
-		}
+	var wg sync.WaitGroup
+	wg.Add(len(saved))
+	for i, ws := range saved {
+		go func(i int, ws *state.Workspace) {
+			defer wg.Done()
 
-		fileChanges, _ := m.worktreeMgr.DiffFileStats(ws.Branch, ws.BaseBranch)
-
-		item := WorkspaceItem{
-			Workspace:   ws,
-			DiffStat:    diffStat,
-			Active:      exists && win.Active,
-			WindowID:    "",
-			FileChanges: fileChanges,
-		}
-		if exists {
-			item.WindowID = win.ID
-		}
-
-		if ws.WorktreeDir != "" {
-			item.UncommittedCount = countUncommitted(ws.WorktreeDir)
-			item.AgentStatus = readAgentStatus(ws.WorktreeDir)
-		}
-
-		if exists {
-			if t, err := m.svc.Process().GetWindowActivity(ws.Name); err == nil {
-				item.LastActivity = t
+			diff, fileChanges, _ := m.worktreeMgr.DiffStats(ws.Branch, ws.BaseBranch)
+			diffStat := "No changes"
+			lines := strings.Split(strings.TrimSpace(diff), "\n")
+			if len(lines) > 0 && lines[len(lines)-1] != "" {
+				diffStat = lines[len(lines)-1]
 			}
-		}
 
-		items = append(items, item)
+			win, exists := windowMap[ws.Name]
+			sanitizedName := gitutil.SanitizeBranchName(ws.Name)
+			if !exists {
+				win, exists = windowMap[sanitizedName]
+			}
+
+			item := WorkspaceItem{
+				Workspace:   ws,
+				DiffStat:    diffStat,
+				Active:      exists && win.Active,
+				WindowID:    "",
+				FileChanges: fileChanges,
+			}
+			if exists {
+				item.WindowID = win.ID
+			}
+
+			if ws.WorktreeDir != "" {
+				item.UncommittedCount = countUncommitted(ws.WorktreeDir)
+				item.AgentStatus = readAgentStatus(ws.WorktreeDir)
+			}
+
+			if exists {
+				if t, err := m.svc.Process().GetWindowActivity(ws.Name); err == nil {
+					item.LastActivity = t
+				}
+			}
+
+			items[i] = item
+		}(i, ws)
 	}
+	wg.Wait()
 
 	return loadedWorkspacesMsg{workspaces: items}
 }

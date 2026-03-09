@@ -1202,3 +1202,38 @@ func TestRemoteBranchMode_ViewShowsSuggestions(t *testing.T) {
 		t.Errorf("View() does not show selection indicator '▶'\ngot: %s", view)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Incremental refresh on create
+// ---------------------------------------------------------------------------
+
+// TestCreatedWorkspaceMsg_NoStateStore verifies that sending a createdWorkspaceMsg
+// to a model with no stateStore does not panic and does not change the workspace
+// list (stateStore lookup is skipped).
+func TestCreatedWorkspaceMsg_NoStateStore(t *testing.T) {
+	m := newTestModel(testWS("existing"))
+
+	m, _ = applyUpdate(m, createdWorkspaceMsg{wsName: "new-ws", branch: "feature/new-ws", worktreeDir: ""})
+
+	// stateStore is nil — no append should happen
+	if len(m.workspaces) != 1 {
+		t.Errorf("workspaces len = %d, want 1 (stateStore nil, no append)", len(m.workspaces))
+	}
+}
+
+// TestCreatedWorkspaceMsg_ClearsCreatingState verifies that the creating spinner
+// flags are cleared when a createdWorkspaceMsg is received.
+func TestCreatedWorkspaceMsg_ClearsCreatingState(t *testing.T) {
+	m := newTestModel()
+	m.workspaceCreating = true
+	m.workspaceCreatingName = "new-ws"
+
+	m, _ = applyUpdate(m, createdWorkspaceMsg{wsName: "new-ws", branch: "feature/new-ws", worktreeDir: ""})
+
+	if m.workspaceCreating {
+		t.Error("workspaceCreating should be false after createdWorkspaceMsg")
+	}
+	if m.workspaceCreatingName != "" {
+		t.Errorf("workspaceCreatingName = %q, want empty", m.workspaceCreatingName)
+	}
+}

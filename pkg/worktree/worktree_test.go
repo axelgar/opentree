@@ -584,3 +584,86 @@ func TestDelete_WithDeleteBranch(t *testing.T) {
 		t.Errorf("branch %q should be deleted after Delete(deleteBranch=true)", branchName)
 	}
 }
+
+// ---- DiffStats ----
+
+func TestDiffStats_NoChanges(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	// Create a worktree with no changes vs base
+	branch := "diffstats-no-changes"
+	if err := m.Create(branch, "HEAD"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stat, files, err := m.DiffStats(branch)
+	if err != nil {
+		t.Fatalf("DiffStats() error: %v", err)
+	}
+
+	// Expect empty stat and no file changes
+	if strings.TrimSpace(stat) != "" {
+		t.Errorf("DiffStats stat = %q, want empty", stat)
+	}
+	if len(files) != 0 {
+		t.Errorf("DiffStats files = %d, want 0", len(files))
+	}
+}
+
+func TestDiffStats_WithCommittedChange(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	stat, files, err := m.DiffStats(branch)
+	if err != nil {
+		t.Fatalf("DiffStats() error: %v", err)
+	}
+
+	// Should report at least 1 file (done.txt committed)
+	if len(files) < 1 {
+		t.Fatalf("DiffStats expected at least 1 file, got %d", len(files))
+	}
+
+	// Stat string should be non-empty
+	if strings.TrimSpace(stat) == "" {
+		t.Errorf("DiffStats stat should be non-empty when changes exist")
+	}
+
+	// done.txt should be present and not marked uncommitted
+	fileMap := make(map[string]FileChange)
+	for _, f := range files {
+		fileMap[f.FileName] = f
+	}
+
+	if _, ok := fileMap["done.txt"]; !ok {
+		t.Error("DiffStats should include done.txt (committed change)")
+	}
+	if f, ok := fileMap["done.txt"]; ok && f.Uncommitted {
+		t.Error("done.txt should NOT be marked Uncommitted")
+	}
+}
+
+func TestDiffStats_MarksUncommittedFiles(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	_, files, err := m.DiffStats(branch)
+	if err != nil {
+		t.Fatalf("DiffStats() error: %v", err)
+	}
+
+	fileMap := make(map[string]FileChange)
+	for _, f := range files {
+		fileMap[f.FileName] = f
+	}
+
+	// wip.txt is staged but not committed — should be marked Uncommitted
+	if wip, ok := fileMap["wip.txt"]; !ok {
+		t.Error("DiffStats should include wip.txt (staged but uncommitted)")
+	} else if !wip.Uncommitted {
+		t.Error("wip.txt should be marked as Uncommitted")
+	}
+}

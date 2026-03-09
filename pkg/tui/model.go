@@ -70,6 +70,12 @@ type Model struct {
 	deleting     bool
 	deleteTarget string // single target; empty means batch (use m.selected)
 
+	// in-flight operation feedback
+	workspaceCreating     bool
+	workspaceCreatingName string
+	workspaceDeleting     bool
+	workspaceDeletingName string
+
 	// agent output preview
 	agentPreview string
 

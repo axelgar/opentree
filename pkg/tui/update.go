@@ -51,6 +51,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					target := m.deleteTarget
 					m.deleting = false
 					m.deleteTarget = ""
+					m.workspaceDeleting = true
+					m.workspaceDeletingName = target
 					return m, m.deleteWorkspaceCmd(target)
 				}
 				// batch delete
@@ -61,6 +63,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.deleting = false
 				m.deleteTarget = ""
 				m.selected = make(map[string]bool)
+				m.workspaceDeleting = true
+				m.workspaceDeletingName = fmt.Sprintf("%d workspaces", len(targets))
 				return m, m.batchDeleteWorkspaceCmd(targets)
 			case "n", "esc":
 				m.deleting = false
@@ -164,6 +168,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.branchSuggestionCursor = 0
 					m.input.SetValue("")
 					m.input.Placeholder = "New branch name"
+					m.workspaceCreating = true
+					m.workspaceCreatingName = branchName
 					return m, m.createWorkspaceFromRemoteCmd(branchName)
 				case "esc":
 					m.creating = false
@@ -193,6 +199,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.issueMode = false
 					m.input.SetValue("")
 					m.input.Placeholder = "New branch name"
+					m.workspaceCreating = true
+					m.workspaceCreatingName = "issue " + val
 					return m, m.createWorkspaceFromIssueCmd(val)
 				}
 				if m.createStep == 0 {
@@ -209,6 +217,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.newBranchName = ""
 				m.input.SetValue("")
 				m.input.Placeholder = "New branch name"
+				m.workspaceCreating = true
+				m.workspaceCreatingName = branchName
 				return m, m.createWorkspaceCmd(branchName, baseBranch)
 			case "esc":
 				m.creating = false
@@ -337,13 +347,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
-		cmds := []tea.Cmd{m.loadWorkspacesCmd}
-		if msg.wsName != "" {
-			cmds = append(cmds, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false))
+	m.workspaceCreating = false
+	m.workspaceCreatingName = ""
+	if msg.wsName != "" {
+		if m.stateStore != nil {
+			if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
+				item := WorkspaceItem{
+					Workspace: ws,
+					DiffStat:  "No changes",
+				}
+				m.workspaces = append(m.workspaces, item)
+			}
 		}
-		return m, tea.Batch(cmds...)
+		return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
+	}
+	return m, nil
 
 	case deletedWorkspaceMsg:
+		m.workspaceDeleting = false
+		m.workspaceDeletingName = ""
 		m.selected = make(map[string]bool)
 		return m, m.loadWorkspacesCmd
 
@@ -471,6 +493,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadWorkspacesCmd
 
 	case errMsg:
+		m.workspaceCreating = false
+		m.workspaceDeleting = false
 		m.err = msg.err
 		m.appendErrLog(msg.err.Error())
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {

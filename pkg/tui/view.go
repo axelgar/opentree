@@ -143,6 +143,22 @@ func (m Model) View() string {
 		))
 	}
 
+
+	// Workspace creation in progress
+	if m.workspaceCreating {
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
+			titleStyle.Render("Creating Workspace"),
+			helpStyle.Render(fmt.Sprintf("Creating %q… this may take a moment", m.workspaceCreatingName)),
+		))
+	}
+
+	// Workspace deletion in progress
+	if m.workspaceDeleting {
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
+			titleStyle.Render("Deleting Workspace"),
+			helpStyle.Render(fmt.Sprintf("Deleting %q…", m.workspaceDeletingName)),
+		))
+	}
 	// PR content generation in progress
 	if m.prGenerating {
 		return appStyle.Render(fmt.Sprintf("%s\n\n%s",

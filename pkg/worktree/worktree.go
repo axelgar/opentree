@@ -18,6 +18,13 @@ type Manager struct {
 
 // New creates a new worktree manager with explicit repo root and base directory.
 func New(repoRoot, baseDir string) *Manager {
+	// Resolve symlinks so that path prefix comparisons against git output work
+	// correctly on macOS, where os.TempDir() / t.TempDir() may return a
+	// symlinked path (e.g. /var/folders/...) while git resolves to the real path
+	// (e.g. /private/var/folders/...).
+	if real, err := filepath.EvalSymlinks(repoRoot); err == nil {
+		repoRoot = real
+	}
 	return &Manager{
 		repoRoot: repoRoot,
 		baseDir:  baseDir,
@@ -273,6 +280,51 @@ func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]File
 	}
 
 	return files, nil
+}
+
+// DiffStats returns both the diffstat string and per-file change stats in a
+// single call, computing git merge-base only once.
+// If baseBranch is empty, it defaults to "main".
+func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat string, files []FileChange, err error) {
+	base := "main"
+	if len(baseBranch) > 0 && baseBranch[0] != "" {
+		base = baseBranch[0]
+	}
+
+	dirName := gitutil.SanitizeBranchName(branchName)
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	// Compute merge-base once.
+	baseCommit := m.resolveBase(branchName, base, worktreePath)
+
+	// --stat output
+	statCmd := exec.Command("git", "diff", "--stat", baseCommit)
+	statCmd.Dir = worktreePath
+	statOut, statErr := statCmd.CombinedOutput()
+	if statErr != nil {
+		err = fmt.Errorf("failed to get diff stat: %w", statErr)
+		return
+	}
+	stat = string(statOut)
+
+	// --numstat output
+	numCmd := exec.Command("git", "diff", "--numstat", baseCommit)
+	numCmd.Dir = worktreePath
+	numOut, numErr := numCmd.CombinedOutput()
+	if numErr != nil {
+		err = fmt.Errorf("failed to get diff numstat: %w", numErr)
+		return
+	}
+	files = parseNumstat(string(numOut))
+
+	// Mark uncommitted files.
+	uncommitted := uncommittedFiles(worktreePath)
+	for i := range files {
+		if uncommitted[files[i].FileName] {
+			files[i].Uncommitted = true
+		}
+	}
+	return
 }
 
 // resolveBase finds the merge-base commit between branchName and the given base.
