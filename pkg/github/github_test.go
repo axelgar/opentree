@@ -136,6 +136,36 @@ func TestGetIssue_GHNotInstalled(t *testing.T) {
 	}
 }
 
+// ---- GetBranchAndPRStatus tests ----
+
+func TestGetBranchAndPRStatus_LSRemoteError(t *testing.T) {
+	if exec.Command("git", "--version").Run() != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initCmd := exec.Command("git", "init")
+	initCmd.Dir = dir
+	if err := initCmd.Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+
+	pm := New()
+	// wasPushed=true: without the fix this would incorrectly set RemoteDeleted=true
+	status, err := pm.GetBranchAndPRStatus("main", dir, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !status.RemoteCheckFailed {
+		t.Error("expected RemoteCheckFailed=true when git ls-remote fails")
+	}
+	if status.RemoteDeleted {
+		t.Error("expected RemoteDeleted=false when remote check failed")
+	}
+	if status.Pushed {
+		t.Error("expected Pushed=false when remote check failed")
+	}
+}
+
 // ---- Integration tests (require gh CLI) ----
 
 func TestGetPRStatus_NoPRForBranch(t *testing.T) {

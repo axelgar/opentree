@@ -532,8 +532,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case branchStatusCheckedMsg:
 		ws, err := m.stateStore.GetWorkspace(msg.wsName)
 		if err == nil {
-			ws.BranchPushed = msg.status.Pushed
-			ws.RemoteDeleted = msg.status.RemoteDeleted
+			if !msg.status.RemoteCheckFailed {
+				ws.BranchPushed = msg.status.Pushed
+				ws.RemoteDeleted = msg.status.RemoteDeleted
+			}
 			ws.MergeConflicts = msg.status.MergeConflicts
 			if msg.status.PRURL != "" {
 				ws.PRURL = msg.status.PRURL
@@ -545,8 +547,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		for i, item := range m.workspaces {
 			if item.Name == msg.wsName {
-				m.workspaces[i].BranchPushed = msg.status.Pushed
-				m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
+				if !msg.status.RemoteCheckFailed {
+					m.workspaces[i].BranchPushed = msg.status.Pushed
+					m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
+				}
 				m.workspaces[i].MergeConflicts = msg.status.MergeConflicts
 				if msg.status.PRURL != "" {
 					m.workspaces[i].PRURL = msg.status.PRURL

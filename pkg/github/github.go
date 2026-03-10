@@ -214,12 +214,13 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 
 // BranchStatus holds the combined branch push and PR status for a workspace.
 type BranchStatus struct {
-	Pushed         bool
-	RemoteDeleted  bool   // branch was previously pushed but no longer exists in remote
-	PRURL          string
-	PRState        string // "open", "merged", "closed", ""
-	MergeConflicts bool
-	CIStatus       string // "success", "failure", "pending", ""
+	Pushed            bool
+	RemoteDeleted     bool   // branch was previously pushed but no longer exists in remote
+	RemoteCheckFailed bool   // git ls-remote failed; Pushed/RemoteDeleted are unreliable
+	PRURL             string
+	PRState           string // "open", "merged", "closed", ""
+	MergeConflicts    bool
+	CIStatus          string // "success", "failure", "pending", ""
 }
 
 // GetBranchAndPRStatus returns the combined remote branch existence and PR status
@@ -234,11 +235,15 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 	if repoDir != "" {
 		lsCmd.Dir = repoDir
 	}
-	lsOut, _ := lsCmd.Output()
-	remoteExists := strings.TrimSpace(string(lsOut)) != ""
-	status.Pushed = remoteExists
-	if wasPushed && !remoteExists {
-		status.RemoteDeleted = true
+	lsOut, lsErr := lsCmd.Output()
+	if lsErr != nil {
+		status.RemoteCheckFailed = true
+	} else {
+		remoteExists := strings.TrimSpace(string(lsOut)) != ""
+		status.Pushed = remoteExists
+		if wasPushed && !remoteExists {
+			status.RemoteDeleted = true
+		}
 	}
 
 	// Fetch PR info in a single gh call if available.
