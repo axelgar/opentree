@@ -9,6 +9,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
+}
+
+func (m Model) isWorkspaceInFlight(name string) bool {
+	return m.workspaceDeletingName == name || m.workspaceDeletingNames[name]
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -53,7 +63,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.deleteTarget = ""
 					m.workspaceDeleting = true
 					m.workspaceDeletingName = target
-					return m, m.deleteWorkspaceCmd(target)
+					return m, tea.Batch(m.deleteWorkspaceCmd(target), spinnerTickCmd())
 				}
 				// batch delete
 				targets := make([]string, 0, len(m.selected))
@@ -62,10 +72,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.deleting = false
 				m.deleteTarget = ""
+				m.workspaceDeletingNames = make(map[string]bool)
+				for _, name := range targets {
+					m.workspaceDeletingNames[name] = true
+				}
 				m.selected = make(map[string]bool)
 				m.workspaceDeleting = true
 				m.workspaceDeletingName = fmt.Sprintf("%d workspaces", len(targets))
-				return m, m.batchDeleteWorkspaceCmd(targets)
+				return m, tea.Batch(m.batchDeleteWorkspaceCmd(targets), spinnerTickCmd())
 			case "n", "esc":
 				m.deleting = false
 				m.deleteTarget = ""
@@ -170,7 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.Placeholder = "New branch name"
 					m.workspaceCreating = true
 					m.workspaceCreatingName = branchName
-					return m, m.createWorkspaceFromRemoteCmd(branchName)
+					return m, tea.Batch(m.createWorkspaceFromRemoteCmd(branchName), spinnerTickCmd())
 				case "esc":
 					m.creating = false
 					m.remoteBranchMode = false
@@ -201,7 +215,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.Placeholder = "New branch name"
 					m.workspaceCreating = true
 					m.workspaceCreatingName = "issue " + val
-					return m, m.createWorkspaceFromIssueCmd(val)
+					return m, tea.Batch(m.createWorkspaceFromIssueCmd(val), spinnerTickCmd())
 				}
 				if m.createStep == 0 {
 					m.newBranchName = val
@@ -219,7 +233,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.Placeholder = "New branch name"
 				m.workspaceCreating = true
 				m.workspaceCreatingName = branchName
-				return m, m.createWorkspaceCmd(branchName, baseBranch)
+				return m, tea.Batch(m.createWorkspaceCmd(branchName, baseBranch), spinnerTickCmd())
 			case "esc":
 				m.creating = false
 				m.issueMode = false
@@ -275,15 +289,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Enter):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, nil
+				}
 				return m, m.attachWorkspaceCmd(ws.Name)
 			}
 		case key.Matches(msg, m.keys.Diff):
 			if len(visible) > 0 {
+				if m.isWorkspaceInFlight(visible[m.cursor].Name) {
+					return m, nil
+				}
 				return m, m.loadDiffCmd(visible[m.cursor])
 			}
 		case key.Matches(msg, m.keys.PR):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, nil
+				}
 				m.prGenerating = true
 				m.prWsName = ws.Name
 				m.prBranch = ws.Branch
@@ -293,6 +316,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Open):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, nil
+				}
 				if ws.PRURL != "" {
 					return m, openURLCmd(ws.PRURL)
 				}
@@ -300,6 +326,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Select):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, nil
+				}
 				if m.selected[ws.Name] {
 					delete(m.selected, ws.Name)
 				} else {
@@ -317,6 +346,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.deleteTarget = ""
 			} else if len(visible) > 0 {
 				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, nil
+				}
 				m.deleting = true
 				m.deleteTarget = ws.Name
 			}
@@ -332,6 +364,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 		}
+
+	case spinnerTickMsg:
+		if m.workspaceCreating || m.workspaceDeleting {
+			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+			return m, spinnerTickCmd()
+		}
+		return m, nil
 
 	case remoteBranchesLoadedMsg:
 		m.remoteBranches = msg.branches
@@ -366,6 +405,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case deletedWorkspaceMsg:
 		m.workspaceDeleting = false
 		m.workspaceDeletingName = ""
+		m.workspaceDeletingNames = make(map[string]bool)
 		m.selected = make(map[string]bool)
 		return m, m.loadWorkspacesCmd
 
@@ -495,6 +535,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.workspaceCreating = false
 		m.workspaceDeleting = false
+		m.workspaceDeletingNames = make(map[string]bool)
 		m.err = msg.err
 		m.appendErrLog(msg.err.Error())
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {

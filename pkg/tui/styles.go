@@ -217,4 +217,15 @@ var (
 
 	agentInProgressStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#E9C46A"))
+
+	// inline loading states
+	pendingItemStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			Foreground(lipgloss.Color("#555"))
+
+	pendingLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888")).
+				Italic(true)
 )
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

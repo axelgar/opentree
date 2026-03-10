@@ -144,21 +144,6 @@ func (m Model) View() string {
 	}
 
 
-	// Workspace creation in progress
-	if m.workspaceCreating {
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
-			titleStyle.Render("Creating Workspace"),
-			helpStyle.Render(fmt.Sprintf("Creating %q… this may take a moment", m.workspaceCreatingName)),
-		))
-	}
-
-	// Workspace deletion in progress
-	if m.workspaceDeleting {
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
-			titleStyle.Render("Deleting Workspace"),
-			helpStyle.Render(fmt.Sprintf("Deleting %q…", m.workspaceDeletingName)),
-		))
-	}
 	// PR content generation in progress
 	if m.prGenerating {
 		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
@@ -220,6 +205,16 @@ s.WriteString("\n\n")
 		s.WriteString("\n")
 	} else {
 		for i, ws := range visible {
+			// Inline deleting state
+			isDeleting := m.workspaceDeletingName == ws.Name || m.workspaceDeletingNames[ws.Name]
+			if isDeleting {
+				spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
+				row := spinner + " " + ws.Name + "  " + pendingLabelStyle.Render("deleting…")
+				s.WriteString(pendingItemStyle.Render(row))
+				s.WriteString("\n")
+				continue
+			}
+
 			style := itemStyle
 			if i == m.cursor {
 				style = selectedItemStyle
@@ -352,6 +347,18 @@ s.WriteString("\n\n")
 			s.WriteString(previewBoxStyle.Width(previewWidth).Render(content))
 			s.WriteString("\n")
 		}
+	}
+
+	// Creating ghost entry (non-selectable, rendered outside the list)
+	if m.workspaceCreating {
+		spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
+		s.WriteString(pendingItemStyle.Render(fmt.Sprintf(
+			"  %s %s  %s",
+			spinner,
+			m.workspaceCreatingName,
+			pendingLabelStyle.Render("creating…"),
+		)))
+		s.WriteString("\n")
 	}
 
 	// Status bar
