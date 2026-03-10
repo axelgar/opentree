@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+"use strict";
+
+const { execFileSync } = require("child_process");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+
+const PLATFORM_PACKAGES = {
+  "linux-x64": "opentree-linux-x64",
+  "linux-arm64": "opentree-linux-arm64",
+  "darwin-x64": "opentree-darwin-x64",
+  "darwin-arm64": "opentree-darwin-arm64",
+};
+
+const platform = `${os.platform()}-${os.arch()}`;
+const packageName = PLATFORM_PACKAGES[platform];
+
+if (!packageName) {
+  console.error(
+    `opentree: unsupported platform "${platform}". ` +
+      `Supported platforms: ${Object.keys(PLATFORM_PACKAGES).join(", ")}.`
+  );
+  process.exit(1);
+}
+
+let binaryPath;
+try {
+  // Resolve the binary from the platform-specific optional dependency
+  binaryPath = require.resolve(`${packageName}/bin/opentree`);
+} catch {
+  console.error(
+    `opentree: could not find binary for platform "${platform}". ` +
+      `Try reinstalling: npm install opentree`
+  );
+  process.exit(1);
+}
+
+try {
+  execFileSync(binaryPath, process.argv.slice(2), { stdio: "inherit" });
+} catch (/** @type {any} */ err) {
+  process.exit(err.status ?? 1);
+}
