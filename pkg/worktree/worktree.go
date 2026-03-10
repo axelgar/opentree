@@ -113,7 +113,7 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	// Remove worktree (--force handles untracked files like AGENTS.md)
+	// Remove worktree (--force handles untracked files)
 	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
 	cmd.Dir = m.repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {

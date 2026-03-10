@@ -69,25 +69,6 @@ func (s *Service) WorktreePath(name string) string {
 // StatusFileName is the conventional file agents write to signal completion.
 const StatusFileName = ".opentree-status.json"
 
-// agentsInstructions is written to AGENTS.md in every new worktree so agents
-// discover the status-file convention.
-const agentsInstructions = `# Opentree Workspace
-
-This workspace is managed by [opentree](https://github.com/axelgar/opentree).
-
-## Signaling completion
-
-When you finish your task, write a JSON status file so the dashboard knows:
-
-` + "```" + `
-echo '{"status":"success","message":"Task completed"}' > .opentree-status.json
-` + "```" + `
-
-Valid ` + "`status`" + ` values: ` + "`success`" + `, ` + "`failure`" + `, ` + "`error`" + `, ` + "`in_progress`" + `
-
-The ` + "`message`" + ` field is optional free text shown in the dashboard.
-`
-
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
@@ -95,9 +76,6 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	}
 
 	worktreePath := s.WorktreePath(name)
-
-	// Write AGENTS.md so agents discover the status-file convention
-	_ = os.WriteFile(filepath.Join(worktreePath, "AGENTS.md"), []byte(agentsInstructions), 0644)
 
 	agentCmd := s.cfg.Agent.Command
 	if err := s.process.CreateWindow(name, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
@@ -168,9 +146,6 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	}
 
 	worktreePath := s.WorktreePath(branchName)
-
-	// Write AGENTS.md so agents discover the status-file convention
-	_ = os.WriteFile(filepath.Join(worktreePath, "AGENTS.md"), []byte(agentsInstructions), 0644)
 
 	agentCmd := s.cfg.Agent.Command
 	if err := s.process.CreateWindow(branchName, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
