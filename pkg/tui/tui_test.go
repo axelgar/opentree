@@ -1237,3 +1237,113 @@ func TestCreatedWorkspaceMsg_ClearsCreatingState(t *testing.T) {
 		t.Errorf("workspaceCreatingName = %q, want empty", m.workspaceCreatingName)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Agent selection overlay
+// ---------------------------------------------------------------------------
+
+func TestAgentSelection_AKeyEntersMode(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m, _ = applyUpdate(m, keyMsg("A"))
+
+	if !m.agentSelecting {
+		t.Error("expected agentSelecting=true after pressing A")
+	}
+}
+
+func TestAgentSelection_CursorStartsOnActiveAgent(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	// Default agent is opencode (index 0)
+	m, _ = applyUpdate(m, keyMsg("A"))
+
+	if m.agentCursor != 0 {
+		t.Errorf("agentCursor = %d, want 0 (OpenCode is default)", m.agentCursor)
+	}
+}
+
+func TestAgentSelection_DownMovescursor(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 0
+
+	m, _ = applyUpdate(m, keyMsg("j"))
+
+	if m.agentCursor != 1 {
+		t.Errorf("agentCursor = %d, want 1 after down", m.agentCursor)
+	}
+}
+
+func TestAgentSelection_UpMovescursor(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 1
+
+	m, _ = applyUpdate(m, keyMsg("k"))
+
+	if m.agentCursor != 0 {
+		t.Errorf("agentCursor = %d, want 0 after up", m.agentCursor)
+	}
+}
+
+func TestAgentSelection_UpClampsAtZero(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 0
+
+	m, _ = applyUpdate(m, keyMsg("k"))
+
+	if m.agentCursor != 0 {
+		t.Errorf("agentCursor = %d, want 0 (clamped)", m.agentCursor)
+	}
+}
+
+func TestAgentSelection_EscCancels(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 2
+
+	m, _ = applyUpdate(m, keyMsg("esc"))
+
+	if m.agentSelecting {
+		t.Error("expected agentSelecting=false after esc")
+	}
+}
+
+func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 1 // Claude Code
+
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if m.agentSelecting {
+		t.Error("expected agentSelecting=false after enter")
+	}
+	if m.cfg.Agent.Command != "claude" {
+		t.Errorf("cfg.Agent.Command = %q, want %q", m.cfg.Agent.Command, "claude")
+	}
+}
+
+func TestAgentSelection_ViewShowsOverlay(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 0
+
+	view := m.View()
+
+	if !strings.Contains(view, "Select Agent") {
+		t.Errorf("View() does not contain 'Select Agent'\ngot: %s", view)
+	}
+	if !strings.Contains(view, "OpenCode") {
+		t.Errorf("View() does not contain 'OpenCode'\ngot: %s", view)
+	}
+	if !strings.Contains(view, "Claude Code") {
+		t.Errorf("View() does not contain 'Claude Code'\ngot: %s", view)
+	}
+	if !strings.Contains(view, "(active)") {
+		t.Errorf("View() does not show '(active)' for current agent\ngot: %s", view)
+	}
+	if !strings.Contains(view, "▶") {
+		t.Errorf("View() does not show selection indicator\ngot: %s", view)
+	}
+}

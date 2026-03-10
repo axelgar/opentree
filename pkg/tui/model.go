@@ -108,6 +108,10 @@ type Model struct {
 	diffScrollOffset int
 	diffWsName       string
 
+	// agent selection overlay
+	agentSelecting bool
+	agentCursor    int
+
 	// error log
 	errLog     []string
 	showErrLog bool

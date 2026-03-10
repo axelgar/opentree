@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 func spinnerTickCmd() tea.Cmd {
@@ -32,6 +34,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Error log overlay swallows all keys
 		if m.showErrLog {
 			m.showErrLog = false
+			return m, nil
+		}
+
+		// Agent selection mode
+		if m.agentSelecting {
+			agents := config.PredefinedAgents
+			switch msg.String() {
+			case "up", "k":
+				if m.agentCursor > 0 {
+					m.agentCursor--
+				}
+			case "down", "j":
+				if m.agentCursor < len(agents)-1 {
+					m.agentCursor++
+				}
+			case "enter":
+				agent := agents[m.agentCursor]
+				m.cfg.Agent.Command = agent.Command
+				if agent.Args != nil {
+					m.cfg.Agent.Args = agent.Args
+				} else {
+					m.cfg.Agent.Args = []string{}
+				}
+				cfgPath := config.FindConfigFile()
+				_ = config.Save(m.cfg, cfgPath)
+				m.agentSelecting = false
+			case "esc", "q":
+				m.agentSelecting = false
+			}
 			return m, nil
 		}
 
@@ -359,6 +390,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Sort):
 			m.sortMode = (m.sortMode + 1) % 4
 			m.cursor = 0
+		case key.Matches(msg, m.keys.Agent):
+			m.agentSelecting = true
+			m.agentCursor = 0
+			// Position cursor on the currently active agent
+			for i, a := range config.PredefinedAgents {
+				if a.IsActive(m.cfg) {
+					m.agentCursor = i
+					break
+				}
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.ErrLog):
 			m.showErrLog = !m.showErrLog
 		case key.Matches(msg, m.keys.Help):
