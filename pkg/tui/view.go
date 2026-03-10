@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 func (m Model) View() string {
@@ -22,6 +24,46 @@ func (m Model) View() string {
 			}
 		}
 		sb.WriteString("\n" + helpStyle.Render("Any key to close"))
+		return appStyle.Render(sb.String())
+	}
+
+	// Agent selection overlay
+	if m.agentSelecting {
+		var sb strings.Builder
+		sb.WriteString(titleStyle.Render("Select Agent"))
+		sb.WriteString("\n\n")
+		for i, agent := range config.PredefinedAgents {
+			cursor := "  "
+			style := itemStyle
+			if i == m.agentCursor {
+				cursor = "▶ "
+				style = selectedItemStyle
+			}
+
+			name := agent.Name
+			if agent.IsActive(m.cfg) {
+				name += " (active)"
+			}
+
+			status := "not found"
+			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
+			if agent.IsInstalled() {
+				status = "installed"
+				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+			}
+
+			cmdStr := agent.Command
+			if len(agent.Args) > 0 {
+				cmdStr += " " + strings.Join(agent.Args, " ")
+			}
+
+			line := fmt.Sprintf("%s%-18s %-14s %s  %s",
+				cursor, name, cmdStr, statusSt.Render(status), agent.Description)
+			sb.WriteString(style.Render(line))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render("↑/↓ navigate • Enter select • Esc cancel"))
 		return appStyle.Render(sb.String())
 	}
 

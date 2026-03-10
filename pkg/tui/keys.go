@@ -16,20 +16,21 @@ type keyMap struct {
 	Select key.Binding
 	Filter key.Binding
 	Sort   key.Binding
+	Agent  key.Binding
 	ErrLog key.Binding
 	Quit   key.Binding
 	Help   key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Delete, k.Quit, k.Help}
+	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Delete, k.Agent, k.Quit, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Select, k.Delete},
-		{k.Filter, k.Sort, k.ErrLog, k.Quit, k.Help},
+		{k.Filter, k.Sort, k.Agent, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -85,6 +86,10 @@ var keys = keyMap{
 	Sort: key.NewBinding(
 		key.WithKeys("s"),
 		key.WithHelp("s", "cycle sort"),
+	),
+	Agent: key.NewBinding(
+		key.WithKeys("A"),
+		key.WithHelp("A", "switch agent"),
 	),
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),
