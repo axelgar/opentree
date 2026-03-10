@@ -295,7 +295,11 @@ s.WriteString("\n\n")
 			}
 
 			// Description line
-			descParts := []string{ws.Branch, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
+			branchDisplay := ws.Branch
+			if ws.BaseBranch != "" {
+				branchDisplay += " ← " + ws.BaseBranch
+			}
+			descParts := []string{branchDisplay, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
 
 			if ws.UncommittedCount > 0 {
 				descParts = append(descParts, uncommittedStyle.Render(fmt.Sprintf("~%d uncommitted", ws.UncommittedCount)))
