@@ -1,0 +1,10 @@
+{
+  "name": "opentree-linux-arm64",
+  "version": "0.0.0",
+  "description": "Linux arm64 binary for opentree",
+  "repository": "github:axelgar/opentree",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/opentree"]
+}
