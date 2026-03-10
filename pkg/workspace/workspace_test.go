@@ -43,6 +43,7 @@ func (m *mockProcessManager) CapturePane(name string, lines int) (string, error)
 func (m *mockProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return time.Time{}, nil
 }
+func (m *mockProcessManager) SendMessage(name, text string) error { return nil }
 
 func TestWorktreePath(t *testing.T) {
 	cfg := config.Default()

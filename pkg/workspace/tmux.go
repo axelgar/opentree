@@ -60,3 +60,7 @@ func (t *TmuxProcessManager) CapturePane(name string, lines int) (string, error)
 func (t *TmuxProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return t.ctrl.GetWindowActivity(name)
 }
+
+func (t *TmuxProcessManager) SendMessage(name, text string) error {
+	return t.ctrl.SendMessage(name, text)
+}

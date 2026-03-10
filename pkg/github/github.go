@@ -10,6 +10,139 @@ import (
 	"sync"
 )
 
+// ReviewComment represents a single review comment on a PR.
+// General reviews have an empty Path and zero Line.
+// Inline (code) comments have Path and Line set.
+type ReviewComment struct {
+	Author string
+	Body   string
+	State  string // "CHANGES_REQUESTED", "APPROVED", "COMMENTED"
+	Path   string // file path for inline comments; empty for general reviews
+	Line   int    // line number for inline comments; 0 for general reviews
+}
+
+// prURLRe matches GitHub PR URLs and captures owner, repo, and number.
+var prURLRe = regexp.MustCompile(`github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
+
+// parsePRURL extracts owner, repo, and PR number from a GitHub PR URL.
+func parsePRURL(prURL string) (owner, repo string, number int, err error) {
+	m := prURLRe.FindStringSubmatch(prURL)
+	if m == nil {
+		return "", "", 0, fmt.Errorf("invalid PR URL: %s", prURL)
+	}
+	number, err = strconv.Atoi(m[3])
+	return m[1], m[2], number, err
+}
+
+// FetchPRReviews returns all review comments (general + inline) for the PR
+// associated with the given branch. Returns an empty slice if no PR exists.
+func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
+	if !pm.IsInstalled() {
+		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
+	}
+
+	// Fetch top-level reviews (includes overall CHANGES_REQUESTED / APPROVED) and PR URL.
+	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,reviews")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, nil // no PR for this branch
+	}
+
+	var prData struct {
+		URL     string `json:"url"`
+		Reviews []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body  string `json:"body"`
+			State string `json:"state"`
+		} `json:"reviews"`
+	}
+	if err := json.Unmarshal(output, &prData); err != nil {
+		return nil, fmt.Errorf("failed to parse pr reviews: %w", err)
+	}
+
+	var comments []ReviewComment
+	for _, r := range prData.Reviews {
+		body := strings.TrimSpace(r.Body)
+		if body == "" && r.State == "APPROVED" {
+			continue // skip empty approval reviews
+		}
+		if body == "" {
+			continue
+		}
+		comments = append(comments, ReviewComment{
+			Author: r.Author.Login,
+			Body:   body,
+			State:  r.State,
+		})
+	}
+
+	// Fetch inline (line-level) review comments via the REST API.
+	if prData.URL != "" {
+		owner, repo, prNumber, parseErr := parsePRURL(prData.URL)
+		if parseErr == nil {
+			apiPath := fmt.Sprintf("repos/%s/%s/pulls/%d/comments", owner, repo, prNumber)
+			apiCmd := exec.Command("gh", "api", apiPath, "--jq",
+				`[.[] | {author: .user.login, body: .body, path: .path, line: (.line // .original_line // 0)}]`)
+			apiOut, apiErr := apiCmd.CombinedOutput()
+			if apiErr == nil {
+				var inline []struct {
+					Author string `json:"author"`
+					Body   string `json:"body"`
+					Path   string `json:"path"`
+					Line   int    `json:"line"`
+				}
+				if jsonErr := json.Unmarshal(apiOut, &inline); jsonErr == nil {
+					for _, c := range inline {
+						body := strings.TrimSpace(c.Body)
+						if body == "" {
+							continue
+						}
+						comments = append(comments, ReviewComment{
+							Author: c.Author,
+							Body:   body,
+							State:  "COMMENTED",
+							Path:   c.Path,
+							Line:   c.Line,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return comments, nil
+}
+
+// FormatReviewsPrompt formats a list of review comments into a prompt suitable
+// for sending to an AI coding agent.
+func FormatReviewsPrompt(comments []ReviewComment) string {
+	if len(comments) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("I have %d PR review comment(s) to address:\n\n", len(comments)))
+	for i, c := range comments {
+		sb.WriteString(fmt.Sprintf("--- Review %d (by @%s", i+1, c.Author))
+		if c.State != "" && c.State != "COMMENTED" {
+			sb.WriteString(fmt.Sprintf(", %s", c.State))
+		}
+		if c.Path != "" {
+			if c.Line > 0 {
+				sb.WriteString(fmt.Sprintf(", %s:%d", c.Path, c.Line))
+			} else {
+				sb.WriteString(fmt.Sprintf(", %s", c.Path))
+			}
+		}
+		sb.WriteString(") ---\n")
+		sb.WriteString(c.Body)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("Please address all of these review comments.")
+	return sb.String()
+}
+
 // Issue represents a GitHub issue
 type Issue struct {
 	Number int

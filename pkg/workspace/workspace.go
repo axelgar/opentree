@@ -226,6 +226,31 @@ func (s *Service) HasChanges(name string) (string, error) {
 	return s.worktrees.DiffBranches(name, baseBranch)
 }
 
+// SendReviewsToAgent fetches all PR review comments for the workspace's branch
+// and sends them as a formatted prompt to the running agent in the tmux window.
+// Returns the number of review comments sent, or 0 if none were found.
+func (s *Service) SendReviewsToAgent(name string) (int, error) {
+	ws, err := s.state.GetWorkspace(name)
+	if err != nil {
+		return 0, fmt.Errorf("workspace not found: %w", err)
+	}
+
+	comments, err := s.github.FetchPRReviews(ws.Branch)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch PR reviews: %w", err)
+	}
+	if len(comments) == 0 {
+		return 0, nil
+	}
+
+	prompt := github.FormatReviewsPrompt(comments)
+	if err := s.process.SendMessage(name, prompt); err != nil {
+		return 0, fmt.Errorf("failed to send reviews to agent: %w", err)
+	}
+
+	return len(comments), nil
+}
+
 // CreatePR creates a GitHub pull request for a workspace.
 func (s *Service) CreatePR(name, title, body string) (string, error) {
 	ws, err := s.state.GetWorkspace(name)

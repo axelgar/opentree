@@ -271,6 +271,16 @@ func (m Model) capturePreviewCmd() tea.Cmd {
 	}
 }
 
+func (m Model) sendReviewsCmd(wsName string) tea.Cmd {
+	return func() tea.Msg {
+		count, err := m.svc.SendReviewsToAgent(wsName)
+		if err != nil {
+			return errMsg{err}
+		}
+		return reviewsSentMsg{wsName: wsName, count: count}
+	}
+}
+
 func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 	return func() tea.Msg {
 		committed, err := m.worktreeMgr.DiffFull(ws.Branch, ws.BaseBranch)
