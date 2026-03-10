@@ -1,13 +1,13 @@
 [agent]
-command = "opencode"
+command = 'claude'
 args = []
 
 [worktree]
-base_dir = ".opentree"
-default_base = "main"
+base_dir = '.opentree'
+default_base = 'main'
 
 [tmux]
-session_prefix = "opentree"
+session_prefix = 'opentree'
 
 [github]
 auto_push = false
