@@ -71,10 +71,12 @@ type Model struct {
 	deleteTarget string // single target; empty means batch (use m.selected)
 
 	// in-flight operation feedback
-	workspaceCreating     bool
-	workspaceCreatingName string
-	workspaceDeleting     bool
-	workspaceDeletingName string
+	workspaceCreating      bool
+	workspaceCreatingName  string
+	workspaceDeleting      bool
+	workspaceDeletingName  string
+	workspaceDeletingNames map[string]bool
+	spinnerFrame           int
 
 	// agent output preview
 	agentPreview string
@@ -153,6 +155,7 @@ type branchStatusCheckedMsg struct {
 }
 type refreshTickMsg struct{}
 type previewTickMsg struct{}
+type spinnerTickMsg struct{}
 type diffLoadedMsg struct {
 	content string
 	wsName  string
@@ -199,8 +202,9 @@ func NewModel() (*Model, error) {
 		input:       ti,
 		help:        help.New(),
 		keys:        keys,
-		ciStatus:    make(map[string]string),
-		selected:    make(map[string]bool),
+		ciStatus:               make(map[string]string),
+		selected:               make(map[string]bool),
+		workspaceDeletingNames: make(map[string]bool),
 	}, nil
 }
 
