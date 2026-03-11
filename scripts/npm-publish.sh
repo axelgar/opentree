@@ -14,7 +14,7 @@ NPM_VERSION="${VERSION#v}"   # strip leading 'v'
 DIST_DIR="dist"
 NPM_DIR="npm"
 
-# Map goreleaser os_arch directory prefix -> npm package name
+# Map goreleaser os_arch directory prefix -> npm package directory name
 declare -A PLATFORMS=(
   ["linux_amd64"]="opentree-linux-x64"
   ["linux_arm64"]="opentree-linux-arm64"
@@ -59,12 +59,12 @@ mv "${NPM_DIR}/opentree/package.json.tmp" "${NPM_DIR}/opentree/package.json"
 # ── Publish platform packages first ───────────────────────────────────────────
 for key in "${!PLATFORMS[@]}"; do
   pkg="${PLATFORMS[$key]}"
-  echo "  Publishing ${pkg}@${NPM_VERSION}..."
+  echo "  Publishing @axelgar/${pkg}@${NPM_VERSION}..."
   npm publish "${NPM_DIR}/${pkg}" --access public
 done
 
 # ── Publish the main package ──────────────────────────────────────────────────
-echo "  Publishing opentree@${NPM_VERSION}..."
+echo "  Publishing @axelgar/opentree@${NPM_VERSION}..."
 npm publish "${NPM_DIR}/opentree" --access public
 
-echo "Done. opentree@${NPM_VERSION} is live on npm."
+echo "Done. @axelgar/opentree@${NPM_VERSION} is live on npm."

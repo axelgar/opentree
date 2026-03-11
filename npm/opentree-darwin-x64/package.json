@@ -1,5 +1,5 @@
 {
-  "name": "opentree-darwin-x64",
+  "name": "@axelgar/opentree-darwin-x64",
   "version": "0.0.0",
   "description": "macOS x64 binary for opentree",
   "repository": "github:axelgar/opentree",

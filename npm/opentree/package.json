@@ -1,21 +1,27 @@
 {
-  "name": "opentree",
+  "name": "@axelgar/opentree",
   "version": "0.0.0",
   "description": "Git worktree manager CLI for orchestrating parallel AI coding sessions",
-  "repository": "github:axelgar/opentree",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/axelgar/opentree.git"
+  },
   "homepage": "https://github.com/axelgar/opentree",
   "license": "MIT",
   "bin": {
     "opentree": "bin/opentree"
   },
-  "files": ["bin/opentree"],
+  "files": [
+    "bin/opentree"
+  ],
   "optionalDependencies": {
-    "opentree-linux-x64": "0.0.0",
-    "opentree-linux-arm64": "0.0.0",
-    "opentree-darwin-x64": "0.0.0",
-    "opentree-darwin-arm64": "0.0.0"
+    "@axelgar/opentree-linux-x64": "0.0.0",
+    "@axelgar/opentree-linux-arm64": "0.0.0",
+    "@axelgar/opentree-darwin-x64": "0.0.0",
+    "@axelgar/opentree-darwin-arm64": "0.0.0"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "private": false
 }
