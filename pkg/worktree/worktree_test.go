@@ -34,6 +34,8 @@ func initGitRepo(t *testing.T) string {
 	run("git", "config", "gpg.format", "openpgp")
 	// Create an initial commit so the repo has a valid HEAD.
 	run("git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "init")
+	// Ensure the default branch is "main" regardless of git's init.defaultBranch setting.
+	run("git", "branch", "-m", "main")
 
 	return dir
 }

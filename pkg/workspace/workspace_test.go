@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
-	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/github"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
@@ -31,8 +31,8 @@ func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ..
 }
 
 func (m *mockProcessManager) ListWindows() ([]Window, error) { return nil, nil }
-func (m *mockProcessManager) SelectWindow(name string) error  { return nil }
-func (m *mockProcessManager) AttachWindow(name string) error   { return nil }
+func (m *mockProcessManager) SelectWindow(name string) error { return nil }
+func (m *mockProcessManager) AttachWindow(name string) error { return nil }
 func (m *mockProcessManager) AttachCmd(name string) (*exec.Cmd, error) {
 	return exec.Command("echo", "mock"), nil
 }
