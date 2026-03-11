@@ -53,3 +53,19 @@ func SanitizeBranchName(name string) string {
 	name = strings.ReplaceAll(name, ":", "-")
 	return name
 }
+
+// BranchToTitle converts a git branch name into a human-readable PR title.
+// It strips a conventional prefix (e.g. "feat/", "fix/"), replaces hyphens
+// and underscores with spaces, and capitalizes the first letter.
+func BranchToTitle(branch string) string {
+	// Strip everything up to and including the last "/"
+	if idx := strings.LastIndex(branch, "/"); idx != -1 {
+		branch = branch[idx+1:]
+	}
+	branch = strings.ReplaceAll(branch, "-", " ")
+	branch = strings.ReplaceAll(branch, "_", " ")
+	if len(branch) > 0 {
+		branch = strings.ToUpper(branch[:1]) + branch[1:]
+	}
+	return branch
+}
