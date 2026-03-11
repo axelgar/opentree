@@ -59,15 +59,17 @@ jq --arg v "${NPM_VERSION}" '
 ' "${NPM_DIR}/opentree/package.json" > "${NPM_DIR}/opentree/package.json.tmp"
 mv "${NPM_DIR}/opentree/package.json.tmp" "${NPM_DIR}/opentree/package.json"
 
-# ── Publish platform packages first ───────────────────────────────────────────
+# ── Pack and publish platform packages first ──────────────────────────────────
 for key in "${!PLATFORMS[@]}"; do
   pkg="${PLATFORMS[$key]}"
   echo "  Publishing @axelgar/${pkg}@${NPM_VERSION}..."
-  npm publish "${NPM_DIR}/${pkg}" --access public
+  tarball=$(npm pack "./${NPM_DIR}/${pkg}" --pack-destination /tmp 2>&1 | tail -1)
+  npm publish "/tmp/${tarball}" --access public
 done
 
-# ── Publish the main package ──────────────────────────────────────────────────
+# ── Pack and publish the main package ─────────────────────────────────────────
 echo "  Publishing @axelgar/opentree@${NPM_VERSION}..."
-npm publish "${NPM_DIR}/opentree" --access public
+tarball=$(npm pack "./${NPM_DIR}/opentree" --pack-destination /tmp 2>&1 | tail -1)
+npm publish "/tmp/${tarball}" --access public
 
 echo "Done. @axelgar/opentree@${NPM_VERSION} is live on npm."
