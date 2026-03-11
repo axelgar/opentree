@@ -384,10 +384,10 @@ func parseNumstat(output string) []FileChange {
 		added := 0
 		removed := 0
 		if parts[0] != "-" {
-			fmt.Sscanf(parts[0], "%d", &added)
+			_, _ = fmt.Sscanf(parts[0], "%d", &added)
 		}
 		if parts[1] != "-" {
-			fmt.Sscanf(parts[1], "%d", &removed)
+			_, _ = fmt.Sscanf(parts[1], "%d", &removed)
 		}
 		files = append(files, FileChange{
 			FileName: parts[2],

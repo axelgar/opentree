@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/axelgar/opentree/pkg/config"
 	"github.com/spf13/cobra"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 var AgentsCmd = &cobra.Command{
@@ -20,8 +21,8 @@ Available agents: OpenCode, Claude Code, Codex, GitHub Copilot, Gemini CLI.`,
 }
 
 var agentsListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all predefined agents",
+	Use:     "list",
+	Short:   "List all predefined agents",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load("")
