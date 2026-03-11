@@ -13,17 +13,9 @@ var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]
 var (
 	appStyle = lipgloss.NewStyle().Padding(1, 2)
 
-	logoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Bold(true)
-
 	titleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFF7DB")).
 			Background(lipgloss.Color("#888B7E")).
-			Padding(0, 1)
-
-	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#DDD")).
 			Padding(0, 1)
 
 	selectedItemStyle = lipgloss.NewStyle().

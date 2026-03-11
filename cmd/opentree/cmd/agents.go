@@ -20,8 +20,8 @@ Available agents: OpenCode, Claude Code, Codex, GitHub Copilot, Gemini CLI.`,
 }
 
 var agentsListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all predefined agents",
+	Use:     "list",
+	Short:   "List all predefined agents",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load("")

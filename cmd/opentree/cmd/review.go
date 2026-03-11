@@ -10,8 +10,8 @@ import (
 )
 
 var ReviewCmd = &cobra.Command{
-	Use:               "review <branch-name>",
-	Short:             "Send PR review comments to the workspace's agent",
+	Use:   "review <branch-name>",
+	Short: "Send PR review comments to the workspace's agent",
 	Long: `Fetches all open PR review comments for the given workspace and sends
 them as a formatted prompt to the running agent in the tmux window.
 

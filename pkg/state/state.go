@@ -77,7 +77,7 @@ func (s *Store) withFileLock(lockType int, fn func() error) error {
 	if err := syscall.Flock(int(f.Fd()), lockType); err != nil {
 		return fmt.Errorf("failed to acquire file lock: %w", err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
 
 	return fn()
 }
