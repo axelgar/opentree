@@ -3,15 +3,16 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/spf13/cobra"
+
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/workspace"
-	"github.com/spf13/cobra"
 )
 
 var ReviewCmd = &cobra.Command{
-	Use:               "review <branch-name>",
-	Short:             "Send PR review comments to the workspace's agent",
+	Use:   "review <branch-name>",
+	Short: "Send PR review comments to the workspace's agent",
 	Long: `Fetches all open PR review comments for the given workspace and sends
 them as a formatted prompt to the running agent in the tmux window.
 
