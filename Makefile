@@ -1,7 +1,7 @@
 BINARY := opentree
 INSTALL_DIR := /usr/local/bin
 
-.PHONY: build install uninstall
+.PHONY: build install uninstall fmt lint test check
 
 build:
 	go build -o $(BINARY) ./cmd/opentree
@@ -12,3 +12,14 @@ install: build
 
 uninstall:
 	rm -f $(INSTALL_DIR)/$(BINARY)
+
+fmt:
+	gofmt -w ./...
+
+lint:
+	golangci-lint run
+
+test:
+	go test ./...
+
+check: fmt lint test
