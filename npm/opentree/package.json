@@ -23,5 +23,7 @@
   "engines": {
     "node": ">=18"
   },
-  "private": false
+  "publishConfig": {
+    "access": "public"
+  }
 }

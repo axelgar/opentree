@@ -6,5 +6,8 @@
   "license": "MIT",
   "os": ["linux"],
   "cpu": ["x64"],
-  "files": ["bin/opentree"]
+  "files": ["bin/opentree"],
+  "publishConfig": {
+    "access": "public"
+  }
 }

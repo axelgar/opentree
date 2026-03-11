@@ -47,6 +47,9 @@ for key in "${!PLATFORMS[@]}"; do
   mv "${pkg_dir}/package.json.tmp" "${pkg_dir}/package.json"
 done
 
+# ── Copy README into main package so it appears on npmjs.com ──────────────────
+cp README.md "${NPM_DIR}/opentree/README.md"
+
 # ── Bump version + optionalDependencies in the main package ───────────────────
 jq --arg v "${NPM_VERSION}" '
   .version = $v |
