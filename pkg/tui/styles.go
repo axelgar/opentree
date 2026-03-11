@@ -54,9 +54,9 @@ var (
 				Padding(0, 1)
 
 	issueBadgeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FFF")).
-				Background(lipgloss.Color("#0969DA")).
-				Padding(0, 1)
+			Foreground(lipgloss.Color("#FFF")).
+			Background(lipgloss.Color("#0969DA")).
+			Padding(0, 1)
 
 	// agent preview panel styles
 	previewBoxStyle = lipgloss.NewStyle().
@@ -129,7 +129,7 @@ var (
 				Bold(true)
 
 	errLogLineStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#AAA"))
+			Foreground(lipgloss.Color("#AAA"))
 
 	// uncommitted changes
 	uncommittedStyle = lipgloss.NewStyle().
@@ -212,8 +212,8 @@ var (
 
 	// inline loading states
 	pendingItemStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(lipgloss.Color("#555"))
+				Padding(0, 1).
+				Foreground(lipgloss.Color("#555"))
 
 	pendingLabelStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888")).

@@ -17,9 +17,9 @@ import (
 
 // Controller manages tmux sessions and windows
 type Controller struct {
-	sessionPrefix    string
-	repoNameOnce     sync.Once
-	cachedRepoName   string
+	sessionPrefix  string
+	repoNameOnce   sync.Once
+	cachedRepoName string
 }
 
 // New creates a new tmux controller
@@ -32,7 +32,7 @@ func New(sessionPrefix string) *Controller {
 // CreateWindow creates a new tmux window and runs a command in it
 func (c *Controller) CreateWindow(name, workdir, command string, args ...string) error {
 	sessionName := c.getSessionName()
-	
+
 	// Ensure tmux session exists
 	if !c.sessionExists(sessionName) {
 		if err := c.createSession(sessionName); err != nil {
@@ -54,7 +54,7 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 		fullCmd = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
 	}
 	fullCmd = fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", fullCmd)
-	
+
 	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", sessionName, windowName), fullCmd, "Enter")
 	if output, err := sendCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to send command to window: %w\nOutput: %s", err, output)
@@ -66,7 +66,7 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 // ListWindows returns all windows in the opentree session
 func (c *Controller) ListWindows() ([]Window, error) {
 	sessionName := c.getSessionName()
-	
+
 	if !c.sessionExists(sessionName) {
 		return []Window{}, nil
 	}
@@ -211,7 +211,7 @@ func (c *Controller) AttachCmd(name string) (*exec.Cmd, error) {
 func (c *Controller) KillWindow(name string) error {
 	sessionName := c.getSessionName()
 	windowName := c.sanitizeWindowName(name)
-	
+
 	cmd := exec.Command("tmux", "kill-window", "-t", fmt.Sprintf("%s:%s", sessionName, windowName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to kill window: %w\nOutput: %s", err, output)
@@ -219,6 +219,7 @@ func (c *Controller) KillWindow(name string) error {
 
 	return nil
 }
+
 // SendMessage sends a text message to a tmux window as if typed by the user,
 // followed by Enter. This is used to deliver instructions to a running agent.
 func (c *Controller) SendMessage(name, text string) error {
@@ -235,16 +236,16 @@ func (c *Controller) SendMessage(name, text string) error {
 // KillSession stops and removes the tmux session
 func (c *Controller) KillSession() error {
 	sessionName := c.getSessionName()
-	
+
 	if !c.sessionExists(sessionName) {
 		return nil // Session doesn't exist, nothing to do
 	}
-	
+
 	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to kill session: %w\nOutput: %s", err, output)
 	}
-	
+
 	return nil
 }
 
@@ -252,8 +253,8 @@ func (c *Controller) KillSession() error {
 func (c *Controller) CapturePane(name string, lines int) (string, error) {
 	sessionName := c.getSessionName()
 	windowName := c.sanitizeWindowName(name)
-	
-	cmd := exec.Command("tmux", "capture-pane", "-t", fmt.Sprintf("%s:%s", sessionName, windowName), 
+
+	cmd := exec.Command("tmux", "capture-pane", "-t", fmt.Sprintf("%s:%s", sessionName, windowName),
 		"-p", "-S", fmt.Sprintf("-%d", lines))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -333,25 +334,25 @@ func (c *Controller) sanitizeWindowName(name string) string {
 // parseWindows parses tmux list-windows output
 func (c *Controller) parseWindows(output string) ([]Window, error) {
 	var windows []Window
-	
+
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	for _, line := range lines {
 		if line == "" {
 			continue
 		}
-		
+
 		parts := strings.Split(line, "|")
 		if len(parts) != 3 {
 			continue
 		}
-		
+
 		windows = append(windows, Window{
 			ID:     parts[0],
 			Name:   parts[1],
 			Active: parts[2] == "1",
 		})
 	}
-	
+
 	return windows, nil
 }
 

@@ -328,14 +328,14 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 
 	// Create PR
 	args := []string{"pr", "create", "--base", baseBranch, "--head", branch}
-	
+
 	if title != "" {
 		args = append(args, "--title", title)
 	} else {
 		// Use branch name as title if not provided
 		args = append(args, "--title", branch)
 	}
-	
+
 	if body != "" {
 		args = append(args, "--body", body)
 	}
@@ -429,8 +429,8 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 // BranchStatus holds the combined branch push and PR status for a workspace.
 type BranchStatus struct {
 	Pushed            bool
-	RemoteDeleted     bool   // branch was previously pushed but no longer exists in remote
-	RemoteCheckFailed bool   // git ls-remote failed; Pushed/RemoteDeleted are unreliable
+	RemoteDeleted     bool // branch was previously pushed but no longer exists in remote
+	RemoteCheckFailed bool // git ls-remote failed; Pushed/RemoteDeleted are unreliable
 	PRURL             string
 	PRState           string // "open", "merged", "closed", ""
 	MergeConflicts    bool
@@ -471,9 +471,9 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 		return status, nil
 	}
 	var raw struct {
-		URL      string `json:"url"`
-		State    string `json:"state"`
-		Mergeable string `json:"mergeable"`
+		URL               string `json:"url"`
+		State             string `json:"state"`
+		Mergeable         string `json:"mergeable"`
 		StatusCheckRollup []struct {
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`

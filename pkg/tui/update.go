@@ -438,21 +438,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
-	m.workspaceCreating = false
-	m.workspaceCreatingName = ""
-	if msg.wsName != "" {
-		if m.stateStore != nil {
-			if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
-				item := WorkspaceItem{
-					Workspace: ws,
-					DiffStat:  "No changes",
+		m.workspaceCreating = false
+		m.workspaceCreatingName = ""
+		if msg.wsName != "" {
+			if m.stateStore != nil {
+				if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
+					item := WorkspaceItem{
+						Workspace: ws,
+						DiffStat:  "No changes",
+					}
+					m.workspaces = append(m.workspaces, item)
 				}
-				m.workspaces = append(m.workspaces, item)
 			}
+			return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
 		}
-		return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
-	}
-	return m, nil
+		return m, nil
 
 	case deletedWorkspaceMsg:
 		m.workspaceDeleting = false
