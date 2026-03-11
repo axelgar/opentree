@@ -166,6 +166,186 @@ func TestGetBranchAndPRStatus_LSRemoteError(t *testing.T) {
 	}
 }
 
+// ---- parsePRURL tests ----
+
+func TestParsePRURL_Valid(t *testing.T) {
+	tests := []struct {
+		url        string
+		wantOwner  string
+		wantRepo   string
+		wantNumber int
+	}{
+		{
+			url:        "https://github.com/acme/myrepo/pull/42",
+			wantOwner:  "acme",
+			wantRepo:   "myrepo",
+			wantNumber: 42,
+		},
+		{
+			url:        "https://github.com/org-name/repo.with.dots/pull/1",
+			wantOwner:  "org-name",
+			wantRepo:   "repo.with.dots",
+			wantNumber: 1,
+		},
+		{
+			// URL with trailing path (e.g. #issuecomment anchor)
+			url:        "https://github.com/owner/repo/pull/999/files",
+			wantOwner:  "owner",
+			wantRepo:   "repo",
+			wantNumber: 999,
+		},
+	}
+	for _, tt := range tests {
+		owner, repo, number, err := parsePRURL(tt.url)
+		if err != nil {
+			t.Errorf("parsePRURL(%q) unexpected error: %v", tt.url, err)
+			continue
+		}
+		if owner != tt.wantOwner {
+			t.Errorf("parsePRURL(%q) owner = %q, want %q", tt.url, owner, tt.wantOwner)
+		}
+		if repo != tt.wantRepo {
+			t.Errorf("parsePRURL(%q) repo = %q, want %q", tt.url, repo, tt.wantRepo)
+		}
+		if number != tt.wantNumber {
+			t.Errorf("parsePRURL(%q) number = %d, want %d", tt.url, number, tt.wantNumber)
+		}
+	}
+}
+
+func TestParsePRURL_Invalid(t *testing.T) {
+	invalid := []string{
+		"",
+		"not-a-url",
+		"https://github.com/owner/repo/issues/42",
+		"https://gitlab.com/owner/repo/merge_requests/42",
+		"https://github.com/owner/pull/42", // missing repo segment
+	}
+	for _, url := range invalid {
+		_, _, _, err := parsePRURL(url)
+		if err == nil {
+			t.Errorf("parsePRURL(%q) expected error, got nil", url)
+		}
+	}
+}
+
+// ---- FormatReviewsPrompt tests ----
+
+func TestFormatReviewsPrompt_Empty(t *testing.T) {
+	got := FormatReviewsPrompt(nil)
+	if got != "" {
+		t.Errorf("FormatReviewsPrompt(nil) = %q, want empty string", got)
+	}
+	got = FormatReviewsPrompt([]ReviewComment{})
+	if got != "" {
+		t.Errorf("FormatReviewsPrompt([]) = %q, want empty string", got)
+	}
+}
+
+func TestFormatReviewsPrompt_SingleGeneralReview(t *testing.T) {
+	comments := []ReviewComment{
+		{Author: "alice", Body: "Please add error handling.", State: "CHANGES_REQUESTED"},
+	}
+	got := FormatReviewsPrompt(comments)
+	if !strings.Contains(got, "@alice") {
+		t.Errorf("prompt missing author: %s", got)
+	}
+	if !strings.Contains(got, "Please add error handling.") {
+		t.Errorf("prompt missing body: %s", got)
+	}
+	if !strings.Contains(got, "CHANGES_REQUESTED") {
+		t.Errorf("prompt missing state: %s", got)
+	}
+	if !strings.Contains(got, "Please address all of these review comments.") {
+		t.Errorf("prompt missing closing instruction: %s", got)
+	}
+	if !strings.Contains(got, "1 PR review comment(s)") {
+		t.Errorf("prompt missing count: %s", got)
+	}
+}
+
+func TestFormatReviewsPrompt_InlineComment(t *testing.T) {
+	comments := []ReviewComment{
+		{Author: "bob", Body: "This is too complex.", State: "COMMENTED", Path: "pkg/foo/bar.go", Line: 42},
+	}
+	got := FormatReviewsPrompt(comments)
+	if !strings.Contains(got, "pkg/foo/bar.go:42") {
+		t.Errorf("prompt missing file:line reference: %s", got)
+	}
+	if !strings.Contains(got, "@bob") {
+		t.Errorf("prompt missing author: %s", got)
+	}
+	if strings.Contains(got, "COMMENTED") {
+		t.Errorf("prompt should not show COMMENTED state, got: %s", got)
+	}
+}
+
+func TestFormatReviewsPrompt_InlineComment_NoLine(t *testing.T) {
+	comments := []ReviewComment{
+		{Author: "carol", Body: "Rename this function.", State: "COMMENTED", Path: "main.go", Line: 0},
+	}
+	got := FormatReviewsPrompt(comments)
+	if !strings.Contains(got, "main.go") {
+		t.Errorf("prompt missing path: %s", got)
+	}
+	// Should show path but no ":0"
+	if strings.Contains(got, "main.go:0") {
+		t.Errorf("prompt should not show ':0' for zero line: %s", got)
+	}
+}
+
+func TestFormatReviewsPrompt_Multiple(t *testing.T) {
+	comments := []ReviewComment{
+		{Author: "alice", Body: "Fix typo.", State: "CHANGES_REQUESTED"},
+		{Author: "bob", Body: "Extract method.", State: "COMMENTED", Path: "pkg/x.go", Line: 10},
+		{Author: "carol", Body: "Add tests.", State: "CHANGES_REQUESTED"},
+	}
+	got := FormatReviewsPrompt(comments)
+	if !strings.Contains(got, "3 PR review comment(s)") {
+		t.Errorf("prompt missing count: %s", got)
+	}
+	for _, wantBody := range []string{"Fix typo.", "Extract method.", "Add tests."} {
+		if !strings.Contains(got, wantBody) {
+			t.Errorf("prompt missing body %q: %s", wantBody, got)
+		}
+	}
+}
+
+// ---- FetchPRReviews when gh is not installed ----
+
+func TestFetchPRReviews_GHNotInstalled(t *testing.T) {
+	if isGHAvailable() {
+		t.Skip("gh is installed; skipping test for missing gh")
+	}
+	pm := New()
+	comments, err := pm.FetchPRReviews("some-branch")
+	if err == nil {
+		t.Fatal("FetchPRReviews() expected error when gh not installed, got nil")
+	}
+	if !strings.Contains(err.Error(), "gh CLI is not installed") {
+		t.Errorf("FetchPRReviews() error = %q, want 'gh CLI is not installed'", err.Error())
+	}
+	if comments != nil {
+		t.Errorf("FetchPRReviews() comments = %v, want nil on error", comments)
+	}
+}
+
+func TestFetchPRReviews_NoBranchPR(t *testing.T) {
+	if !isGHAvailable() {
+		t.Skip("gh not available, skipping integration test")
+	}
+	pm := New()
+	// A branch name that certainly has no PR.
+	comments, err := pm.FetchPRReviews("this-branch-certainly-has-no-pr-xyz-99999")
+	if err != nil {
+		t.Fatalf("FetchPRReviews() unexpected error: %v", err)
+	}
+	// No PR → nil or empty slice, never an error.
+	if len(comments) != 0 {
+		t.Errorf("FetchPRReviews() expected 0 comments for non-existent branch PR, got %d", len(comments))
+	}
+}
+
 // ---- Integration tests (require gh CLI) ----
 
 func TestGetPRStatus_NoPRForBranch(t *testing.T) {
