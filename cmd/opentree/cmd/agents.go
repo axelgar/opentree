@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/axelgar/opentree/pkg/config"
 	"github.com/spf13/cobra"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 var AgentsCmd = &cobra.Command{

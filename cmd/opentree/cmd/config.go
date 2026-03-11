@@ -5,8 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/axelgar/opentree/pkg/config"
 	"github.com/spf13/cobra"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 var configKeys = map[string]string{
