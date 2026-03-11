@@ -880,6 +880,72 @@ func TestRenderDiffLine_PlainLine(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Diff scrolling
+// ---------------------------------------------------------------------------
+
+func TestDiffScrolling_JScrollsDown(t *testing.T) {
+	m := newTestModel()
+	// Build diff content with more lines than availHeight (height=40, availHeight=32)
+	var lines []string
+	for i := 0; i < 50; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	m.diffViewing = true
+	m.diffContent = strings.Join(lines, "\n")
+	m.diffScrollOffset = 0
+
+	m, _ = applyUpdate(m, keyMsg("j"))
+	if m.diffScrollOffset != 1 {
+		t.Errorf("diffScrollOffset = %d, want 1", m.diffScrollOffset)
+	}
+}
+
+func TestDiffScrolling_KScrollsUp(t *testing.T) {
+	m := newTestModel()
+	var lines []string
+	for i := 0; i < 50; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	m.diffViewing = true
+	m.diffContent = strings.Join(lines, "\n")
+	m.diffScrollOffset = 5
+
+	m, _ = applyUpdate(m, keyMsg("k"))
+	if m.diffScrollOffset != 4 {
+		t.Errorf("diffScrollOffset = %d, want 4", m.diffScrollOffset)
+	}
+}
+
+func TestDiffScrolling_JClampsAtMaxScroll(t *testing.T) {
+	m := newTestModel() // height=40, availHeight=32
+	var lines []string
+	for i := 0; i < 50; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	m.diffViewing = true
+	m.diffContent = strings.Join(lines, "\n")
+	// maxScroll = 50 - 32 = 18
+	m.diffScrollOffset = 18
+
+	m, _ = applyUpdate(m, keyMsg("j"))
+	if m.diffScrollOffset != 18 {
+		t.Errorf("diffScrollOffset = %d after j at maxScroll, want 18 (clamped)", m.diffScrollOffset)
+	}
+}
+
+func TestDiffScrolling_KClampsAtZero(t *testing.T) {
+	m := newTestModel()
+	m.diffViewing = true
+	m.diffContent = "line 1\nline 2\nline 3"
+	m.diffScrollOffset = 0
+
+	m, _ = applyUpdate(m, keyMsg("k"))
+	if m.diffScrollOffset != 0 {
+		t.Errorf("diffScrollOffset = %d after k at 0, want 0 (clamped)", m.diffScrollOffset)
+	}
+}
+
 func TestView_IssueBadge_MultipleWorkspaces(t *testing.T) {
 	m := newTestModel(
 		testWSWithIssue("issue-branch", 99, "Refactor auth"),

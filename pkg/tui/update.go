@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -79,7 +80,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.diffScrollOffset--
 				}
 			case "down", "j":
-				m.diffScrollOffset++
+				availHeight := m.height - 8
+				if availHeight < 5 {
+					availHeight = 5
+				}
+				maxScroll := len(strings.Split(m.diffContent, "\n")) - availHeight
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.diffScrollOffset < maxScroll {
+					m.diffScrollOffset++
+				}
 			}
 			return m, nil
 		}
