@@ -219,6 +219,19 @@ func (c *Controller) KillWindow(name string) error {
 
 	return nil
 }
+// SendMessage sends a text message to a tmux window as if typed by the user,
+// followed by Enter. This is used to deliver instructions to a running agent.
+func (c *Controller) SendMessage(name, text string) error {
+	sessionName := c.getSessionName()
+	windowName := c.sanitizeWindowName(name)
+	target := fmt.Sprintf("%s:%s", sessionName, windowName)
+	cmd := exec.Command("tmux", "send-keys", "-t", target, text, "Enter")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to send message to window: %w\nOutput: %s", err, output)
+	}
+	return nil
+}
+
 // KillSession stops and removes the tmux session
 func (c *Controller) KillSession() error {
 	sessionName := c.getSessionName()

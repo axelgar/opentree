@@ -42,4 +42,7 @@ type ProcessManager interface {
 
 	// GetWindowActivity returns the timestamp of the last activity in a window.
 	GetWindowActivity(name string) (time.Time, error)
+
+	// SendMessage sends text followed by Enter to a window, as if typed by the user.
+	SendMessage(name, text string) error
 }

@@ -354,6 +354,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, openURLCmd(ws.PRURL)
 				}
 			}
+		case key.Matches(msg, m.keys.Review):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, nil
+				}
+				if ws.PRURL != "" {
+					return m, m.sendReviewsCmd(ws.Name)
+				}
+			}
 		case key.Matches(msg, m.keys.Select):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
@@ -596,6 +606,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearErrorMsg:
 		m.err = nil
+
+	case reviewsSentMsg:
+		if msg.count == 0 {
+			m.err = fmt.Errorf("no review comments found for %q", msg.wsName)
+			m.appendErrLog(m.err.Error())
+		}
 	}
 
 	return m, cmd

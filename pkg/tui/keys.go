@@ -12,6 +12,7 @@ type keyMap struct {
 	Diff   key.Binding
 	PR     key.Binding
 	Open   key.Binding
+	Review key.Binding
 	Delete key.Binding
 	Select key.Binding
 	Filter key.Binding
@@ -29,7 +30,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
-		{k.Diff, k.PR, k.Open, k.Select, k.Delete},
+		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
 		{k.Filter, k.Sort, k.Agent, k.ErrLog, k.Quit, k.Help},
 	}
 }
@@ -70,6 +71,10 @@ var keys = keyMap{
 	Open: key.NewBinding(
 		key.WithKeys("o"),
 		key.WithHelp("o", "open PR in browser"),
+	),
+	Review: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "send reviews to agent"),
 	),
 	Delete: key.NewBinding(
 		key.WithKeys("x"),

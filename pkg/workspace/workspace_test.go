@@ -1,13 +1,16 @@
 package workspace
 
 import (
+	"errors"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
@@ -18,6 +21,8 @@ type mockProcessManager struct {
 	createWindowCalls []string
 	killWindowCalls   []string
 	killSessionCalled bool
+	sendMessageCalls  []sendMessageCall
+	sendMessageErr    error
 }
 
 func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ...string) error {
@@ -42,6 +47,217 @@ func (m *mockProcessManager) KillSession() error {
 func (m *mockProcessManager) CapturePane(name string, lines int) (string, error) { return "", nil }
 func (m *mockProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return time.Time{}, nil
+}
+func (m *mockProcessManager) SendMessage(name, text string) error {
+	m.sendMessageCalls = append(m.sendMessageCalls, sendMessageCall{name: name, text: text})
+	return m.sendMessageErr
+}
+
+type sendMessageCall struct {
+	name string
+	text string
+}
+
+// mockGitHubManager is a test double for GitHubManager.
+type mockGitHubManager struct {
+	fetchReviewsResult []github.ReviewComment
+	fetchReviewsErr    error
+}
+
+func (m *mockGitHubManager) IsInstalled() bool { return true }
+func (m *mockGitHubManager) GetIssue(number int) (*github.Issue, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockGitHubManager) CreatePR(branch, baseBranch, title, body string) (string, error) {
+	return "", errors.New("not implemented")
+}
+func (m *mockGitHubManager) FetchPRReviews(branch string) ([]github.ReviewComment, error) {
+	return m.fetchReviewsResult, m.fetchReviewsErr
+}
+
+// newWithMockFull creates a Service with both a mock ProcessManager and a mock GitHubManager.
+func newWithMockFull(repoRoot string, cfg *config.Config, pm ProcessManager, gh GitHubManager) (*Service, error) {
+	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
+	st, err := state.New(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	return NewService(repoRoot, cfg, wt, pm, st, gh), nil
+}
+
+// ---- SendReviewsToAgent tests ----
+
+func TestSendReviewsToAgent_WorkspaceNotFound(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	svc, err := newWithMockFull(repoDir, cfg, &mockProcessManager{}, &mockGitHubManager{})
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+
+	_, err = svc.SendReviewsToAgent("nonexistent-workspace")
+	if err == nil {
+		t.Fatal("expected error for nonexistent workspace, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace not found") {
+		t.Errorf("error = %q, want to contain 'workspace not found'", err.Error())
+	}
+}
+
+func TestSendReviewsToAgent_FetchError(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	fetchErr := errors.New("gh: authentication required")
+	mock := &mockProcessManager{}
+	ghMock := &mockGitHubManager{fetchReviewsErr: fetchErr}
+
+	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("my-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, sendErr := svc.SendReviewsToAgent(ws.Name)
+	if sendErr == nil {
+		t.Fatal("expected error from FetchPRReviews, got nil")
+	}
+	if !strings.Contains(sendErr.Error(), "failed to fetch PR reviews") {
+		t.Errorf("error = %q, want to contain 'failed to fetch PR reviews'", sendErr.Error())
+	}
+	if !strings.Contains(sendErr.Error(), fetchErr.Error()) {
+		t.Errorf("error = %q, want to contain wrapped error %q", sendErr.Error(), fetchErr.Error())
+	}
+}
+
+func TestSendReviewsToAgent_NoComments(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	ghMock := &mockGitHubManager{fetchReviewsResult: nil}
+
+	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("my-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	count, err := svc.SendReviewsToAgent(ws.Name)
+	if err != nil {
+		t.Fatalf("SendReviewsToAgent() unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("SendReviewsToAgent() count = %d, want 0 when no reviews", count)
+	}
+	if len(mock.sendMessageCalls) != 0 {
+		t.Errorf("SendMessage should not be called when there are no reviews")
+	}
+}
+
+func TestSendReviewsToAgent_SendsPromptToAgent(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	reviews := []github.ReviewComment{
+		{Author: "alice", Body: "Fix this bug.", State: "CHANGES_REQUESTED"},
+		{Author: "bob", Body: "Rename variable.", State: "COMMENTED", Path: "pkg/x.go", Line: 5},
+	}
+	mock := &mockProcessManager{}
+	ghMock := &mockGitHubManager{fetchReviewsResult: reviews}
+
+	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("my-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	count, err := svc.SendReviewsToAgent(ws.Name)
+	if err != nil {
+		t.Fatalf("SendReviewsToAgent() unexpected error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("SendReviewsToAgent() count = %d, want 2", count)
+	}
+	if len(mock.sendMessageCalls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(mock.sendMessageCalls))
+	}
+	call := mock.sendMessageCalls[0]
+	if call.name != ws.Name {
+		t.Errorf("SendMessage target = %q, want %q", call.name, ws.Name)
+	}
+	if !strings.Contains(call.text, "Fix this bug.") {
+		t.Errorf("prompt missing first review body: %s", call.text)
+	}
+	if !strings.Contains(call.text, "Rename variable.") {
+		t.Errorf("prompt missing second review body: %s", call.text)
+	}
+	if !strings.Contains(call.text, "pkg/x.go:5") {
+		t.Errorf("prompt missing inline comment location: %s", call.text)
+	}
+	if !strings.Contains(call.text, "Please address all of these review comments.") {
+		t.Errorf("prompt missing closing instruction: %s", call.text)
+	}
+}
+
+func TestSendReviewsToAgent_SendMessageError(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	reviews := []github.ReviewComment{
+		{Author: "alice", Body: "Fix this.", State: "CHANGES_REQUESTED"},
+	}
+	sendErr := errors.New("tmux: no such window")
+	mock := &mockProcessManager{sendMessageErr: sendErr}
+	ghMock := &mockGitHubManager{fetchReviewsResult: reviews}
+
+	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("my-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = svc.SendReviewsToAgent(ws.Name)
+	if err == nil {
+		t.Fatal("expected error from SendMessage, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to send reviews to agent") {
+		t.Errorf("error = %q, want 'failed to send reviews to agent'", err.Error())
+	}
+	if !strings.Contains(err.Error(), sendErr.Error()) {
+		t.Errorf("error = %q, want to contain wrapped error %q", err.Error(), sendErr.Error())
+	}
 }
 
 func TestWorktreePath(t *testing.T) {

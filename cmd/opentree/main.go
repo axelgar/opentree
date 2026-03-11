@@ -37,6 +37,7 @@ func init() {
 	rootCmd.AddCommand(cmd.InstallCompletionCmd)
 	rootCmd.AddCommand(cmd.ConfigCmd)
 	rootCmd.AddCommand(cmd.AgentsCmd)
+	rootCmd.AddCommand(cmd.ReviewCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {

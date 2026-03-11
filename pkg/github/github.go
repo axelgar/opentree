@@ -10,6 +10,220 @@ import (
 	"sync"
 )
 
+// ReviewComment represents a single review comment on a PR.
+// General reviews have an empty Path and zero Line.
+// Inline (code) comments have Path and Line set.
+type ReviewComment struct {
+	Author string
+	Body   string
+	State  string // "CHANGES_REQUESTED", "APPROVED", "COMMENTED"
+	Path   string // file path for inline comments; empty for general reviews
+	Line   int    // line number for inline comments; 0 for general reviews
+}
+
+// prURLRe matches GitHub PR URLs and captures owner, repo, and number.
+var prURLRe = regexp.MustCompile(`github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
+
+// parsePRURL extracts owner, repo, and PR number from a GitHub PR URL.
+func parsePRURL(prURL string) (owner, repo string, number int, err error) {
+	m := prURLRe.FindStringSubmatch(prURL)
+	if m == nil {
+		return "", "", 0, fmt.Errorf("invalid PR URL: %s", prURL)
+	}
+	number, err = strconv.Atoi(m[3])
+	return m[1], m[2], number, err
+}
+
+// FetchPRReviews returns only actionable, unresolved review comments for the PR
+// associated with the given branch. Returns an empty slice if no PR exists.
+//
+// General reviews: only CHANGES_REQUESTED reviews with a non-empty body are
+// included. APPROVED, DISMISSED, and COMMENTED-only reviews are skipped.
+//
+// Inline code comments: only comments belonging to unresolved review threads
+// are included, determined via the GitHub GraphQL API.
+func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
+	if !pm.IsInstalled() {
+		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
+	}
+
+	// Fetch top-level reviews and PR URL in one call.
+	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,reviews")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, nil // no PR for this branch
+	}
+
+	var prData struct {
+		URL     string `json:"url"`
+		Reviews []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body  string `json:"body"`
+			State string `json:"state"`
+		} `json:"reviews"`
+	}
+	if err := json.Unmarshal(output, &prData); err != nil {
+		return nil, fmt.Errorf("failed to parse pr reviews: %w", err)
+	}
+
+	var comments []ReviewComment
+
+	// Only include reviews that actively requested changes and have a body.
+	// APPROVED, DISMISSED, COMMENTED, and PENDING are all skipped.
+	for _, r := range prData.Reviews {
+		if r.State != "CHANGES_REQUESTED" {
+			continue
+		}
+		body := strings.TrimSpace(r.Body)
+		if body == "" {
+			continue
+		}
+		comments = append(comments, ReviewComment{
+			Author: r.Author.Login,
+			Body:   body,
+			State:  r.State,
+		})
+	}
+
+	// Fetch unresolved inline review threads via GraphQL.
+	if prData.URL != "" {
+		owner, repo, prNumber, parseErr := parsePRURL(prData.URL)
+		if parseErr == nil {
+			inlineComments, err := pm.fetchUnresolvedThreadComments(owner, repo, prNumber)
+			if err == nil {
+				comments = append(comments, inlineComments...)
+			}
+		}
+	}
+
+	return comments, nil
+}
+
+// graphqlUnresolvedThreadsQuery queries for unresolved PR review threads and
+// returns the first comment of each unresolved thread.
+const graphqlUnresolvedThreadsQuery = `
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved
+          comments(first: 1) {
+            nodes {
+              author { login }
+              body
+              path
+              line
+              originalLine
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// fetchUnresolvedThreadComments returns inline comments from unresolved review
+// threads using the GitHub GraphQL API.
+func (pm *PRManager) fetchUnresolvedThreadComments(owner, repo string, prNumber int) ([]ReviewComment, error) {
+	cmd := exec.Command("gh", "api", "graphql",
+		"-f", fmt.Sprintf("query=%s", graphqlUnresolvedThreadsQuery),
+		"-f", fmt.Sprintf("owner=%s", owner),
+		"-f", fmt.Sprintf("repo=%s", repo),
+		"-F", fmt.Sprintf("number=%d", prNumber),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("graphql query failed: %w", err)
+	}
+
+	var result struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []struct {
+							IsResolved bool `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									Author struct {
+										Login string `json:"login"`
+									} `json:"author"`
+									Body         string `json:"body"`
+									Path         string `json:"path"`
+									Line         int    `json:"line"`
+									OriginalLine int    `json:"originalLine"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse graphql response: %w", err)
+	}
+
+	var comments []ReviewComment
+	threads := result.Data.Repository.PullRequest.ReviewThreads.Nodes
+	for _, thread := range threads {
+		if thread.IsResolved {
+			continue
+		}
+		if len(thread.Comments.Nodes) == 0 {
+			continue
+		}
+		c := thread.Comments.Nodes[0]
+		body := strings.TrimSpace(c.Body)
+		if body == "" {
+			continue
+		}
+		line := c.Line
+		if line == 0 {
+			line = c.OriginalLine
+		}
+		comments = append(comments, ReviewComment{
+			Author: c.Author.Login,
+			Body:   body,
+			State:  "COMMENTED",
+			Path:   c.Path,
+			Line:   line,
+		})
+	}
+	return comments, nil
+}
+
+// FormatReviewsPrompt formats a list of review comments into a prompt suitable
+// for sending to an AI coding agent.
+func FormatReviewsPrompt(comments []ReviewComment) string {
+	if len(comments) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("I have %d PR review comment(s) to address:\n\n", len(comments)))
+	for i, c := range comments {
+		sb.WriteString(fmt.Sprintf("--- Review %d (by @%s", i+1, c.Author))
+		if c.State != "" && c.State != "COMMENTED" {
+			sb.WriteString(fmt.Sprintf(", %s", c.State))
+		}
+		if c.Path != "" {
+			if c.Line > 0 {
+				sb.WriteString(fmt.Sprintf(", %s:%d", c.Path, c.Line))
+			} else {
+				sb.WriteString(fmt.Sprintf(", %s", c.Path))
+			}
+		}
+		sb.WriteString(") ---\n")
+		sb.WriteString(c.Body)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("Please address all of these review comments.")
+	return sb.String()
+}
+
 // Issue represents a GitHub issue
 type Issue struct {
 	Number int

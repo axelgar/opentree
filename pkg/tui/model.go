@@ -167,6 +167,10 @@ type diffLoadedMsg struct {
 type capturePreviewMsg struct {
 	lines string
 }
+type reviewsSentMsg struct {
+	wsName string
+	count  int
+}
 
 // NewModel initializes a fully-configured TUI Model.
 func NewModel() (*Model, error) {

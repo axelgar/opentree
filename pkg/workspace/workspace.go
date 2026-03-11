@@ -17,6 +17,18 @@ import (
 // Compile-time check that TmuxProcessManager satisfies ProcessManager.
 var _ ProcessManager = (*TmuxProcessManager)(nil)
 
+// GitHubManager abstracts GitHub operations so the workspace service is not
+// coupled to a specific implementation. *github.PRManager satisfies this.
+type GitHubManager interface {
+	IsInstalled() bool
+	GetIssue(number int) (*github.Issue, error)
+	CreatePR(branch, baseBranch, title, body string) (string, error)
+	FetchPRReviews(branch string) ([]github.ReviewComment, error)
+}
+
+// Compile-time check that *github.PRManager satisfies GitHubManager.
+var _ GitHubManager = (*github.PRManager)(nil)
+
 // Service orchestrates workspace lifecycle operations across worktree,
 // tmux, state, and github packages. Both the TUI and CLI commands
 // delegate to this service instead of orchestrating packages directly.
@@ -24,7 +36,7 @@ type Service struct {
 	worktrees *worktree.Manager
 	process   ProcessManager
 	state     *state.Store
-	github    *github.PRManager
+	github    GitHubManager
 	cfg       *config.Config
 	repoRoot  string
 }
@@ -44,7 +56,7 @@ func New(repoRoot string, cfg *config.Config) (*Service, error) {
 
 // NewService creates a workspace service with pre-constructed dependencies.
 // Use this when you need to share dependencies with other components (e.g., TUI).
-func NewService(repoRoot string, cfg *config.Config, wt *worktree.Manager, pm ProcessManager, st *state.Store, gh *github.PRManager) *Service {
+func NewService(repoRoot string, cfg *config.Config, wt *worktree.Manager, pm ProcessManager, st *state.Store, gh GitHubManager) *Service {
 	return &Service{
 		worktrees: wt,
 		process:   pm,
@@ -224,6 +236,31 @@ func (s *Service) HasChanges(name string) (string, error) {
 	}
 
 	return s.worktrees.DiffBranches(name, baseBranch)
+}
+
+// SendReviewsToAgent fetches all PR review comments for the workspace's branch
+// and sends them as a formatted prompt to the running agent in the tmux window.
+// Returns the number of review comments sent, or 0 if none were found.
+func (s *Service) SendReviewsToAgent(name string) (int, error) {
+	ws, err := s.state.GetWorkspace(name)
+	if err != nil {
+		return 0, fmt.Errorf("workspace not found: %w", err)
+	}
+
+	comments, err := s.github.FetchPRReviews(ws.Branch)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch PR reviews: %w", err)
+	}
+	if len(comments) == 0 {
+		return 0, nil
+	}
+
+	prompt := github.FormatReviewsPrompt(comments)
+	if err := s.process.SendMessage(name, prompt); err != nil {
+		return 0, fmt.Errorf("failed to send reviews to agent: %w", err)
+	}
+
+	return len(comments), nil
 }
 
 // CreatePR creates a GitHub pull request for a workspace.
