@@ -185,10 +185,8 @@ func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, 
 
 	if issueTitle != "" {
 		title = issueTitle
-	} else if len(commits) > 0 {
-		title = commits[0]
 	} else {
-		title = branch
+		title = gitutil.BranchToTitle(branch)
 	}
 
 	var sb strings.Builder

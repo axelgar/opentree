@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
 // ReviewComment represents a single review comment on a PR.
@@ -332,8 +334,7 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 	if title != "" {
 		args = append(args, "--title", title)
 	} else {
-		// Use branch name as title if not provided
-		args = append(args, "--title", branch)
+		args = append(args, "--title", gitutil.BranchToTitle(branch))
 	}
 
 	if body != "" {
