@@ -14,7 +14,7 @@ uninstall:
 	rm -f $(INSTALL_DIR)/$(BINARY)
 
 fmt:
-	gofmt -w ./...
+	goimports -w -local github.com/axelgar/opentree $(shell find . -name "*.go")
 
 lint:
 	golangci-lint run
