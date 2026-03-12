@@ -51,7 +51,10 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,reviews")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, nil // no PR for this branch
+		if strings.Contains(string(output), "no pull requests found") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("gh pr view failed: %w", err)
 	}
 
 	var prData struct {

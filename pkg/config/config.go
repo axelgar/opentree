@@ -179,7 +179,6 @@ func mergeInto(dst, src *Config) {
 // computeSources compares a resolved config against global and repo raw configs
 // to determine which source provided each final value.
 func computeSources(resolved, global, repo *Config) ConfigSource {
-	defaults := Default()
 	src := ConfigSource{
 		AgentCommand:        SourceDefault,
 		AgentArgs:           SourceDefault,
@@ -189,14 +188,6 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		GitHubAutoPush:      SourceDefault,
 	}
 
-	// Helper: check global then repo for each field
-	if global != nil && global.Agent.Command != "" && global.Agent.Command != defaults.Agent.Command {
-		src.AgentCommand = SourceGlobal
-	}
-	if repo != nil && repo.Agent.Command != "" && repo.Agent.Command != defaults.Agent.Command {
-		src.AgentCommand = SourceRepo
-	}
-	// If resolved value equals default but global/repo both set it, still annotate
 	if global != nil && global.Agent.Command != "" {
 		src.AgentCommand = SourceGlobal
 	}
@@ -239,7 +230,6 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		src.GitHubAutoPush = SourceRepo
 	}
 
-	_ = resolved
 	return src
 }
 

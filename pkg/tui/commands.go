@@ -35,11 +35,15 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		go func(i int, ws *state.Workspace) {
 			defer wg.Done()
 
-			diff, fileChanges, _ := m.worktreeMgr.DiffStats(ws.Branch, ws.BaseBranch)
+			diff, fileChanges, err := m.worktreeMgr.DiffStats(ws.Branch, ws.BaseBranch)
 			diffStat := "No changes"
-			lines := strings.Split(strings.TrimSpace(diff), "\n")
-			if len(lines) > 0 && lines[len(lines)-1] != "" {
-				diffStat = lines[len(lines)-1]
+			if err != nil {
+				diffStat = "diff unavailable"
+			} else {
+				lines := strings.Split(strings.TrimSpace(diff), "\n")
+				if len(lines) > 0 && lines[len(lines)-1] != "" {
+					diffStat = lines[len(lines)-1]
+				}
 			}
 
 			win, exists := windowMap[ws.Name]
@@ -52,7 +56,6 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 				Workspace:   ws,
 				DiffStat:    diffStat,
 				Active:      exists && win.Active,
-				WindowID:    "",
 				FileChanges: fileChanges,
 			}
 			if exists {

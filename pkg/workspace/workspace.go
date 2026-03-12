@@ -91,6 +91,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 
 	agentCmd := s.cfg.Agent.Command
 	if err := s.process.CreateWindow(name, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
+		_ = s.worktrees.Delete(name, true) // cleanup orphaned worktree
 		return nil, fmt.Errorf("failed to create tmux window: %w", err)
 	}
 
