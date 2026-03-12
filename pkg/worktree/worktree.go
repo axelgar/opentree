@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -384,10 +385,14 @@ func parseNumstat(output string) []FileChange {
 		added := 0
 		removed := 0
 		if parts[0] != "-" {
-			_, _ = fmt.Sscanf(parts[0], "%d", &added)
+			if n, err := strconv.Atoi(parts[0]); err == nil {
+				added = n
+			}
 		}
 		if parts[1] != "-" {
-			_, _ = fmt.Sscanf(parts[1], "%d", &removed)
+			if n, err := strconv.Atoi(parts[1]); err == nil {
+				removed = n
+			}
 		}
 		files = append(files, FileChange{
 			FileName: parts[2],

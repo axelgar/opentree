@@ -10,6 +10,13 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 )
 
+const (
+	headerFooterHeight  = 8
+	minDiffHeight       = 5
+	defaultPreviewWidth = 60
+	minPreviewWidth     = 20
+)
+
 func (m Model) View() string {
 	// Error log overlay
 	if m.showErrLog {
@@ -70,9 +77,9 @@ func (m Model) View() string {
 	// Diff view overlay
 	if m.diffViewing {
 		lines := strings.Split(m.diffContent, "\n")
-		availHeight := m.height - 8
-		if availHeight < 5 {
-			availHeight = 5
+		availHeight := m.height - headerFooterHeight
+		if availHeight < minDiffHeight {
+			availHeight = minDiffHeight
 		}
 		// clamp scroll
 		maxScroll := len(lines) - availHeight
@@ -294,26 +301,12 @@ func (m Model) View() string {
 			case ws.PRStatus == "open" && ws.MergeConflicts:
 				title += "  " + conflictsBadgeStyle.Render("PR open · conflicts")
 				if ci, ok := m.ciStatus[ws.Name]; ok {
-					switch ci {
-					case "success":
-						title += " " + ciSuccessStyle.Render("✓ CI")
-					case "failure":
-						title += " " + ciFailureStyle.Render("✗ CI")
-					case "pending":
-						title += " " + ciPendingStyle.Render("⟳ CI")
-					}
+					title += renderCIBadge(ci)
 				}
 			case ws.PRStatus == "open":
 				title += "  " + prOpenBadgeStyle.Render("PR open")
 				if ci, ok := m.ciStatus[ws.Name]; ok {
-					switch ci {
-					case "success":
-						title += " " + ciSuccessStyle.Render("✓ CI")
-					case "failure":
-						title += " " + ciFailureStyle.Render("✗ CI")
-					case "pending":
-						title += " " + ciPendingStyle.Render("⟳ CI")
-					}
+					title += renderCIBadge(ci)
 				}
 			case ws.BranchPushed:
 				title += "  " + pushedBadgeStyle.Render("pushed")
@@ -384,8 +377,8 @@ func (m Model) View() string {
 		if m.agentPreview != "" && m.cursor < len(visible) {
 			wsName := visible[m.cursor].Name
 			previewWidth := m.width - 8
-			if previewWidth < 20 {
-				previewWidth = 60
+			if previewWidth < minPreviewWidth {
+				previewWidth = defaultPreviewWidth
 			}
 			content := previewTitleStyle.Render("Agent Output: "+wsName) + "\n" +
 				previewLineStyle.Render(m.agentPreview)
@@ -501,4 +494,16 @@ func (m Model) sortedWorkspaces() []WorkspaceItem {
 		})
 	}
 	return ws
+}
+
+func renderCIBadge(ci string) string {
+	switch ci {
+	case "success":
+		return " " + ciSuccessStyle.Render("✓ CI")
+	case "failure":
+		return " " + ciFailureStyle.Render("✗ CI")
+	case "pending":
+		return " " + ciPendingStyle.Render("⟳ CI")
+	}
+	return ""
 }

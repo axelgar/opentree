@@ -217,24 +217,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if branchName == "" {
 						return m, nil
 					}
-					m.creating = false
-					m.remoteBranchMode = false
-					m.remoteBranches = nil
-					m.filteredBranches = nil
-					m.branchSuggestionCursor = 0
-					m.input.SetValue("")
-					m.input.Placeholder = "New branch name"
+					m.resetCreateMode()
 					m.workspaceCreating = true
 					m.workspaceCreatingName = branchName
 					return m, tea.Batch(m.createWorkspaceFromRemoteCmd(branchName), spinnerTickCmd())
 				case "esc":
-					m.creating = false
-					m.remoteBranchMode = false
-					m.remoteBranches = nil
-					m.filteredBranches = nil
-					m.branchSuggestionCursor = 0
-					m.input.SetValue("")
-					m.input.Placeholder = "New branch name"
+					m.resetCreateMode()
 					return m, nil
 				default:
 					m.input, cmd = m.input.Update(msg)
@@ -251,10 +239,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.issueMode {
-					m.creating = false
-					m.issueMode = false
-					m.input.SetValue("")
-					m.input.Placeholder = "New branch name"
+					m.resetCreateMode()
 					m.workspaceCreating = true
 					m.workspaceCreatingName = "issue " + val
 					return m, tea.Batch(m.createWorkspaceFromIssueCmd(val), spinnerTickCmd())
@@ -268,21 +253,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				branchName := m.newBranchName
 				baseBranch := val
-				m.creating = false
-				m.createStep = 0
-				m.newBranchName = ""
-				m.input.SetValue("")
-				m.input.Placeholder = "New branch name"
+				m.resetCreateMode()
 				m.workspaceCreating = true
 				m.workspaceCreatingName = branchName
 				return m, tea.Batch(m.createWorkspaceCmd(branchName, baseBranch), spinnerTickCmd())
 			case "esc":
-				m.creating = false
-				m.issueMode = false
-				m.createStep = 0
-				m.newBranchName = ""
-				m.input.SetValue("")
-				m.input.Placeholder = "New branch name"
+				m.resetCreateMode()
 				return m, nil
 			}
 			m.input, cmd = m.input.Update(msg)
@@ -603,6 +579,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workspaceCreating = false
 		m.workspaceDeleting = false
 		m.workspaceDeletingNames = make(map[string]bool)
+		m.creating = false
+		m.filtering = false
+		m.prCreating = false
 		m.err = msg.err
 		m.appendErrLog(msg.err.Error())
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
@@ -626,6 +605,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m *Model) resetCreateMode() {
+	m.creating = false
+	m.remoteBranchMode = false
+	m.remoteBranches = nil
+	m.filteredBranches = nil
+	m.branchSuggestionCursor = 0
+	m.issueMode = false
+	m.createStep = 0
+	m.newBranchName = ""
+	m.input.SetValue("")
+	m.input.Placeholder = "New branch name"
 }
 
 func (m *Model) appendErrLog(msg string) {
