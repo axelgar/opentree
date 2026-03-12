@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
 func spinnerTickCmd() tea.Cmd {
@@ -245,6 +246,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Batch(m.createWorkspaceFromIssueCmd(val), spinnerTickCmd())
 				}
 				if m.createStep == 0 {
+					if err := gitutil.ValidateBranchName(val); err != nil {
+						m.err = err
+						m.appendErrLog(err.Error())
+						return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+							return clearErrorMsg{}
+						})
+					}
 					m.newBranchName = val
 					m.createStep = 1
 					m.input.Placeholder = "Base branch"
@@ -308,22 +316,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
 				if m.isWorkspaceInFlight(ws.Name) {
-					return m, nil
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				return m, m.attachWorkspaceCmd(ws.Name)
 			}
 		case key.Matches(msg, m.keys.Diff):
 			if len(visible) > 0 {
-				if m.isWorkspaceInFlight(visible[m.cursor].Name) {
-					return m, nil
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
-				return m, m.loadDiffCmd(visible[m.cursor])
+				return m, m.loadDiffCmd(ws)
 			}
 		case key.Matches(msg, m.keys.PR):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
 				if m.isWorkspaceInFlight(ws.Name) {
-					return m, nil
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				m.prGenerating = true
 				m.prWsName = ws.Name
@@ -335,27 +344,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
 				if m.isWorkspaceInFlight(ws.Name) {
-					return m, nil
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				if ws.PRURL != "" {
 					return m, openURLCmd(ws.PRURL)
 				}
+				return m, m.transientErrCmd(fmt.Sprintf("no PR for %q — create one with 'p'", ws.Name))
 			}
 		case key.Matches(msg, m.keys.Review):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
 				if m.isWorkspaceInFlight(ws.Name) {
-					return m, nil
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				if ws.PRURL != "" {
 					return m, m.sendReviewsCmd(ws.Name)
 				}
+				return m, m.transientErrCmd(fmt.Sprintf("no PR for %q — create one first with 'p'", ws.Name))
 			}
 		case key.Matches(msg, m.keys.Select):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
 				if m.isWorkspaceInFlight(ws.Name) {
-					return m, nil
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				if m.selected[ws.Name] {
 					delete(m.selected, ws.Name)
@@ -375,7 +386,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if len(visible) > 0 {
 				ws := visible[m.cursor]
 				if m.isWorkspaceInFlight(ws.Name) {
-					return m, nil
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				m.deleting = true
 				m.deleteTarget = ws.Name
@@ -412,6 +423,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case remoteBranchesLoadedMsg:
+		if msg.err != nil {
+			m.resetCreateMode()
+			m.err = fmt.Errorf("failed to load remote branches: %w", msg.err)
+			m.appendErrLog(m.err.Error())
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearErrorMsg{}
+			})
+		}
 		m.remoteBranches = msg.branches
 		m.filteredBranches = filterBranches(msg.branches, m.input.Value())
 		m.branchSuggestionCursor = 0
@@ -618,6 +637,14 @@ func (m *Model) resetCreateMode() {
 	m.newBranchName = ""
 	m.input.SetValue("")
 	m.input.Placeholder = "New branch name"
+}
+
+func (m *Model) transientErrCmd(msg string) tea.Cmd {
+	m.err = fmt.Errorf("%s", msg)
+	m.appendErrLog(msg)
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return clearErrorMsg{}
+	})
 }
 
 func (m *Model) appendErrLog(msg string) {

@@ -162,6 +162,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 
 	agentCmd := s.cfg.Agent.Command
 	if err := s.process.CreateWindow(branchName, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
+		_ = s.worktrees.Delete(branchName, true) // cleanup orphaned worktree
 		return nil, fmt.Errorf("failed to create tmux window: %w", err)
 	}
 

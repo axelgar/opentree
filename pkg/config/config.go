@@ -56,7 +56,7 @@ type TmuxConfig struct {
 
 // GitHubConfig configures GitHub integration
 type GitHubConfig struct {
-	AutoPush bool `toml:"auto_push"`
+	AutoPush *bool `toml:"auto_push,omitempty"`
 }
 
 // ConfigSource tracks which config file provided each value.
@@ -75,6 +75,9 @@ const (
 	SourceRepo    = "repo"
 )
 
+// boolPtr returns a pointer to b.
+func boolPtr(b bool) *bool { return &b }
+
 // Default returns the default configuration
 func Default() *Config {
 	return &Config{
@@ -90,7 +93,7 @@ func Default() *Config {
 			SessionPrefix: "opentree",
 		},
 		GitHub: GitHubConfig{
-			AutoPush: false,
+			AutoPush: boolPtr(false),
 		},
 	}
 }
@@ -168,10 +171,7 @@ func mergeInto(dst, src *Config) {
 	if src.Tmux.SessionPrefix != "" {
 		dst.Tmux.SessionPrefix = src.Tmux.SessionPrefix
 	}
-	// auto_push is a bool — we can't detect "was it set?" from the value alone.
-	// We use the presence of the file and the zero value. Since false == default,
-	// the only meaningful override is true.
-	if src.GitHub.AutoPush {
+	if src.GitHub.AutoPush != nil {
 		dst.GitHub.AutoPush = src.GitHub.AutoPush
 	}
 }
@@ -223,10 +223,10 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		src.TmuxSessionPrefix = SourceRepo
 	}
 
-	if global != nil && global.GitHub.AutoPush {
+	if global != nil && global.GitHub.AutoPush != nil {
 		src.GitHubAutoPush = SourceGlobal
 	}
-	if repo != nil && repo.GitHub.AutoPush {
+	if repo != nil && repo.GitHub.AutoPush != nil {
 		src.GitHubAutoPush = SourceRepo
 	}
 

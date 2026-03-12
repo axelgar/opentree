@@ -46,6 +46,23 @@ func RepoRoot() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// ValidateBranchName checks whether name is a valid git branch name
+// by running `git check-ref-format --branch`.
+func ValidateBranchName(name string) error {
+	if name == "" {
+		return fmt.Errorf("branch name cannot be empty")
+	}
+	cmd := exec.Command("git", "check-ref-format", "--branch", name)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("invalid branch name %q: %s", name, msg)
+		}
+		return fmt.Errorf("invalid branch name %q", name)
+	}
+	return nil
+}
+
 // SanitizeBranchName converts a branch name to a safe directory/window name.
 // Replaces "/" and ":" with "-".
 func SanitizeBranchName(name string) string {

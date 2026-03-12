@@ -130,6 +130,7 @@ type loadedWorkspacesMsg struct {
 
 type remoteBranchesLoadedMsg struct {
 	branches []string
+	err      error
 }
 
 type createdWorkspaceMsg struct {
