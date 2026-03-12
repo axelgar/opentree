@@ -26,7 +26,7 @@ func TestDefault(t *testing.T) {
 	if cfg.Tmux.SessionPrefix != "opentree" {
 		t.Errorf("Tmux.SessionPrefix = %q, want %q", cfg.Tmux.SessionPrefix, "opentree")
 	}
-	if cfg.GitHub.AutoPush != false {
+	if cfg.GitHub.AutoPush == nil || *cfg.GitHub.AutoPush != false {
 		t.Errorf("GitHub.AutoPush = %v, want false", cfg.GitHub.AutoPush)
 	}
 }
@@ -86,8 +86,8 @@ auto_push = true
 	if cfg.Tmux.SessionPrefix != "myapp" {
 		t.Errorf("Tmux.SessionPrefix = %q, want %q", cfg.Tmux.SessionPrefix, "myapp")
 	}
-	if !cfg.GitHub.AutoPush {
-		t.Error("GitHub.AutoPush = false, want true")
+	if cfg.GitHub.AutoPush == nil || !*cfg.GitHub.AutoPush {
+		t.Error("GitHub.AutoPush = false/nil, want true")
 	}
 }
 
@@ -147,7 +147,7 @@ func TestSave_And_Load_RoundTrip(t *testing.T) {
 			SessionPrefix: "proj",
 		},
 		GitHub: GitHubConfig{
-			AutoPush: true,
+			AutoPush: boolPtr(true),
 		},
 	}
 
@@ -175,8 +175,8 @@ func TestSave_And_Load_RoundTrip(t *testing.T) {
 	if loaded.Tmux.SessionPrefix != original.Tmux.SessionPrefix {
 		t.Errorf("Tmux.SessionPrefix = %q, want %q", loaded.Tmux.SessionPrefix, original.Tmux.SessionPrefix)
 	}
-	if loaded.GitHub.AutoPush != original.GitHub.AutoPush {
-		t.Errorf("GitHub.AutoPush = %v, want %v", loaded.GitHub.AutoPush, original.GitHub.AutoPush)
+	if loaded.GitHub.AutoPush == nil || *loaded.GitHub.AutoPush != *original.GitHub.AutoPush {
+		t.Errorf("GitHub.AutoPush = %v, want %v", loaded.GitHub.AutoPush, *original.GitHub.AutoPush)
 	}
 }
 
@@ -272,7 +272,7 @@ func TestSaveGlobal_And_LoadGlobal_RoundTrip(t *testing.T) {
 		Agent:    AgentConfig{Command: "my-agent", Args: []string{"-v"}},
 		Worktree: WorktreeConfig{BaseDir: ".trees", DefaultBase: "develop"},
 		Tmux:     TmuxConfig{SessionPrefix: "proj"},
-		GitHub:   GitHubConfig{AutoPush: true},
+		GitHub:   GitHubConfig{AutoPush: boolPtr(true)},
 	}
 
 	if err := SaveGlobal(original); err != nil {
@@ -368,6 +368,44 @@ command = "repo-agent"
 	}
 	if sources.WorktreeDefaultBase != SourceGlobal {
 		t.Errorf("sources.WorktreeDefaultBase = %q, want %q", sources.WorktreeDefaultBase, SourceGlobal)
+	}
+}
+
+func TestLoadWithSources_RepoFalseOverridesGlobalTrue(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+
+	globalToml := `
+[github]
+auto_push = true
+`
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte(globalToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoToml := `
+[github]
+auto_push = false
+`
+	repoPath := filepath.Join(t.TempDir(), "opentree.toml")
+	if err := os.WriteFile(repoPath, []byte(repoToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(repoPath)
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+
+	if cfg.GitHub.AutoPush == nil || *cfg.GitHub.AutoPush != false {
+		t.Errorf("GitHub.AutoPush = %v, want false (repo should override global)", cfg.GitHub.AutoPush)
+	}
+	if sources.GitHubAutoPush != SourceRepo {
+		t.Errorf("sources.GitHubAutoPush = %q, want %q", sources.GitHubAutoPush, SourceRepo)
 	}
 }
 

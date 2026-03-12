@@ -100,8 +100,8 @@ func (m Model) createWorkspaceFromRemoteCmd(branchName string) tea.Cmd {
 
 func (m Model) loadRemoteBranchesCmd() tea.Cmd {
 	return func() tea.Msg {
-		branches, _ := gitutil.ListRemoteBranches(m.repoRoot, 10)
-		return remoteBranchesLoadedMsg{branches: branches}
+		branches, err := gitutil.ListRemoteBranches(m.repoRoot, 10)
+		return remoteBranchesLoadedMsg{branches: branches, err: err}
 	}
 }
 
@@ -221,7 +221,7 @@ func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bo
 	return func() tea.Msg {
 		status, err := m.prMgr.GetBranchAndPRStatus(branch, repoDir, wasPushed)
 		if err != nil {
-			return nil
+			return errMsg{err}
 		}
 		return branchStatusCheckedMsg{wsName: wsName, status: status}
 	}
@@ -266,7 +266,7 @@ func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 			return errMsg{err}
 		}
 
-		uncommitted, _ := m.worktreeMgr.DiffUncommitted(ws.Branch)
+		uncommitted, uncommittedErr := m.worktreeMgr.DiffUncommitted(ws.Branch)
 
 		committedTrimmed := strings.TrimSpace(committed)
 		uncommittedTrimmed := strings.TrimSpace(uncommitted)
@@ -282,7 +282,9 @@ func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 			}
 		}
 
-		if uncommittedTrimmed != "" {
+		if uncommittedErr != nil {
+			sections = append(sections, "══════ Uncommitted Changes ══════\n\n(error: "+uncommittedErr.Error()+")")
+		} else if uncommittedTrimmed != "" {
 			header := "══════ Uncommitted Changes ══════"
 			sections = append(sections, header+"\n\n"+uncommittedTrimmed)
 		}

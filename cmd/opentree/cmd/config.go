@@ -60,7 +60,7 @@ var configListCmd = &cobra.Command{
 			fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
 			fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
 			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
-			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush)
+			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush)
 			return nil
 		}
 
@@ -74,7 +74,7 @@ var configListCmd = &cobra.Command{
 		fmt.Printf("worktree.base_dir = %s  (%s)\n", cfg.Worktree.BaseDir, sources.WorktreeBaseDir)
 		fmt.Printf("worktree.default_base = %s  (%s)\n", cfg.Worktree.DefaultBase, sources.WorktreeDefaultBase)
 		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
-		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush, sources.GitHubAutoPush)
+		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush, sources.GitHubAutoPush)
 		return nil
 	},
 }
@@ -171,7 +171,7 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 	case "tmux.session_prefix":
 		return cfg.Tmux.SessionPrefix, nil
 	case "github.auto_push":
-		return strconv.FormatBool(cfg.GitHub.AutoPush), nil
+		return strconv.FormatBool(cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush), nil
 	default:
 		return "", fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 	}
@@ -198,7 +198,7 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 		if err != nil {
 			return fmt.Errorf("invalid value for github.auto_push: must be true or false")
 		}
-		cfg.GitHub.AutoPush = b
+		cfg.GitHub.AutoPush = &b
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}

@@ -650,14 +650,17 @@ func TestOpenPR_OKeyWithPRURLReturnsCmd(t *testing.T) {
 	}
 }
 
-func TestOpenPR_OKeyWithoutPRURLDoesNothing(t *testing.T) {
+func TestOpenPR_OKeyWithoutPRURLShowsError(t *testing.T) {
 	ws := testWS("no-pr") // no PRURL
 	m := newTestModel(ws)
 
-	_, cmd := applyUpdate(m, keyMsg("o"))
+	updated, cmd := applyUpdate(m, keyMsg("o"))
 
-	if cmd != nil {
-		t.Error("expected nil cmd when pressing o on workspace without PR URL")
+	if cmd == nil {
+		t.Error("expected non-nil cmd (transient error) when pressing o on workspace without PR URL")
+	}
+	if updated.err == nil {
+		t.Error("expected transient error to be set")
 	}
 }
 

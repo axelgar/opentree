@@ -170,6 +170,10 @@ func (m Model) View() string {
 			sb.WriteString("\n")
 			sb.WriteString(helpStyle.Render("  loading branches…"))
 			sb.WriteString("\n")
+		} else {
+			sb.WriteString("\n")
+			sb.WriteString(helpStyle.Render("  no branches match"))
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 		sb.WriteString(helpStyle.Render("↑/↓ navigate • Tab select • Enter confirm • Esc cancel"))
