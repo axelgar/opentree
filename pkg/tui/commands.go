@@ -17,10 +17,7 @@ import (
 func (m Model) loadWorkspacesCmd() tea.Msg {
 	saved := m.stateStore.ListWorkspaces()
 
-	windows, err := m.svc.Process().ListWindows()
-	if err != nil {
-		// Log error but continue
-	}
+	windows, _ := m.svc.Process().ListWindows()
 
 	windowMap := make(map[string]workspace.Window)
 	for _, w := range windows {
@@ -191,10 +188,8 @@ func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, 
 
 	if issueTitle != "" {
 		title = issueTitle
-	} else if len(commits) > 0 {
-		title = commits[0]
 	} else {
-		title = branch
+		title = gitutil.BranchToTitle(branch)
 	}
 
 	var sb strings.Builder
@@ -219,26 +214,6 @@ func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {
 			return errMsg{err}
 		}
 		return prCreatedMsg{wsName: wsName, prURL: prURL}
-	}
-}
-
-func (m Model) checkPRStatusCmd(wsName, branch string) tea.Cmd {
-	return func() tea.Msg {
-		prURL, prStatus, err := m.prMgr.GetFullPRStatus(branch)
-		if err != nil || prURL == "" {
-			return nil
-		}
-		return prStatusCheckedMsg{wsName: wsName, prURL: prURL, prStatus: prStatus}
-	}
-}
-
-func (m Model) checkCIStatusCmd(wsName, branch string) tea.Cmd {
-	return func() tea.Msg {
-		status, err := m.prMgr.GetPRCIStatus(branch)
-		if err != nil || status == "" {
-			return nil
-		}
-		return ciStatusCheckedMsg{wsName: wsName, ciStatus: status}
 	}
 }
 

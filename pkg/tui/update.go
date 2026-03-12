@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -79,7 +80,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.diffScrollOffset--
 				}
 			case "down", "j":
-				m.diffScrollOffset++
+				availHeight := m.height - 8
+				if availHeight < 5 {
+					availHeight = 5
+				}
+				maxScroll := len(strings.Split(m.diffContent, "\n")) - availHeight
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.diffScrollOffset < maxScroll {
+					m.diffScrollOffset++
+				}
 			}
 			return m, nil
 		}
@@ -414,21 +425,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
-	m.workspaceCreating = false
-	m.workspaceCreatingName = ""
-	if msg.wsName != "" {
-		if m.stateStore != nil {
-			if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
-				item := WorkspaceItem{
-					Workspace: ws,
-					DiffStat:  "No changes",
+		m.workspaceCreating = false
+		m.workspaceCreatingName = ""
+		if msg.wsName != "" {
+			if m.stateStore != nil {
+				if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
+					item := WorkspaceItem{
+						Workspace: ws,
+						DiffStat:  "No changes",
+					}
+					m.workspaces = append(m.workspaces, item)
 				}
-				m.workspaces = append(m.workspaces, item)
 			}
+			return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
 		}
-		return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
-	}
-	return m, nil
+		return m, nil
 
 	case deletedWorkspaceMsg:
 		m.workspaceDeleting = false

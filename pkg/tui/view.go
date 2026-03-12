@@ -192,7 +192,6 @@ func (m Model) View() string {
 		))
 	}
 
-
 	// PR content generation in progress
 	if m.prGenerating {
 		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
@@ -220,8 +219,8 @@ func (m Model) View() string {
 	var s strings.Builder
 
 	// Logo
-s.WriteString(renderLogo())
-s.WriteString("\n\n")
+	s.WriteString(renderLogo())
+	s.WriteString("\n\n")
 
 	// Header with sort/filter info
 	header := "Workspaces"

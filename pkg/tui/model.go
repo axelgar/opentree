@@ -14,8 +14,8 @@ import (
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
-	"github.com/axelgar/opentree/pkg/worktree"
 	"github.com/axelgar/opentree/pkg/workspace"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
 
 // WorkspaceItem enriches a state.Workspace with display-specific data.
@@ -201,15 +201,15 @@ func NewModel() (*Model, error) {
 	ti.Width = 30
 
 	return &Model{
-		svc:         svc,
-		worktreeMgr: wt,
-		stateStore:  st,
-		prMgr:       gh,
-		cfg:         cfg,
-		repoRoot:    repoRoot,
-		input:       ti,
-		help:        help.New(),
-		keys:        keys,
+		svc:                    svc,
+		worktreeMgr:            wt,
+		stateStore:             st,
+		prMgr:                  gh,
+		cfg:                    cfg,
+		repoRoot:               repoRoot,
+		input:                  ti,
+		help:                   help.New(),
+		keys:                   keys,
 		ciStatus:               make(map[string]string),
 		selected:               make(map[string]bool),
 		workspaceDeletingNames: make(map[string]bool),

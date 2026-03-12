@@ -61,6 +61,25 @@ func TestSanitizeBranchName(t *testing.T) {
 	}
 }
 
+func TestBranchToTitle(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"feat/improve-default-pr-title", "Improve default pr title"},
+		{"fix/some-bug", "Some bug"},
+		{"chore/update_deps", "Update deps"},
+		{"my-feature-branch", "My feature branch"},
+		{"main", "Main"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := BranchToTitle(tt.input); got != tt.want {
+			t.Errorf("BranchToTitle(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestListRemoteBranches(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")

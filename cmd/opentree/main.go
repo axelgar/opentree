@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/axelgar/opentree/pkg/tui"
 	"github.com/spf13/cobra"
-	"github.com/axelgar/opentree/cmd/opentree/cmd"
-)
 
+	"github.com/axelgar/opentree/cmd/opentree/cmd"
+	"github.com/axelgar/opentree/pkg/tui"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "opentree",

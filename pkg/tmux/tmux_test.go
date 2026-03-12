@@ -383,7 +383,6 @@ func TestCapturePane(t *testing.T) {
 	}
 }
 
-
 func TestSelectWindow(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")

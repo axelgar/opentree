@@ -230,7 +230,6 @@ func TestSave_CreatesParentDirectory(t *testing.T) {
 	}
 }
 
-
 func TestGlobalConfigPath_UsesXDG(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
