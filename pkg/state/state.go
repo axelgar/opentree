@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -13,6 +14,7 @@ import (
 type Store struct {
 	filePath string
 	lockPath string
+	mu       sync.RWMutex // protects in-memory state access
 	state    *State
 }
 
@@ -123,6 +125,8 @@ func (s *Store) atomicWrite() error {
 // mutate performs an atomic read-modify-write cycle under an exclusive lock.
 // It reloads the latest state from disk, applies the mutation, then writes back.
 func (s *Store) mutate(fn func()) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.withFileLock(syscall.LOCK_EX, func() error {
 		if err := s.loadFromDisk(); err != nil {
 			return err
@@ -134,6 +138,8 @@ func (s *Store) mutate(fn func()) error {
 
 // Load reads the state from disk under a shared lock.
 func (s *Store) Load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.withFileLock(syscall.LOCK_SH, func() error {
 		return s.loadFromDisk()
 	})
@@ -141,6 +147,8 @@ func (s *Store) Load() error {
 
 // Save writes the state to disk under an exclusive lock using atomic write.
 func (s *Store) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.withFileLock(syscall.LOCK_EX, func() error {
 		return s.atomicWrite()
 	})
@@ -155,6 +163,8 @@ func (s *Store) AddWorkspace(ws *Workspace) error {
 
 // GetWorkspace retrieves a workspace by name
 func (s *Store) GetWorkspace(name string) (*Workspace, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	ws, ok := s.state.Workspaces[name]
 	if !ok {
 		return nil, fmt.Errorf("workspace not found: %s", name)
@@ -164,18 +174,18 @@ func (s *Store) GetWorkspace(name string) (*Workspace, error) {
 
 // UpdateWorkspace updates an existing workspace
 func (s *Store) UpdateWorkspace(ws *Workspace) error {
-	var notFound bool
-	err := s.mutate(func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.withFileLock(syscall.LOCK_EX, func() error {
+		if err := s.loadFromDisk(); err != nil {
+			return err
+		}
 		if _, ok := s.state.Workspaces[ws.Name]; !ok {
-			notFound = true
-			return
+			return fmt.Errorf("workspace not found: %s", ws.Name)
 		}
 		s.state.Workspaces[ws.Name] = ws
+		return s.atomicWrite()
 	})
-	if notFound {
-		return fmt.Errorf("workspace not found: %s", ws.Name)
-	}
-	return err
 }
 
 // DeleteWorkspace removes a workspace from the state
@@ -187,6 +197,8 @@ func (s *Store) DeleteWorkspace(name string) error {
 
 // ListWorkspaces returns all workspaces
 func (s *Store) ListWorkspaces() []*Workspace {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	workspaces := make([]*Workspace, 0, len(s.state.Workspaces))
 	for _, ws := range s.state.Workspaces {
 		workspaces = append(workspaces, ws)

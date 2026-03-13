@@ -102,9 +102,10 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 		owner, repo, prNumber, parseErr := parsePRURL(prData.URL)
 		if parseErr == nil {
 			inlineComments, err := pm.fetchUnresolvedThreadComments(owner, repo, prNumber)
-			if err == nil {
-				comments = append(comments, inlineComments...)
+			if err != nil {
+				return comments, fmt.Errorf("failed to fetch inline review threads: %w", err)
 			}
+			comments = append(comments, inlineComments...)
 		}
 	}
 
@@ -414,7 +415,7 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 		} `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
-		return "", nil
+		return "", fmt.Errorf("failed to parse CI status response: %w", err)
 	}
 	if len(result.StatusCheckRollup) == 0 {
 		return "", nil
@@ -489,7 +490,7 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 		} `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(output, &raw); err != nil {
-		return status, nil
+		return status, fmt.Errorf("failed to parse PR status response: %w", err)
 	}
 	status.PRURL = raw.URL
 	status.PRState = strings.ToLower(raw.State)
