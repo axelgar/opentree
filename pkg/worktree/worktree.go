@@ -273,7 +273,10 @@ func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]File
 
 	files := parseNumstat(string(output))
 
-	uncommitted := uncommittedFiles(worktreePath)
+	uncommitted, err := uncommittedFiles(worktreePath)
+	if err != nil {
+		return nil, err
+	}
 	for i := range files {
 		if uncommitted[files[i].FileName] {
 			files[i].Uncommitted = true
@@ -319,7 +322,11 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat strin
 	files = parseNumstat(string(numOut))
 
 	// Mark uncommitted files.
-	uncommitted := uncommittedFiles(worktreePath)
+	uncommitted, uncommittedErr := uncommittedFiles(worktreePath)
+	if uncommittedErr != nil {
+		err = uncommittedErr
+		return
+	}
 	for i := range files {
 		if uncommitted[files[i].FileName] {
 			files[i].Uncommitted = true
@@ -356,12 +363,12 @@ func (m *Manager) DiffUncommitted(branchName string) (string, error) {
 }
 
 // uncommittedFiles returns a set of file names that have uncommitted changes in a worktree.
-func uncommittedFiles(worktreePath string) map[string]bool {
+func uncommittedFiles(worktreePath string) (map[string]bool, error) {
 	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to list uncommitted files: %w", err)
 	}
 	result := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -369,7 +376,7 @@ func uncommittedFiles(worktreePath string) map[string]bool {
 			result[line] = true
 		}
 	}
-	return result
+	return result, nil
 }
 
 func parseNumstat(output string) []FileChange {

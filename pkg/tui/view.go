@@ -81,19 +81,20 @@ func (m Model) View() string {
 		if availHeight < minDiffHeight {
 			availHeight = minDiffHeight
 		}
-		// clamp scroll
 		maxScroll := len(lines) - availHeight
 		if maxScroll < 0 {
 			maxScroll = 0
 		}
-		if m.diffScrollOffset > maxScroll {
-			m.diffScrollOffset = maxScroll
+		// Clamp is authoritative in Update; this is a read-only safety for rendering.
+		offset := m.diffScrollOffset
+		if offset > maxScroll {
+			offset = maxScroll
 		}
-		end := m.diffScrollOffset + availHeight
+		end := offset + availHeight
 		if end > len(lines) {
 			end = len(lines)
 		}
-		visible := lines[m.diffScrollOffset:end]
+		visible := lines[offset:end]
 
 		var sb strings.Builder
 		for _, line := range visible {
@@ -101,7 +102,7 @@ func (m Model) View() string {
 			sb.WriteString("\n")
 		}
 
-		scrollInfo := fmt.Sprintf("line %d/%d", m.diffScrollOffset+1, len(lines))
+		scrollInfo := fmt.Sprintf("line %d/%d", offset+1, len(lines))
 		footer := fmt.Sprintf("%s  •  %s  •  %s",
 			helpStyle.Render("↑/k ↓/j scroll"),
 			helpStyle.Render("esc to close"),

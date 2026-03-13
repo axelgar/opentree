@@ -31,6 +31,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.Width = msg.Width
+		// Clamp diff scroll offset when terminal resizes while diff is open.
+		if m.diffViewing {
+			m.clampDiffScroll()
+		}
 
 	case tea.KeyMsg:
 		// Error log overlay swallows all keys
@@ -149,6 +153,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prCreating = false
 				m.prStep = 0
 				m.prTitle = ""
+				m.prBodyPrefill = ""
 				m.input.SetValue("")
 				m.input.Placeholder = "New branch name"
 				return m, m.createPRCmd(wsName, title, body)
@@ -624,6 +629,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m *Model) clampDiffScroll() {
+	lines := len(strings.Split(m.diffContent, "\n"))
+	availHeight := m.height - 8
+	if availHeight < 5 {
+		availHeight = 5
+	}
+	maxScroll := lines - availHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.diffScrollOffset > maxScroll {
+		m.diffScrollOffset = maxScroll
+	}
 }
 
 func (m *Model) resetCreateMode() {
