@@ -40,8 +40,8 @@ var NewCmd = &cobra.Command{
 				return err
 			}
 			fmt.Printf("✓ Checked out remote branch '%s' into new workspace\n", ws.Name)
-			fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
-			fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
+			fmt.Printf("✓ Launched %s\n", ws.Agent)
+			fmt.Printf("\nOpen the TUI to interact: opentree\n")
 			return nil
 		}
 
@@ -56,8 +56,8 @@ var NewCmd = &cobra.Command{
 		}
 
 		fmt.Printf("✓ Created workspace '%s' based on '%s'\n", ws.Name, ws.BaseBranch)
-		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
-		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
+		fmt.Printf("✓ Launched %s\n", ws.Agent)
+		fmt.Printf("\nOpen the TUI to interact: opentree\n")
 		return nil
 	},
 }

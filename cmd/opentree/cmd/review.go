@@ -14,7 +14,7 @@ var ReviewCmd = &cobra.Command{
 	Use:   "review <branch-name>",
 	Short: "Send PR review comments to the workspace's agent",
 	Long: `Fetches all open PR review comments for the given workspace and sends
-them as a formatted prompt to the running agent in the tmux window.
+them as a formatted prompt to the running agent.
 
 The agent will receive the review comments and be asked to address them.
 Requires the workspace to have an open PR on GitHub.`,

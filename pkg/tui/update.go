@@ -31,12 +31,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.Width = msg.Width
-		// Clamp diff scroll offset when terminal resizes while diff is open.
 		if m.diffViewing {
 			m.clampDiffScroll()
 		}
+		m.resizeActiveTerminal()
 
 	case tea.KeyMsg:
+		// Terminal-focused mode: forward keys to the agent PTY
+		if m.terminalFocused {
+			if msg.String() == "esc" {
+				m.terminalFocused = false
+				return m, nil
+			}
+			// Forward keypress to the active workspace's PTY
+			if m.nativePM != nil {
+				visible := m.visibleWorkspaces()
+				if m.cursor < len(visible) {
+					data := keyToBytes(msg)
+					if len(data) > 0 {
+						_ = m.nativePM.WriteInput(visible[m.cursor].Name, data)
+					}
+				}
+			}
+			return m, nil
+		}
+
 		// Error log overlay swallows all keys
 		if m.showErrLog {
 			m.showErrLog = false
@@ -176,7 +195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "enter":
 				m.filtering = false
 				m.cursor = 0
-				return m, m.capturePreviewCmd()
+				return m, nil
 			case "backspace":
 				if len(m.filterQuery) > 0 {
 					m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
@@ -286,12 +305,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
 				m.cursor--
-				return m, m.capturePreviewCmd()
+				m.resizeActiveTerminal()
 			}
 		case key.Matches(msg, m.keys.Down):
 			if m.cursor < len(visible)-1 {
 				m.cursor++
-				return m, m.capturePreviewCmd()
+				m.resizeActiveTerminal()
 			}
 		case key.Matches(msg, m.keys.New):
 			m.creating = true
@@ -323,7 +342,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.isWorkspaceInFlight(ws.Name) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
-				return m, m.attachWorkspaceCmd(ws.Name)
+				m.terminalFocused = true
+				// Resize PTY to fit the right pane
+				if m.nativePM != nil {
+					rightCols, rightRows := m.rightPaneSize()
+					_ = m.nativePM.ResizeWindow(ws.Name, rightCols, rightRows)
+				}
+				return m, nil
 			}
 		case key.Matches(msg, m.keys.Diff):
 			if len(visible) > 0 {
@@ -440,13 +465,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.filteredBranches = filterBranches(msg.branches, m.input.Value())
 		m.branchSuggestionCursor = 0
 
+	case terminalTickMsg:
+		return m, terminalTickCmd()
+
 	case loadedWorkspacesMsg:
 		m.workspaces = msg.workspaces
 		visible := m.visibleWorkspaces()
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
 		}
-		return m, m.capturePreviewCmd()
 
 	case createdWorkspaceMsg:
 		m.workspaceCreating = false
@@ -472,19 +499,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selected = make(map[string]bool)
 		return m, m.loadWorkspacesCmd
 
-	case capturePreviewMsg:
-		m.agentPreview = msg.lines
-
 	case refreshTickMsg:
 		return m, tea.Batch(
 			m.loadWorkspacesCmd,
 			tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
-		)
-
-	case previewTickMsg:
-		return m, tea.Batch(
-			m.capturePreviewCmd(),
-			tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
 		)
 
 	case prCreatedMsg:
@@ -589,16 +607,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ciStatus[msg.wsName] = msg.status.CIStatus
 		}
 
-	case attachFinishedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			m.appendErrLog(msg.err.Error())
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearErrorMsg{}
-			})
-		}
-		return m, m.loadWorkspacesCmd
-
 	case errMsg:
 		m.workspaceCreating = false
 		m.workspaceDeleting = false
@@ -674,4 +682,43 @@ func (m *Model) appendErrLog(msg string) {
 	if len(m.errLog) > 20 {
 		m.errLog = m.errLog[len(m.errLog)-20:]
 	}
+}
+
+// leftPaneWidth returns the width of the left (dashboard) pane.
+func (m Model) leftPaneWidth() int {
+	w := m.width * 35 / 100
+	if w < 30 {
+		w = 30
+	}
+	if w > 60 {
+		w = 60
+	}
+	return w
+}
+
+// rightPaneSize returns (cols, rows) for the right (terminal) pane.
+func (m Model) rightPaneSize() (int, int) {
+	left := m.leftPaneWidth()
+	cols := m.width - left - 5 // borders + separator
+	if cols < 20 {
+		cols = 20
+	}
+	rows := m.height - 4 // header + footer
+	if rows < 5 {
+		rows = 5
+	}
+	return cols, rows
+}
+
+// resizeActiveTerminal resizes the PTY for the currently selected workspace.
+func (m *Model) resizeActiveTerminal() {
+	if m.nativePM == nil {
+		return
+	}
+	visible := m.visibleWorkspaces()
+	if m.cursor >= len(visible) {
+		return
+	}
+	cols, rows := m.rightPaneSize()
+	_ = m.nativePM.ResizeWindow(visible[m.cursor].Name, cols, rows)
 }

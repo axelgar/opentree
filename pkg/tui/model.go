@@ -13,7 +13,6 @@ import (
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
-	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
@@ -81,6 +80,10 @@ type Model struct {
 	// agent output preview
 	agentPreview string
 
+	// split-pane terminal
+	terminalFocused bool
+	nativePM        *workspace.NativeProcessManager
+
 	// PR creation dialog
 	prCreating    bool
 	prGenerating  bool
@@ -141,7 +144,6 @@ type createdWorkspaceMsg struct {
 type deletedWorkspaceMsg struct{}
 type errMsg struct{ err error }
 type clearErrorMsg struct{}
-type attachFinishedMsg struct{ err error }
 type prStatusTickMsg struct{}
 type prCreatedMsg struct{ wsName, prURL string }
 type prContentGeneratedMsg struct{ title, body string }
@@ -159,19 +161,16 @@ type branchStatusCheckedMsg struct {
 	status github.BranchStatus
 }
 type refreshTickMsg struct{}
-type previewTickMsg struct{}
 type spinnerTickMsg struct{}
 type diffLoadedMsg struct {
 	content string
 	wsName  string
 }
-type capturePreviewMsg struct {
-	lines string
-}
 type reviewsSentMsg struct {
 	wsName string
 	count  int
 }
+type terminalTickMsg struct{}
 
 // NewModel initializes a fully-configured TUI Model.
 func NewModel() (*Model, error) {
@@ -191,9 +190,8 @@ func NewModel() (*Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize state store: %w", err)
 	}
-	tm := tmux.New(cfg.Tmux.SessionPrefix)
 	gh := github.New()
-	pm := workspace.NewTmuxProcessManager(tm)
+	pm := workspace.NewNativeProcessManager(0, 0)
 	svc := workspace.NewService(repoRoot, cfg, wt, pm, st, gh)
 
 	ti := textinput.New()
@@ -208,6 +206,7 @@ func NewModel() (*Model, error) {
 		prMgr:                  gh,
 		cfg:                    cfg,
 		repoRoot:               repoRoot,
+		nativePM:               pm,
 		input:                  ti,
 		help:                   help.New(),
 		keys:                   keys,
@@ -224,7 +223,7 @@ func (m Model) Init() tea.Cmd {
 		m.loadWorkspacesCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
-		tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
+		terminalTickCmd(),
 	)
 }
 

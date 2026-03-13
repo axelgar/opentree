@@ -6,7 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ansiEscapeRe strips ANSI escape sequences from tmux pane output.
+// ansiEscapeRe strips ANSI escape sequences from terminal output.
 var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]`)
 
 // Styles
@@ -218,6 +218,26 @@ var (
 	pendingLabelStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888")).
 				Italic(true)
+
+	// split-pane borders
+	focusedPaneBorder = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#F4A261")).
+				Padding(0, 1)
+
+	unfocusedPaneBorder = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#444")).
+				Padding(0, 1)
+
+	// terminal pane header
+	termPaneHeaderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888")).
+				Bold(true)
+
+	termPaneHeaderFocusedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#F4A261")).
+					Bold(true)
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

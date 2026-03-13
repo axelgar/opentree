@@ -14,7 +14,7 @@ var rootCmd = &cobra.Command{
 	Use:   "opentree",
 	Short: "Orchestrate parallel AI coding sessions in isolated git worktrees",
 	Long: `opentree is a CLI tool that manages multiple AI coding agent sessions.
-Each session runs in an isolated git worktree, managed via tmux.
+Each session runs in an isolated git worktree with an embedded terminal.
 
 Think Conductor, but for the terminal.`,
 	Run: func(cmd *cobra.Command, args []string) {

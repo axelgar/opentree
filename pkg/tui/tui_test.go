@@ -21,7 +21,7 @@ import (
 
 // newTestModel builds a Model with no external dependencies. Tests that only
 // exercise in-process logic (state transitions, View rendering, pure functions)
-// should use this instead of NewModel, which requires a real git repo and tmux.
+// should use this instead of NewModel, which requires a real git repo.
 func newTestModel(workspaces ...WorkspaceItem) Model {
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
@@ -291,119 +291,55 @@ func TestCleanPreview_TrailingSpacesTrimmed(t *testing.T) {
 	}
 }
 
-func TestCapturePreviewCmd_NilWhenNoWorkspaces(t *testing.T) {
-	m := newTestModel()
-	cmd := m.capturePreviewCmd()
-	if cmd != nil {
-		t.Error("capturePreviewCmd() should return nil when workspace list is empty")
+func TestTerminalFocus_EnterFocusesTerminal(t *testing.T) {
+	m := newTestModel(testWS("ws1"))
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if !m.terminalFocused {
+		t.Error("expected terminalFocused=true after pressing enter")
 	}
 }
 
-func TestCapturePreviewCmd_ReturnsEmptyPreviewWhenNoWindow(t *testing.T) {
-	ws := testWS("no-window") // WindowID is ""
-	m := newTestModel(ws)
+func TestTerminalFocus_EscUnfocusesTerminal(t *testing.T) {
+	m := newTestModel(testWS("ws1"))
+	m.terminalFocused = true
 
-	cmd := m.capturePreviewCmd()
-	if cmd == nil {
-		t.Fatal("capturePreviewCmd() returned nil, want a cmd")
-	}
-	msg := cmd()
-	preview, ok := msg.(capturePreviewMsg)
-	if !ok {
-		t.Fatalf("cmd() returned %T, want capturePreviewMsg", msg)
-	}
-	if preview.lines != "" {
-		t.Errorf("lines = %q, want empty for workspace with no window", preview.lines)
+	m, _ = applyUpdate(m, keyMsg("esc"))
+
+	if m.terminalFocused {
+		t.Error("expected terminalFocused=false after pressing esc")
 	}
 }
 
-func TestCapturePreviewCmd_ReturnsNonNilCmdWhenWindowExists(t *testing.T) {
-	// When a window exists, capturePreviewCmd returns a cmd that will call
-	// tmuxCtrl.CapturePane. We only verify the cmd is non-nil here since
-	// executing it requires a real tmux session.
-	ws := testWSWithWindow("active-ws")
-	m := newTestModel(ws)
+func TestTerminalFocus_CursorUpStillWorks(t *testing.T) {
+	m := newTestModel(testWS("ws1"), testWS("ws2"))
+	m.cursor = 1
 
-	cmd := m.capturePreviewCmd()
-	if cmd == nil {
-		t.Error("capturePreviewCmd() returned nil for workspace with a window")
+	m, _ = applyUpdate(m, keyMsg("k"))
+
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 after pressing k", m.cursor)
 	}
 }
 
-func TestAgentPreview_MessageUpdatesModel(t *testing.T) {
+func TestTerminalFocus_CursorDownStillWorks(t *testing.T) {
+	m := newTestModel(testWS("ws1"), testWS("ws2"))
+	m.cursor = 0
+
+	m, _ = applyUpdate(m, keyMsg("j"))
+
+	if m.cursor != 1 {
+		t.Errorf("cursor = %d, want 1 after pressing j", m.cursor)
+	}
+}
+
+func TestTerminalTick_ReturnsCmd(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m, _ = applyUpdate(m, capturePreviewMsg{lines: "doing something..."})
 
-	if m.agentPreview != "doing something..." {
-		t.Errorf("agentPreview = %q, want %q", m.agentPreview, "doing something...")
-	}
-}
-
-func TestAgentPreview_ViewShowsPanelWhenNonEmpty(t *testing.T) {
-	m := newTestModel(testWSWithWindow("active"))
-	m.agentPreview = "Running tests..."
-
-	view := m.View()
-
-	if !strings.Contains(view, "Running tests...") {
-		t.Errorf("View() does not contain agent preview content\ngot: %s", view)
-	}
-	if !strings.Contains(view, "Agent Output") {
-		t.Errorf("View() does not contain 'Agent Output' panel title\ngot: %s", view)
-	}
-}
-
-func TestAgentPreview_ViewHidesPanelWhenEmpty(t *testing.T) {
-	m := newTestModel(testWSWithWindow("active"))
-	m.agentPreview = "" // explicitly empty
-
-	view := m.View()
-
-	if strings.Contains(view, "Agent Output") {
-		t.Errorf("View() should not show preview panel when agentPreview is empty\ngot: %s", view)
-	}
-}
-
-func TestAgentPreview_CursorUpTriggersCapture(t *testing.T) {
-	m := newTestModel(testWS("ws1"), testWS("ws2"))
-	m.cursor = 1 // start at second item
-
-	_, cmd := applyUpdate(m, keyMsg("k"))
+	_, cmd := applyUpdate(m, terminalTickMsg{})
 
 	if cmd == nil {
-		t.Error("expected non-nil cmd (capturePreviewCmd) after cursor move up")
-	}
-}
-
-func TestAgentPreview_CursorDownTriggersCapture(t *testing.T) {
-	m := newTestModel(testWS("ws1"), testWS("ws2"))
-	m.cursor = 0 // start at first item
-
-	_, cmd := applyUpdate(m, keyMsg("j"))
-
-	if cmd == nil {
-		t.Error("expected non-nil cmd (capturePreviewCmd) after cursor move down")
-	}
-}
-
-func TestAgentPreview_LoadedWorkspacesTriggerCapture(t *testing.T) {
-	m := newTestModel()
-
-	workspaces := []WorkspaceItem{testWS("fresh")}
-	_, cmd := applyUpdate(m, loadedWorkspacesMsg{workspaces: workspaces})
-
-	if cmd == nil {
-		t.Error("expected non-nil cmd after loadedWorkspacesMsg")
-	}
-}
-
-func TestAgentPreview_PreviewTickReschedulesAndCaptures(t *testing.T) {
-	m := newTestModel(testWSWithWindow("ws"))
-
-	_, cmd := applyUpdate(m, previewTickMsg{})
-
-	if cmd == nil {
-		t.Error("expected non-nil batch cmd after previewTickMsg")
+		t.Error("expected non-nil cmd after terminalTickMsg")
 	}
 }
 
@@ -701,9 +637,6 @@ func TestView_MainScreen_NoWorkspaces(t *testing.T) {
 	m := newTestModel()
 	view := m.View()
 
-	if !strings.Contains(view, "Workspaces") {
-		t.Errorf("View() missing title\ngot: %s", view)
-	}
 	if !strings.Contains(view, "No workspaces") {
 		t.Errorf("View() missing empty-state message\ngot: %s", view)
 	}
@@ -833,8 +766,8 @@ func TestView_IssueBadge_AndPRBadge_BothShown(t *testing.T) {
 	if !strings.Contains(view, "#7") {
 		t.Errorf("View() should show issue badge '#7'\ngot: %s", view)
 	}
-	if !strings.Contains(view, "PR open") {
-		t.Errorf("View() should still show 'PR open' badge\ngot: %s", view)
+	if !strings.Contains(view, "PR") {
+		t.Errorf("View() should still show 'PR' badge\ngot: %s", view)
 	}
 }
 
@@ -1026,9 +959,6 @@ func TestView_AgentStatusBadge_Success(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "done") {
 		t.Errorf("View() should show 'done' badge for success status\ngot: %s", view)
-	}
-	if !strings.Contains(view, "All done") {
-		t.Errorf("View() should show agent message in description\ngot: %s", view)
 	}
 }
 

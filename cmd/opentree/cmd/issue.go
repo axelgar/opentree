@@ -53,8 +53,8 @@ into the new worktree so the AI agent can start working immediately.`,
 		fmt.Printf("Branch:   %s\n\n", ws.Branch)
 		fmt.Printf("✓ Created workspace '%s'\n", ws.Name)
 		fmt.Printf("✓ Wrote issue context to TASK.md\n")
-		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
-		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
+		fmt.Printf("✓ Launched %s\n", ws.Agent)
+		fmt.Printf("\nOpen the TUI to interact: opentree\n")
 		return nil
 	},
 }

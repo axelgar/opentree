@@ -10,12 +10,8 @@ import (
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
-	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
-
-// Compile-time check that TmuxProcessManager satisfies ProcessManager.
-var _ ProcessManager = (*TmuxProcessManager)(nil)
 
 // GitHubManager abstracts GitHub operations so the workspace service is not
 // coupled to a specific implementation. *github.PRManager satisfies this.
@@ -30,7 +26,7 @@ type GitHubManager interface {
 var _ GitHubManager = (*github.PRManager)(nil)
 
 // Service orchestrates workspace lifecycle operations across worktree,
-// tmux, state, and github packages. Both the TUI and CLI commands
+// process, state, and github packages. Both the TUI and CLI commands
 // delegate to this service instead of orchestrating packages directly.
 type Service struct {
 	worktrees *worktree.Manager
@@ -49,9 +45,9 @@ func New(repoRoot string, cfg *config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize state: %w", err)
 	}
-	tm := NewTmuxProcessManager(tmux.New(cfg.Tmux.SessionPrefix))
+	pm := NewNativeProcessManager(0, 0)
 	gh := github.New()
-	return NewService(repoRoot, cfg, wt, tm, st, gh), nil
+	return NewService(repoRoot, cfg, wt, pm, st, gh), nil
 }
 
 // NewService creates a workspace service with pre-constructed dependencies.
@@ -81,7 +77,7 @@ func (s *Service) WorktreePath(name string) string {
 // StatusFileName is the conventional file agents write to signal completion.
 const StatusFileName = ".opentree-status.json"
 
-// Create creates a new workspace: git worktree, tmux window with agent, and state entry.
+// Create creates a new workspace: git worktree, process window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
@@ -92,7 +88,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	agentCmd := s.cfg.Agent.Command
 	if err := s.process.CreateWindow(name, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
 		_ = s.worktrees.Delete(name, true) // cleanup orphaned worktree
-		return nil, fmt.Errorf("failed to create tmux window: %w", err)
+		return nil, fmt.Errorf("failed to create process window: %w", err)
 	}
 
 	ws := &state.Workspace{
@@ -163,7 +159,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	agentCmd := s.cfg.Agent.Command
 	if err := s.process.CreateWindow(branchName, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
 		_ = s.worktrees.Delete(branchName, true) // cleanup orphaned worktree
-		return nil, fmt.Errorf("failed to create tmux window: %w", err)
+		return nil, fmt.Errorf("failed to create process window: %w", err)
 	}
 
 	ws := &state.Workspace{
@@ -183,10 +179,10 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	return ws, nil
 }
 
-// Delete removes a workspace: kills tmux window, removes worktree and branch, deletes state.
-// If this was the last workspace, the tmux session is also killed.
+// Delete removes a workspace: kills process window, removes worktree and branch, deletes state.
+// If this was the last workspace, the process session is also killed.
 func (s *Service) Delete(name string) error {
-	// Kill tmux window (ignore error if window doesn't exist)
+	// Kill process window (ignore error if window doesn't exist)
 	_ = s.process.KillWindow(name)
 
 	if err := s.worktrees.Delete(name, true); err != nil {
@@ -197,7 +193,7 @@ func (s *Service) Delete(name string) error {
 		return fmt.Errorf("failed to delete workspace state: %w", err)
 	}
 
-	// Clean up tmux session if no workspaces remain
+	// Clean up process session if no workspaces remain
 	if len(s.state.ListWorkspaces()) == 0 {
 		_ = s.process.KillSession()
 	}
@@ -241,7 +237,7 @@ func (s *Service) HasChanges(name string) (string, error) {
 }
 
 // SendReviewsToAgent fetches all PR review comments for the workspace's branch
-// and sends them as a formatted prompt to the running agent in the tmux window.
+// and sends them as a formatted prompt to the running agent in the process window.
 // Returns the number of review comments sent, or 0 if none were found.
 func (s *Service) SendReviewsToAgent(name string) (int, error) {
 	ws, err := s.state.GetWorkspace(name)

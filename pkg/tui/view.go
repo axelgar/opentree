@@ -18,7 +18,8 @@ const (
 )
 
 func (m Model) View() string {
-	// Error log overlay
+	// --- Full-screen overlays (unchanged) ---
+
 	if m.showErrLog {
 		var sb strings.Builder
 		sb.WriteString(errLogTitleStyle.Render("Error Log") + "\n\n")
@@ -34,7 +35,6 @@ func (m Model) View() string {
 		return appStyle.Render(sb.String())
 	}
 
-	// Agent selection overlay
 	if m.agentSelecting {
 		var sb strings.Builder
 		sb.WriteString(titleStyle.Render("Select Agent"))
@@ -74,7 +74,6 @@ func (m Model) View() string {
 		return appStyle.Render(sb.String())
 	}
 
-	// Diff view overlay
 	if m.diffViewing {
 		lines := strings.Split(m.diffContent, "\n")
 		availHeight := m.height - headerFooterHeight
@@ -85,7 +84,6 @@ func (m Model) View() string {
 		if maxScroll < 0 {
 			maxScroll = 0
 		}
-		// Clamp is authoritative in Update; this is a read-only safety for rendering.
 		offset := m.diffScrollOffset
 		if offset > maxScroll {
 			offset = maxScroll
@@ -116,7 +114,6 @@ func (m Model) View() string {
 		return appStyle.Render(content)
 	}
 
-	// Delete confirmation dialog
 	if m.deleting {
 		var titleMsg string
 		if m.deleteTarget != "" {
@@ -135,13 +132,12 @@ func (m Model) View() string {
 		)
 		content := fmt.Sprintf("%s\n\n%s\n\n%s",
 			dangerStyle.Render(titleMsg),
-			confirmLabelStyle.Render("The worktree, tmux window, and all local changes will be removed."),
+			confirmLabelStyle.Render("The workspace and all local changes will be removed."),
 			footer,
 		)
 		return appStyle.Render(deleteDialogStyle.Render(content))
 	}
 
-	// Issue creation dialog
 	if m.creating && m.issueMode {
 		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
 			titleStyle.Render("Create Workspace from GitHub Issue"),
@@ -150,7 +146,6 @@ func (m Model) View() string {
 		))
 	}
 
-	// Remote branch creation dialog with suggestion list
 	if m.creating && m.remoteBranchMode {
 		var sb strings.Builder
 		sb.WriteString(titleStyle.Render("Create Workspace from Remote Branch"))
@@ -181,7 +176,6 @@ func (m Model) View() string {
 		return appStyle.Render(sb.String())
 	}
 
-	// Two-step create dialog
 	if m.creating {
 		var stepLabel string
 		if m.createStep == 0 {
@@ -197,7 +191,6 @@ func (m Model) View() string {
 		))
 	}
 
-	// PR content generation in progress
 	if m.prGenerating {
 		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
 			titleStyle.Render(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase)),
@@ -205,7 +198,6 @@ func (m Model) View() string {
 		))
 	}
 
-	// PR creation dialog
 	if m.prCreating {
 		var stepLabel string
 		if m.prStep == 0 {
@@ -221,15 +213,48 @@ func (m Model) View() string {
 		))
 	}
 
+	// --- Split-pane main view ---
+	leftWidth := m.leftPaneWidth()
+	rightWidth := m.width - leftWidth - 3 // 3 for borders + separator
+	if rightWidth < 20 {
+		rightWidth = 20
+	}
+	paneHeight := m.height - 2 // padding
+	if paneHeight < 10 {
+		paneHeight = 10
+	}
+
+	leftContent := m.renderLeftPane(leftWidth, paneHeight)
+	rightContent := m.renderRightPane(rightWidth, paneHeight)
+
+	// Style panes with focus-aware borders
+	leftBorder := unfocusedPaneBorder
+	rightBorder := unfocusedPaneBorder
+	if m.terminalFocused {
+		rightBorder = focusedPaneBorder
+	} else {
+		leftBorder = focusedPaneBorder
+	}
+
+	leftPane := leftBorder.
+		Width(leftWidth).
+		Height(paneHeight).
+		Render(leftContent)
+
+	rightPane := rightBorder.
+		Width(rightWidth).
+		Height(paneHeight).
+		Render(rightContent)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+}
+
+// renderLeftPane renders the workspace list dashboard for the left pane.
+func (m Model) renderLeftPane(width, height int) string {
 	var s strings.Builder
 
 	// Logo
 	s.WriteString(renderLogo())
-	s.WriteString("\n\n")
-
-	// Header with sort/filter info
-	header := "Workspaces"
-	s.WriteString(titleStyle.Render(header))
 	s.WriteString("\n\n")
 
 	// Filter prompt
@@ -237,7 +262,7 @@ func (m Model) View() string {
 		prompt := filterPromptStyle.Render("/") + " " + m.filterQuery + "█"
 		s.WriteString(prompt + "\n\n")
 	} else if m.filterQuery != "" {
-		s.WriteString(filterPromptStyle.Render(fmt.Sprintf("filter: %q  (/ to change, esc to clear)", m.filterQuery)) + "\n\n")
+		s.WriteString(filterPromptStyle.Render(fmt.Sprintf("filter: %q  (/)", m.filterQuery)) + "\n\n")
 	}
 
 	// Error message (transient)
@@ -248,17 +273,15 @@ func (m Model) View() string {
 
 	visible := m.visibleWorkspaces()
 
-	// Workspace list
 	if len(visible) == 0 {
 		if m.filterQuery != "" {
-			s.WriteString(itemStyle.Render("No workspaces match the filter."))
+			s.WriteString(itemStyle.Render("No workspaces match."))
 		} else {
-			s.WriteString(itemStyle.Render("No workspaces found. Press 'n' to create one."))
+			s.WriteString(itemStyle.Render("No workspaces. Press 'n' to create."))
 		}
 		s.WriteString("\n")
 	} else {
 		for i, ws := range visible {
-			// Inline deleting state
 			isDeleting := m.workspaceDeletingName == ws.Name || m.workspaceDeletingNames[ws.Name]
 			if isDeleting {
 				spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
@@ -292,107 +315,71 @@ func (m Model) View() string {
 
 			title := selectMark + fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
 
-			// Badges
-			if ws.IssueNumber > 0 {
-				title += "  " + issueBadgeStyle.Render(fmt.Sprintf("#%d", ws.IssueNumber))
-			}
+			// Badges (compact for left pane)
 			switch {
 			case ws.PRStatus == "merged":
-				title += "  " + mergedBadgeStyle.Render("merged · ready to delete")
+				title += " " + mergedBadgeStyle.Render("merged")
 			case ws.PRStatus == "closed":
-				title += "  " + closedBadgeStyle.Render("PR closed")
+				title += " " + closedBadgeStyle.Render("closed")
 			case ws.RemoteDeleted:
-				title += "  " + remoteDeletedBadgeStyle.Render("remote deleted")
-			case ws.PRStatus == "open" && ws.MergeConflicts:
-				title += "  " + conflictsBadgeStyle.Render("PR open · conflicts")
-				if ci, ok := m.ciStatus[ws.Name]; ok {
-					title += renderCIBadge(ci)
-				}
+				title += " " + remoteDeletedBadgeStyle.Render("gone")
 			case ws.PRStatus == "open":
-				title += "  " + prOpenBadgeStyle.Render("PR open")
+				title += " " + prOpenBadgeStyle.Render("PR")
 				if ci, ok := m.ciStatus[ws.Name]; ok {
 					title += renderCIBadge(ci)
 				}
 			case ws.BranchPushed:
-				title += "  " + pushedBadgeStyle.Render("pushed")
-			default:
-				title += "  " + notPushedBadgeStyle.Render("not pushed")
+				title += " " + pushedBadgeStyle.Render("pushed")
 			}
 
-			// Agent completion badge
+			if ws.IssueNumber > 0 {
+				title += " " + issueBadgeStyle.Render(fmt.Sprintf("#%d", ws.IssueNumber))
+			}
+
 			if ws.AgentStatus != nil {
 				switch ws.AgentStatus.Status {
 				case "success":
-					title += "  " + agentSuccessStyle.Render("done")
+					title += " " + agentSuccessStyle.Render("done")
 				case "failure":
-					title += "  " + agentFailureStyle.Render("failed")
+					title += " " + agentFailureStyle.Render("failed")
 				case "error":
-					title += "  " + agentErrorStyle.Render("error")
+					title += " " + agentErrorStyle.Render("error")
 				case "in_progress":
-					title += "  " + agentInProgressStyle.Render("working...")
+					title += " " + agentInProgressStyle.Render("working...")
 				}
 			}
 
-			// Description line
-			branchDisplay := ws.Branch
-			if ws.BaseBranch != "" {
-				branchDisplay += " ← " + ws.BaseBranch
-			}
-			descParts := []string{branchDisplay, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
-
-			if ws.UncommittedCount > 0 {
-				descParts = append(descParts, uncommittedStyle.Render(fmt.Sprintf("~%d uncommitted", ws.UncommittedCount)))
-			}
-
+			// Compact description
+			desc := "  " + ws.DiffStat
 			if !ws.LastActivity.IsZero() {
-				descParts = append(descParts, "active "+formatAge(ws.LastActivity))
+				desc += " • " + formatAge(ws.LastActivity)
 			}
-
-			if ws.AgentStatus != nil && ws.AgentStatus.Message != "" {
-				descParts = append(descParts, ws.AgentStatus.Message)
-			}
-
-			desc := "  " + strings.Join(descParts, " • ")
 
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
 			s.WriteString("\n")
 
-			// Merged cleanup hint
 			if ws.PRStatus == "merged" && i == m.cursor {
-				s.WriteString(mergedHintStyle.Render("  → Press x to clean up this merged workspace"))
+				s.WriteString(mergedHintStyle.Render("  → x to delete"))
 				s.WriteString("\n")
 			}
 		}
 
-		// Per-file changes panel for selected workspace
+		// Per-file changes for selected workspace
 		if m.cursor < len(visible) {
 			ws := visible[m.cursor]
 			if len(ws.FileChanges) > 0 {
-				previewWidth := m.width - 8
-				if previewWidth < 20 {
-					previewWidth = 60
+				panelWidth := width - 4
+				if panelWidth < 20 {
+					panelWidth = 20
 				}
-				content := m.renderFileChanges(ws.FileChanges, previewWidth)
-				s.WriteString(fileChangesBoxStyle.Width(previewWidth).Render(content))
+				content := m.renderFileChanges(ws.FileChanges, panelWidth)
+				s.WriteString(fileChangesBoxStyle.Width(panelWidth).Render(content))
 				s.WriteString("\n")
 			}
 		}
-
-		// Agent output preview for selected workspace
-		if m.agentPreview != "" && m.cursor < len(visible) {
-			wsName := visible[m.cursor].Name
-			previewWidth := m.width - 8
-			if previewWidth < minPreviewWidth {
-				previewWidth = defaultPreviewWidth
-			}
-			content := previewTitleStyle.Render("Agent Output: "+wsName) + "\n" +
-				previewLineStyle.Render(m.agentPreview)
-			s.WriteString(previewBoxStyle.Width(previewWidth).Render(content))
-			s.WriteString("\n")
-		}
 	}
 
-	// Creating ghost entry (non-selectable, rendered outside the list)
+	// Creating ghost entry
 	if m.workspaceCreating {
 		spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
 		s.WriteString(pendingItemStyle.Render(fmt.Sprintf(
@@ -409,10 +396,66 @@ func (m Model) View() string {
 	s.WriteString(m.statusBar())
 	s.WriteString("\n")
 
-	// Help
-	s.WriteString(m.help.View(m.keys))
+	// Help (compact)
+	if m.terminalFocused {
+		s.WriteString(helpStyle.Render("Esc: dashboard"))
+	} else {
+		s.WriteString(helpStyle.Render("Enter: terminal • n:new • d:diff • x:del • ?:help"))
+	}
 
-	return appStyle.Render(s.String())
+	return s.String()
+}
+
+// renderRightPane renders the terminal view for the right pane.
+func (m Model) renderRightPane(width, height int) string {
+	visible := m.visibleWorkspaces()
+	if len(visible) == 0 || m.cursor >= len(visible) {
+		return termPaneHeaderStyle.Render("No workspace selected")
+	}
+
+	ws := visible[m.cursor]
+
+	// Header
+	header := termPaneHeaderStyle.Render("Terminal: " + ws.Name)
+	if m.terminalFocused {
+		header = termPaneHeaderFocusedStyle.Render("Terminal: " + ws.Name + " (focused)")
+	}
+
+	// Get terminal screen content
+	var termContent string
+	if m.nativePM != nil {
+		screen, err := m.nativePM.RenderScreen(ws.Name)
+		if err != nil {
+			termContent = helpStyle.Render("No terminal output yet")
+		} else {
+			termContent = screen
+		}
+	} else {
+		termContent = helpStyle.Render("Terminal not available")
+	}
+
+	// Truncate terminal content to fit pane
+	lines := strings.Split(termContent, "\n")
+	maxLines := height - 3 // header + border padding
+	if maxLines < 1 {
+		maxLines = 1
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+
+	// Truncate line widths
+	maxWidth := width - 2
+	if maxWidth < 10 {
+		maxWidth = 10
+	}
+	for i, line := range lines {
+		if lipgloss.Width(line) > maxWidth {
+			lines[i] = truncateString(line, maxWidth)
+		}
+	}
+
+	return header + "\n" + strings.Join(lines, "\n")
 }
 
 // statusBar renders the bottom stats line.
@@ -433,21 +476,22 @@ func (m Model) statusBar() string {
 		}
 	}
 	parts := []string{
-		fmt.Sprintf("%d workspaces", total),
+		fmt.Sprintf("%d ws", total),
 		fmt.Sprintf("%d active", active),
-		fmt.Sprintf("%d open PRs", openPRs),
-		"sort: " + sortModeNames[m.sortMode],
+	}
+	if openPRs > 0 {
+		parts = append(parts, fmt.Sprintf("%d PRs", openPRs))
 	}
 	if doneCount > 0 {
 		parts = append(parts, fmt.Sprintf("%d done", doneCount))
 	}
 	if len(m.selected) > 0 {
-		parts = append(parts, fmt.Sprintf("%d selected", len(m.selected)))
+		parts = append(parts, fmt.Sprintf("%d sel", len(m.selected)))
 	}
 	if len(m.errLog) > 0 {
-		parts = append(parts, fmt.Sprintf("%d errors (E)", len(m.errLog)))
+		parts = append(parts, fmt.Sprintf("%d err", len(m.errLog)))
 	}
-	return statusBarStyle.Render(strings.Join(parts, "  •  "))
+	return statusBarStyle.Render(strings.Join(parts, " • "))
 }
 
 // visibleWorkspaces returns the sorted and filtered workspace list.
@@ -511,4 +555,17 @@ func renderCIBadge(ci string) string {
 		return " " + ciPendingStyle.Render("⟳ CI")
 	}
 	return ""
+}
+
+// truncateString truncates a string to maxWidth visible characters.
+func truncateString(s string, maxWidth int) string {
+	w := 0
+	for i, r := range s {
+		w++
+		if w > maxWidth {
+			return s[:i]
+		}
+		_ = r
+	}
+	return s
 }

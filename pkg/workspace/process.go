@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Window represents a managed process window (e.g., a tmux window).
+// Window represents a managed process window (e.g., a terminal process).
 type Window struct {
 	ID     string // unique window identifier
 	Name   string // display name (sanitized branch name)

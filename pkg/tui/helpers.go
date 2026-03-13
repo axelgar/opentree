@@ -184,6 +184,60 @@ func openURLCmd(rawURL string) tea.Cmd {
 	}
 }
 
+// keyToBytes converts a Bubble Tea key message to raw bytes for PTY input.
+func keyToBytes(msg tea.KeyMsg) []byte {
+	switch msg.Type {
+	case tea.KeyRunes:
+		return []byte(string(msg.Runes))
+	case tea.KeyEnter:
+		return []byte{'\r'}
+	case tea.KeyBackspace:
+		return []byte{0x7f}
+	case tea.KeyTab:
+		return []byte{'\t'}
+	case tea.KeySpace:
+		return []byte{' '}
+	case tea.KeyCtrlC:
+		return []byte{0x03}
+	case tea.KeyCtrlD:
+		return []byte{0x04}
+	case tea.KeyCtrlZ:
+		return []byte{0x1a}
+	case tea.KeyCtrlL:
+		return []byte{0x0c}
+	case tea.KeyCtrlA:
+		return []byte{0x01}
+	case tea.KeyCtrlE:
+		return []byte{0x05}
+	case tea.KeyCtrlU:
+		return []byte{0x15}
+	case tea.KeyCtrlK:
+		return []byte{0x0b}
+	case tea.KeyCtrlW:
+		return []byte{0x17}
+	case tea.KeyUp:
+		return []byte("\x1b[A")
+	case tea.KeyDown:
+		return []byte("\x1b[B")
+	case tea.KeyRight:
+		return []byte("\x1b[C")
+	case tea.KeyLeft:
+		return []byte("\x1b[D")
+	case tea.KeyHome:
+		return []byte("\x1b[H")
+	case tea.KeyEnd:
+		return []byte("\x1b[F")
+	case tea.KeyPgUp:
+		return []byte("\x1b[5~")
+	case tea.KeyPgDown:
+		return []byte("\x1b[6~")
+	case tea.KeyDelete:
+		return []byte("\x1b[3~")
+	default:
+		return nil
+	}
+}
+
 // formatAge returns a human-readable age string for a given timestamp.
 func formatAge(t time.Time) string {
 	d := time.Since(t)

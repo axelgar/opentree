@@ -15,7 +15,6 @@ var configKeys = map[string]string{
 	"agent.args":            "Extra arguments passed to the agent (comma-separated)",
 	"worktree.base_dir":     "Directory to store worktrees",
 	"worktree.default_base": "Default base branch for new workspaces",
-	"tmux.session_prefix":   "Prefix for tmux session names",
 	"github.auto_push":      "Auto-push branch before creating PR (true/false)",
 }
 
@@ -36,7 +35,6 @@ Available keys:
   agent.args             Extra arguments passed to the agent (comma-separated)
   worktree.base_dir      Directory to store worktrees
   worktree.default_base  Default base branch for new workspaces
-  tmux.session_prefix    Prefix for tmux session names
   github.auto_push       Auto-push branch before creating PR (true/false)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
@@ -59,7 +57,6 @@ var configListCmd = &cobra.Command{
 			fmt.Printf("agent.args = %s\n", strings.Join(cfg.Agent.Args, ","))
 			fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
 			fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
-			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
 			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush)
 			return nil
 		}
@@ -73,7 +70,6 @@ var configListCmd = &cobra.Command{
 		fmt.Printf("agent.args = %s  (%s)\n", strings.Join(cfg.Agent.Args, ","), sources.AgentArgs)
 		fmt.Printf("worktree.base_dir = %s  (%s)\n", cfg.Worktree.BaseDir, sources.WorktreeBaseDir)
 		fmt.Printf("worktree.default_base = %s  (%s)\n", cfg.Worktree.DefaultBase, sources.WorktreeDefaultBase)
-		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
 		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush, sources.GitHubAutoPush)
 		return nil
 	},
@@ -168,8 +164,6 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 		return cfg.Worktree.BaseDir, nil
 	case "worktree.default_base":
 		return cfg.Worktree.DefaultBase, nil
-	case "tmux.session_prefix":
-		return cfg.Tmux.SessionPrefix, nil
 	case "github.auto_push":
 		return strconv.FormatBool(cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush), nil
 	default:
@@ -191,8 +185,6 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 		cfg.Worktree.BaseDir = value
 	case "worktree.default_base":
 		cfg.Worktree.DefaultBase = value
-	case "tmux.session_prefix":
-		cfg.Tmux.SessionPrefix = value
 	case "github.auto_push":
 		b, err := strconv.ParseBool(value)
 		if err != nil {

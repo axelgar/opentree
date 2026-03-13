@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -153,16 +154,11 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 	}
 }
 
-func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
-	return func() tea.Msg {
-		cmd, err := m.svc.Process().AttachCmd(name)
-		if err != nil {
-			return errMsg{err}
-		}
-		return tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return attachFinishedMsg{err: err}
-		})()
-	}
+// terminalTickCmd returns a 33ms tick command for ~30fps terminal rendering.
+func terminalTickCmd() tea.Cmd {
+	return tea.Tick(33*time.Millisecond, func(t time.Time) tea.Msg {
+		return terminalTickMsg{}
+	})
 }
 
 func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
@@ -224,28 +220,6 @@ func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bo
 			return errMsg{err}
 		}
 		return branchStatusCheckedMsg{wsName: wsName, status: status}
-	}
-}
-
-func (m Model) capturePreviewCmd() tea.Cmd {
-	if len(m.workspaces) == 0 {
-		return nil
-	}
-	visible := m.visibleWorkspaces()
-	if len(visible) == 0 || m.cursor >= len(visible) {
-		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
-	}
-	ws := visible[m.cursor]
-	if ws.WindowID == "" {
-		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
-	}
-	wsName := ws.Name
-	return func() tea.Msg {
-		output, err := m.svc.Process().CapturePane(wsName, 5)
-		if err != nil {
-			return capturePreviewMsg{lines: ""}
-		}
-		return capturePreviewMsg{lines: cleanPreview(output)}
 	}
 }
 
