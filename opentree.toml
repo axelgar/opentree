@@ -1,5 +1,5 @@
 [agent]
-command = 'claude'
+command = 'opencode'
 args = []
 
 [worktree]

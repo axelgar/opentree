@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -8,9 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
+
+// ghTimeout is the maximum duration for gh CLI commands.
+const ghTimeout = 15 * time.Second
+
+// ghContext returns a context with the standard gh timeout and its cancel func.
+func ghContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), ghTimeout)
+}
 
 // ReviewComment represents a single review comment on a PR.
 // General reviews have an empty Path and zero Line.
@@ -50,7 +60,9 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 	}
 
 	// Fetch top-level reviews and PR URL in one call.
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,reviews")
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "url,reviews")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// gh exits 4 when the resource (PR) is not found; also guard on output text
@@ -139,7 +151,9 @@ query($owner: String!, $repo: String!, $number: Int!) {
 // fetchUnresolvedThreadComments returns inline comments from unresolved review
 // threads using the GitHub GraphQL API.
 func (pm *PRManager) fetchUnresolvedThreadComments(owner, repo string, prNumber int) ([]ReviewComment, error) {
-	cmd := exec.Command("gh", "api", "graphql",
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "api", "graphql",
 		"-f", fmt.Sprintf("query=%s", graphqlUnresolvedThreadsQuery),
 		"-f", fmt.Sprintf("owner=%s", owner),
 		"-f", fmt.Sprintf("repo=%s", repo),
@@ -249,7 +263,9 @@ func (pm *PRManager) GetIssue(number int) (*Issue, error) {
 		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
 
-	cmd := exec.Command("gh", "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch issue #%d: %w\nOutput: %s", number, err, output)
@@ -332,8 +348,10 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 	}
 
 	// Check if user is authenticated
-	cmd := exec.Command("gh", "auth", "status")
-	if err := cmd.Run(); err != nil {
+	ctx, cancel := ghContext()
+	defer cancel()
+	authCmd := exec.CommandContext(ctx, "gh", "auth", "status")
+	if err := authCmd.Run(); err != nil {
 		return "", fmt.Errorf("not authenticated with GitHub. Run 'gh auth login'")
 	}
 
@@ -350,8 +368,10 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 		args = append(args, "--body", body)
 	}
 
-	cmd = exec.Command("gh", args...)
-	output, err := cmd.CombinedOutput()
+	ctx2, cancel2 := ghContext()
+	defer cancel2()
+	prCmd := exec.CommandContext(ctx2, "gh", args...)
+	output, err := prCmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to create PR: %w\nOutput: %s", err, output)
 	}
@@ -367,7 +387,9 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 		return "", nil // Silently fail if gh not installed
 	}
 
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", nil // No PR exists
@@ -383,7 +405,9 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 		return "", "", nil
 	}
 
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", "", nil // No PR exists
@@ -403,7 +427,9 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 	if !pm.IsInstalled() {
 		return "", nil
 	}
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "statusCheckRollup")
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "statusCheckRollup")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", nil
@@ -455,7 +481,9 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 	var status BranchStatus
 
 	// Check remote branch existence via git ls-remote (fast, no API rate limit).
-	lsCmd := exec.Command("git", "ls-remote", "--heads", "origin", branch)
+	lsCtx, lsCancel := context.WithTimeout(context.Background(), ghTimeout)
+	defer lsCancel()
+	lsCmd := exec.CommandContext(lsCtx, "git", "ls-remote", "--heads", "origin", branch)
 	if repoDir != "" {
 		lsCmd.Dir = repoDir
 	}
@@ -474,7 +502,9 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 	if !pm.IsInstalled() {
 		return status, nil
 	}
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
+	ctx, cancel := ghContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// No PR found for this branch — not an error.

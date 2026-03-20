@@ -8,7 +8,6 @@ import (
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
-	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 var IssueCmd = &cobra.Command{
@@ -39,7 +38,7 @@ into the new worktree so the AI agent can start working immediately.`,
 			return err
 		}
 
-		svc, err := workspace.New(repoRoot, cfg)
+		svc, err := newService(repoRoot, cfg)
 		if err != nil {
 			return err
 		}

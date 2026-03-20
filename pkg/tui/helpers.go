@@ -43,22 +43,6 @@ func readAgentStatus(worktreeDir string) *AgentStatus {
 	}
 }
 
-// cleanPreview strips ANSI codes and returns the last 5 non-empty lines.
-func cleanPreview(s string) string {
-	s = ansiEscapeRe.ReplaceAllString(s, "")
-	lines := strings.Split(s, "\n")
-	var out []string
-	for _, l := range lines {
-		if trimmed := strings.TrimRight(l, " \t"); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	if len(out) > 5 {
-		out = out[len(out)-5:]
-	}
-	return strings.Join(out, "\n")
-}
-
 // renderFileChanges builds the per-file changes panel content.
 func (m Model) renderFileChanges(files []worktree.FileChange, width int) string {
 	var sb strings.Builder
@@ -184,58 +168,40 @@ func openURLCmd(rawURL string) tea.Cmd {
 	}
 }
 
+// keyBytesMap maps Bubble Tea key types to their raw PTY byte sequences.
+var keyBytesMap = map[tea.KeyType][]byte{
+	tea.KeyEnter:     {'\r'},
+	tea.KeyBackspace: {0x7f},
+	tea.KeyTab:       {'\t'},
+	tea.KeyShiftTab:  []byte("\x1b[Z"),
+	tea.KeySpace:     {' '},
+	tea.KeyEscape:    {0x1b},
+	tea.KeyCtrlC:     {0x03},
+	tea.KeyCtrlD:     {0x04},
+	tea.KeyCtrlZ:     {0x1a},
+	tea.KeyCtrlL:     {0x0c},
+	tea.KeyCtrlA:     {0x01},
+	tea.KeyCtrlE:     {0x05},
+	tea.KeyCtrlU:     {0x15},
+	tea.KeyCtrlK:     {0x0b},
+	tea.KeyCtrlW:     {0x17},
+	tea.KeyUp:        []byte("\x1b[A"),
+	tea.KeyDown:      []byte("\x1b[B"),
+	tea.KeyRight:     []byte("\x1b[C"),
+	tea.KeyLeft:      []byte("\x1b[D"),
+	tea.KeyHome:      []byte("\x1b[H"),
+	tea.KeyEnd:       []byte("\x1b[F"),
+	tea.KeyPgUp:      []byte("\x1b[5~"),
+	tea.KeyPgDown:    []byte("\x1b[6~"),
+	tea.KeyDelete:    []byte("\x1b[3~"),
+}
+
 // keyToBytes converts a Bubble Tea key message to raw bytes for PTY input.
 func keyToBytes(msg tea.KeyMsg) []byte {
-	switch msg.Type {
-	case tea.KeyRunes:
+	if msg.Type == tea.KeyRunes {
 		return []byte(string(msg.Runes))
-	case tea.KeyEnter:
-		return []byte{'\r'}
-	case tea.KeyBackspace:
-		return []byte{0x7f}
-	case tea.KeyTab:
-		return []byte{'\t'}
-	case tea.KeySpace:
-		return []byte{' '}
-	case tea.KeyCtrlC:
-		return []byte{0x03}
-	case tea.KeyCtrlD:
-		return []byte{0x04}
-	case tea.KeyCtrlZ:
-		return []byte{0x1a}
-	case tea.KeyCtrlL:
-		return []byte{0x0c}
-	case tea.KeyCtrlA:
-		return []byte{0x01}
-	case tea.KeyCtrlE:
-		return []byte{0x05}
-	case tea.KeyCtrlU:
-		return []byte{0x15}
-	case tea.KeyCtrlK:
-		return []byte{0x0b}
-	case tea.KeyCtrlW:
-		return []byte{0x17}
-	case tea.KeyUp:
-		return []byte("\x1b[A")
-	case tea.KeyDown:
-		return []byte("\x1b[B")
-	case tea.KeyRight:
-		return []byte("\x1b[C")
-	case tea.KeyLeft:
-		return []byte("\x1b[D")
-	case tea.KeyHome:
-		return []byte("\x1b[H")
-	case tea.KeyEnd:
-		return []byte("\x1b[F")
-	case tea.KeyPgUp:
-		return []byte("\x1b[5~")
-	case tea.KeyPgDown:
-		return []byte("\x1b[6~")
-	case tea.KeyDelete:
-		return []byte("\x1b[3~")
-	default:
-		return nil
 	}
+	return keyBytesMap[msg.Type]
 }
 
 // formatAge returns a human-readable age string for a given timestamp.

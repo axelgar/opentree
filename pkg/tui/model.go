@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/daemon"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
@@ -35,8 +36,6 @@ const (
 	sortByActivity = 2
 	sortByPR       = 3
 )
-
-var sortModeNames = []string{"name", "age", "activity", "PR"}
 
 // Model is the main Bubble Tea model for the opentree TUI.
 type Model struct {
@@ -77,12 +76,11 @@ type Model struct {
 	workspaceDeletingNames map[string]bool
 	spinnerFrame           int
 
-	// agent output preview
-	agentPreview string
-
 	// split-pane terminal
-	terminalFocused bool
-	nativePM        *workspace.NativeProcessManager
+	terminalFocused  bool
+	terminalRunning  bool // cached: whether the active workspace's PTY is running
+	termPM           workspace.TerminalProcessManager
+	termScrollOffset int // lines scrolled back from live view (0 = live)
 
 	// PR creation dialog
 	prCreating    bool
@@ -95,7 +93,8 @@ type Model struct {
 	prBase        string
 
 	// CI status per workspace
-	ciStatus map[string]string // wsName -> "success"/"failure"/"pending"/""
+	ciStatus       map[string]string // wsName -> "success"/"failure"/"pending"/""
+	prCheckOffset  int               // rotation offset for bounded PR status checks
 
 	// multi-select
 	selected map[string]bool
@@ -115,9 +114,21 @@ type Model struct {
 	agentSelecting bool
 	agentCursor    int
 
+	// config overlay
+	showConfig bool
+
 	// error log
 	errLog     []string
 	showErrLog bool
+
+	// performance caches
+	cachedSorted   []WorkspaceItem
+	cachedVisible  []WorkspaceItem
+	viewCacheDirty bool
+
+	// cached diff lines (avoid re-splitting every frame)
+	diffLines []string
+
 
 	help help.Model
 	keys keyMap
@@ -191,8 +202,11 @@ func NewModel() (*Model, error) {
 		return nil, fmt.Errorf("failed to initialize state store: %w", err)
 	}
 	gh := github.New()
-	pm := workspace.NewNativeProcessManager(0, 0)
-	svc := workspace.NewService(repoRoot, cfg, wt, pm, st, gh)
+	if err := daemon.EnsureDaemon(repoRoot); err != nil {
+		return nil, fmt.Errorf("failed to start daemon: %w", err)
+	}
+	client := daemon.NewClient(repoRoot)
+	svc := workspace.NewService(repoRoot, cfg, wt, client, st, gh)
 
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
@@ -206,7 +220,7 @@ func NewModel() (*Model, error) {
 		prMgr:                  gh,
 		cfg:                    cfg,
 		repoRoot:               repoRoot,
-		nativePM:               pm,
+		termPM:                 client,
 		input:                  ti,
 		help:                   help.New(),
 		keys:                   keys,
@@ -223,7 +237,6 @@ func (m Model) Init() tea.Cmd {
 		m.loadWorkspacesCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
-		terminalTickCmd(),
 	)
 }
 
@@ -234,9 +247,7 @@ func Run() error {
 		return err
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		return err
-	}
-	return nil
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	_, err = p.Run()
+	return err
 }

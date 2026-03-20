@@ -13,6 +13,11 @@ import (
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
+// maxScrollbackOffset caps how far back the user can scroll in the terminal
+// pane's scrollback buffer. This prevents the offset counter from growing
+// unbounded when the user holds the scroll-up key.
+const maxScrollbackOffset = 5000
+
 func spinnerTickCmd() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return spinnerTickMsg{}
@@ -30,26 +35,81 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.help.Width = msg.Width
+		m.help.Width = m.leftPaneWidth()
 		if m.diffViewing {
 			m.clampDiffScroll()
 		}
 		m.resizeActiveTerminal()
 
+	case tea.MouseMsg:
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			if m.diffViewing {
+				if m.diffScrollOffset > 0 {
+					m.diffScrollOffset--
+				}
+			} else {
+				// Scroll up = go back in history = increase offset
+				m.termScrollOffset += 3
+				// Cap at scrollback buffer size to prevent unbounded growth.
+				if m.termScrollOffset > maxScrollbackOffset {
+					m.termScrollOffset = maxScrollbackOffset
+				}
+			}
+		case tea.MouseWheelDown:
+			if m.diffViewing {
+				if m.diffScrollOffset < m.maxDiffScroll() {
+					m.diffScrollOffset++
+				}
+			} else {
+				// Scroll down = go toward live view = decrease offset
+				m.termScrollOffset -= 3
+				if m.termScrollOffset < 0 {
+					m.termScrollOffset = 0
+				}
+			}
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Terminal-focused mode: forward keys to the agent PTY
 		if m.terminalFocused {
-			if msg.String() == "esc" {
+			// Ctrl+] exits terminal focus. We avoid Esc because terminal apps
+			// (vim, fzf, etc.) use it heavily.
+			if msg.String() == "ctrl+]" {
 				m.terminalFocused = false
 				return m, nil
 			}
-			// Forward keypress to the active workspace's PTY
-			if m.nativePM != nil {
+			if m.termPM != nil {
 				visible := m.visibleWorkspaces()
 				if m.cursor < len(visible) {
+					ws := visible[m.cursor]
+					// If the process has exited, Enter restarts the agent.
+					if !m.terminalRunning {
+						if msg.String() == "enter" {
+							agentCmd := ws.Agent
+							if agentCmd == "" {
+								agentCmd = m.cfg.Agent.Command
+							}
+							if agentCmd == "" {
+								return m, m.transientErrCmd("no agent configured — press 'A' to choose one")
+							}
+							rightCols, rightRows := m.rightPaneSize()
+							if err := m.termPM.CreateWindowSized(ws.Name, ws.WorktreeDir, agentCmd, rightCols, rightRows, m.cfg.Agent.Args...); err != nil {
+								return m, m.transientErrCmd(fmt.Sprintf("failed to restart terminal for %q: %v", ws.Name, err))
+							}
+							m.terminalRunning = true
+							m.termScrollOffset = 0
+							return m, terminalTickCmd()
+						}
+						// Block all other keys from going to the dead PTY.
+						return m, nil
+					}
+					// Process is running: forward keypress.
 					data := keyToBytes(msg)
 					if len(data) > 0 {
-						_ = m.nativePM.WriteInput(visible[m.cursor].Name, data)
+						_ = m.termPM.WriteInput(ws.Name, data)
+						m.termScrollOffset = 0 // snap to live view on input
 					}
 				}
 			}
@@ -91,12 +151,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Config overlay mode
+		if m.showConfig {
+			switch msg.String() {
+			case "esc", "c", "q":
+				m.showConfig = false
+			}
+			return m, nil
+		}
+
 		// Diff view mode
 		if m.diffViewing {
 			switch msg.String() {
 			case "esc", "q":
 				m.diffViewing = false
 				m.diffContent = ""
+				m.diffLines = nil
 				m.diffScrollOffset = 0
 				m.diffWsName = ""
 			case "up", "k":
@@ -104,15 +174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.diffScrollOffset--
 				}
 			case "down", "j":
-				availHeight := m.height - 8
-				if availHeight < 5 {
-					availHeight = 5
-				}
-				maxScroll := len(strings.Split(m.diffContent, "\n")) - availHeight
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.diffScrollOffset < maxScroll {
+				if m.diffScrollOffset < m.maxDiffScroll() {
 					m.diffScrollOffset++
 				}
 			}
@@ -201,10 +263,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
 				}
 				m.cursor = 0
+				m.invalidateViewCache()
 			default:
 				if len(msg.String()) == 1 {
 					m.filterQuery += msg.String()
 					m.cursor = 0
+					m.invalidateViewCache()
 				}
 			}
 			return m, nil
@@ -305,11 +369,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
 				m.cursor--
+				m.termScrollOffset = 0
+				m.updateTerminalRunning()
 				m.resizeActiveTerminal()
 			}
 		case key.Matches(msg, m.keys.Down):
 			if m.cursor < len(visible)-1 {
 				m.cursor++
+				m.termScrollOffset = 0
+				m.updateTerminalRunning()
 				m.resizeActiveTerminal()
 			}
 		case key.Matches(msg, m.keys.New):
@@ -343,12 +411,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				m.terminalFocused = true
-				// Resize PTY to fit the right pane
-				if m.nativePM != nil {
-					rightCols, rightRows := m.rightPaneSize()
-					_ = m.nativePM.ResizeWindow(ws.Name, rightCols, rightRows)
+				if m.termPM != nil {
+					// Lazily start the PTY window if it doesn't exist yet.
+					if !m.termPM.IsRunning(ws.Name) {
+						agentCmd := ws.Agent
+						if agentCmd == "" {
+							agentCmd = m.cfg.Agent.Command
+						}
+						if agentCmd == "" {
+							m.terminalFocused = false
+							return m, m.transientErrCmd("no agent configured — press 'a' to choose one")
+						}
+						rightCols, rightRows := m.rightPaneSize()
+						if err := m.termPM.CreateWindowSized(ws.Name, ws.WorktreeDir, agentCmd, rightCols, rightRows, m.cfg.Agent.Args...); err != nil {
+							m.terminalFocused = false
+							return m, m.transientErrCmd(fmt.Sprintf("failed to start terminal for %q: %v", ws.Name, err))
+						}
+						m.terminalRunning = true
+					} else {
+						m.terminalRunning = true
+						rightCols, rightRows := m.rightPaneSize()
+						_ = m.termPM.ResizeWindow(ws.Name, rightCols, rightRows)
+					}
 				}
-				return m, nil
+				return m, terminalTickCmd()
 			}
 		case key.Matches(msg, m.keys.Diff):
 			if len(visible) > 0 {
@@ -425,9 +511,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filtering = true
 			m.filterQuery = ""
 			m.cursor = 0
+			m.invalidateViewCache()
 		case key.Matches(msg, m.keys.Sort):
 			m.sortMode = (m.sortMode + 1) % 4
 			m.cursor = 0
+			m.invalidateViewCache()
 		case key.Matches(msg, m.keys.Agent):
 			m.agentSelecting = true
 			m.agentCursor = 0
@@ -438,6 +526,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+			return m, nil
+		case key.Matches(msg, m.keys.Config):
+			m.showConfig = true
 			return m, nil
 		case key.Matches(msg, m.keys.ErrLog):
 			m.showErrLog = !m.showErrLog
@@ -466,13 +557,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.branchSuggestionCursor = 0
 
 	case terminalTickMsg:
-		return m, terminalTickCmd()
+		wsName := m.activeWorkspaceName()
+		if m.termPM != nil && wsName != "" {
+			m.terminalRunning = m.termPM.IsRunning(wsName)
+		} else {
+			m.terminalRunning = false
+		}
+		if m.terminalFocused {
+			return m, terminalTickCmd()
+		}
+		// Only keep ticking if a workspace is selected and terminal is running.
+		if wsName != "" && m.terminalRunning {
+			return m, terminalTickSlowCmd()
+		}
+		return m, nil
 
 	case loadedWorkspacesMsg:
 		m.workspaces = msg.workspaces
+		m.invalidateViewCache()
 		visible := m.visibleWorkspaces()
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
+		}
+		// Start a terminal tick so the right pane renders live output
+		// for the active workspace even before the user presses Enter.
+		if m.termPM != nil && len(visible) > 0 {
+			return m, terminalTickSlowCmd()
 		}
 
 	case createdWorkspaceMsg:
@@ -486,6 +596,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						DiffStat:  "No changes",
 					}
 					m.workspaces = append(m.workspaces, item)
+					m.invalidateViewCache()
 				}
 			}
 			return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
@@ -497,6 +608,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workspaceDeletingName = ""
 		m.workspaceDeletingNames = make(map[string]bool)
 		m.selected = make(map[string]bool)
+		m.terminalFocused = false
 		return m, m.loadWorkspacesCmd
 
 	case refreshTickMsg:
@@ -538,11 +650,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{
 			tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		}
+		// Collect workspaces needing a status check.
+		var toCheck []WorkspaceItem
 		for _, ws := range m.workspaces {
-			// Skip workspaces that are fully done (merged PR and remote branch gone).
 			if ws.PRStatus == "merged" && ws.RemoteDeleted {
 				continue
 			}
+			toCheck = append(toCheck, ws)
+		}
+		// Bound concurrency: check at most 3 workspaces per tick, rotating
+		// through the list across ticks via m.prCheckOffset.
+		const maxPerTick = 3
+		if len(toCheck) > maxPerTick {
+			start := m.prCheckOffset % len(toCheck)
+			var batch []WorkspaceItem
+			for i := 0; i < maxPerTick; i++ {
+				batch = append(batch, toCheck[(start+i)%len(toCheck)])
+			}
+			m.prCheckOffset = start + maxPerTick
+			toCheck = batch
+		}
+		for _, ws := range toCheck {
 			cmds = append(cmds, m.checkBranchStatusCmd(ws.Name, ws.Branch, ws.WorktreeDir, ws.BranchPushed))
 		}
 		return m, tea.Batch(cmds...)
@@ -558,6 +686,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if item.Name == msg.wsName {
 				m.workspaces[i].PRURL = msg.prURL
 				m.workspaces[i].PRStatus = msg.prStatus
+				m.invalidateViewCache()
 				break
 			}
 		}
@@ -597,6 +726,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.status.PRState != "" {
 					m.workspaces[i].PRStatus = msg.status.PRState
 				}
+				m.invalidateViewCache()
 				break
 			}
 		}
@@ -623,6 +753,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffLoadedMsg:
 		m.diffViewing = true
 		m.diffContent = msg.content
+		m.diffLines = strings.Split(msg.content, "\n")
 		m.diffScrollOffset = 0
 		m.diffWsName = msg.wsName
 
@@ -640,17 +771,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) clampDiffScroll() {
-	lines := len(strings.Split(m.diffContent, "\n"))
-	availHeight := m.height - 8
-	if availHeight < 5 {
-		availHeight = 5
-	}
-	maxScroll := lines - availHeight
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.diffScrollOffset > maxScroll {
-		m.diffScrollOffset = maxScroll
+	if m.diffScrollOffset > m.maxDiffScroll() {
+		m.diffScrollOffset = m.maxDiffScroll()
 	}
 }
 
@@ -667,12 +789,44 @@ func (m *Model) resetCreateMode() {
 	m.input.Placeholder = "New branch name"
 }
 
+func (m Model) activeWorkspaceName() string {
+	visible := m.visibleWorkspaces()
+	if m.cursor < len(visible) {
+		return visible[m.cursor].Name
+	}
+	return ""
+}
+
 func (m *Model) transientErrCmd(msg string) tea.Cmd {
 	m.err = fmt.Errorf("%s", msg)
 	m.appendErrLog(msg)
 	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return clearErrorMsg{}
 	})
+}
+
+// invalidateViewCache marks the sorted/filtered workspace cache as stale
+// and recomputes it. Call this whenever m.workspaces, m.sortMode, or
+// m.filterQuery change.
+func (m *Model) invalidateViewCache() {
+	m.viewCacheDirty = true
+	// Eagerly recompute so subsequent reads in the same Update cycle
+	// (e.g. cursor clamping) see consistent data.
+	sorted := m.sortedWorkspaces()
+	if m.filterQuery == "" {
+		m.cachedVisible = sorted
+	} else {
+		q := strings.ToLower(m.filterQuery)
+		var out []WorkspaceItem
+		for _, ws := range sorted {
+			if strings.Contains(strings.ToLower(ws.Name), q) {
+				out = append(out, ws)
+			}
+		}
+		m.cachedVisible = out
+	}
+	m.cachedSorted = sorted
+	m.viewCacheDirty = false
 }
 
 func (m *Model) appendErrLog(msg string) {
@@ -710,15 +864,43 @@ func (m Model) rightPaneSize() (int, int) {
 	return cols, rows
 }
 
-// resizeActiveTerminal resizes the PTY for the currently selected workspace.
+// updateTerminalRunning checks the actual PTY state for the active workspace.
+func (m *Model) updateTerminalRunning() {
+	if m.termPM != nil {
+		m.terminalRunning = m.termPM.IsRunning(m.activeWorkspaceName())
+	} else {
+		m.terminalRunning = false
+	}
+}
+
+// maxDiffScroll returns the maximum valid scroll offset for the current diff.
+func (m Model) maxDiffScroll() int {
+	availHeight := m.height - 8
+	if availHeight < 5 {
+		availHeight = 5
+	}
+	lineCount := len(m.diffLines)
+	if lineCount == 0 && m.diffContent != "" {
+		lineCount = len(strings.Split(m.diffContent, "\n"))
+	}
+	maxScroll := lineCount - availHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	return maxScroll
+}
+
+// resizeActiveTerminal resizes the currently selected workspace's PTY window
+// to the current right pane dimensions.
 func (m *Model) resizeActiveTerminal() {
-	if m.nativePM == nil {
+	if m.termPM == nil {
 		return
 	}
-	visible := m.visibleWorkspaces()
-	if m.cursor >= len(visible) {
+	name := m.activeWorkspaceName()
+	if name == "" {
 		return
 	}
 	cols, rows := m.rightPaneSize()
-	_ = m.nativePM.ResizeWindow(visible[m.cursor].Name, cols, rows)
+	_ = m.termPM.ResizeWindow(name, cols, rows)
 }
+

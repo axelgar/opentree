@@ -154,9 +154,18 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 	}
 }
 
-// terminalTickCmd returns a 33ms tick command for ~30fps terminal rendering.
+// terminalTickCmd returns a tick command for terminal rendering.
+// Uses 50ms (~20fps) for a responsive yet efficient update rate.
 func terminalTickCmd() tea.Cmd {
-	return tea.Tick(33*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+		return terminalTickMsg{}
+	})
+}
+
+// terminalTickSlowCmd returns a slower tick (200ms / ~5fps) for background
+// terminal updates when the terminal pane is not focused.
+func terminalTickSlowCmd() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
 		return terminalTickMsg{}
 	})
 }

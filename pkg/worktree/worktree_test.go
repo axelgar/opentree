@@ -669,3 +669,33 @@ func TestDiffStats_MarksUncommittedFiles(t *testing.T) {
 		t.Error("wip.txt should be marked as Uncommitted")
 	}
 }
+
+func TestParseGitWorktreeError_RefConflict(t *testing.T) {
+	gitOutput := `Preparing worktree (new branch 'feat')
+fatal: cannot lock ref 'refs/heads/feat': 'refs/heads/feat/native-terminal' exists; cannot create 'refs/heads/feat'`
+
+	msg := parseGitWorktreeError("feat", gitOutput)
+	if !strings.Contains(msg, "feat/native-terminal") {
+		t.Errorf("expected message to mention conflicting branch, got: %s", msg)
+	}
+	if !strings.Contains(msg, "conflicts") {
+		t.Errorf("expected message to say 'conflicts', got: %s", msg)
+	}
+}
+
+func TestParseGitWorktreeError_AlreadyExists(t *testing.T) {
+	gitOutput := `fatal: A branch named 'main' already exists.`
+
+	msg := parseGitWorktreeError("main", gitOutput)
+	if !strings.Contains(msg, "already exists") {
+		t.Errorf("expected message to say 'already exists', got: %s", msg)
+	}
+}
+
+func TestParseGitWorktreeError_UnknownError(t *testing.T) {
+	gitOutput := `fatal: something unexpected happened`
+	msg := parseGitWorktreeError("foo", gitOutput)
+	if msg != "fatal: something unexpected happened" {
+		t.Errorf("expected raw output for unknown error, got: %s", msg)
+	}
+}

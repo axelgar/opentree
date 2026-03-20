@@ -7,7 +7,6 @@ import (
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
-	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 var NewCmd = &cobra.Command{
@@ -29,7 +28,7 @@ var NewCmd = &cobra.Command{
 			return err
 		}
 
-		svc, err := workspace.New(repoRoot, cfg)
+		svc, err := newService(repoRoot, cfg)
 		if err != nil {
 			return err
 		}

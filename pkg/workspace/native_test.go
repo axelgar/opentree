@@ -1,10 +1,29 @@
 package workspace
 
 import (
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// waitFor polls fn every 50ms until it returns true or the deadline (2s) expires.
+func waitFor(t *testing.T, desc string, fn func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if fn() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for: %s", desc)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
 
 func TestNativeCreateAndListWindows(t *testing.T) {
 	pm := NewNativeProcessManager(80, 24)
@@ -15,15 +34,14 @@ func TestNativeCreateAndListWindows(t *testing.T) {
 		t.Fatalf("CreateWindow: %v", err)
 	}
 
-	// Wait for process to finish
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, "window to appear", func() bool {
+		windows, _ := pm.ListWindows()
+		return len(windows) == 1
+	})
 
 	windows, err := pm.ListWindows()
 	if err != nil {
 		t.Fatalf("ListWindows: %v", err)
-	}
-	if len(windows) != 1 {
-		t.Fatalf("expected 1 window, got %d", len(windows))
 	}
 	if windows[0].Name != "test-echo" {
 		t.Errorf("expected name test-echo, got %q", windows[0].Name)
@@ -39,16 +57,10 @@ func TestNativeCapturePane(t *testing.T) {
 		t.Fatalf("CreateWindow: %v", err)
 	}
 
-	// Wait for echo to write output
-	time.Sleep(300 * time.Millisecond)
-
-	output, err := pm.CapturePane("test-cap", 5)
-	if err != nil {
-		t.Fatalf("CapturePane: %v", err)
-	}
-	if !strings.Contains(output, "capture-me-123") {
-		t.Errorf("expected output to contain 'capture-me-123', got %q", output)
-	}
+	waitFor(t, "capture output to contain expected string", func() bool {
+		output, err := pm.CapturePane("test-cap", 5)
+		return err == nil && strings.Contains(output, "capture-me-123")
+	})
 }
 
 func TestNativeRenderScreen(t *testing.T) {
@@ -60,15 +72,10 @@ func TestNativeRenderScreen(t *testing.T) {
 		t.Fatalf("CreateWindow: %v", err)
 	}
 
-	time.Sleep(300 * time.Millisecond)
-
-	screen, err := pm.RenderScreen("test-render")
-	if err != nil {
-		t.Fatalf("RenderScreen: %v", err)
-	}
-	if !strings.Contains(screen, "render-test-456") {
-		t.Errorf("expected screen to contain 'render-test-456', got %q", screen)
-	}
+	waitFor(t, "render screen to contain expected string", func() bool {
+		screen, err := pm.RenderScreen("test-render")
+		return err == nil && strings.Contains(screen, "render-test-456")
+	})
 }
 
 func TestNativeKillWindow(t *testing.T) {
@@ -106,22 +113,20 @@ func TestNativeSendMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWindow: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+
+	waitFor(t, "cat process to be running", func() bool {
+		return pm.IsRunning("test-cat")
+	})
 
 	err = pm.SendMessage("test-cat", "hello from test")
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	output, err := pm.CapturePane("test-cat", 5)
-	if err != nil {
-		t.Fatalf("CapturePane: %v", err)
-	}
-	if !strings.Contains(output, "hello from test") {
-		t.Errorf("expected output to contain 'hello from test', got %q", output)
-	}
+	waitFor(t, "output to contain sent message", func() bool {
+		output, err := pm.CapturePane("test-cat", 5)
+		return err == nil && strings.Contains(output, "hello from test")
+	})
 }
 
 func TestNativeGetWindowActivity(t *testing.T) {
@@ -133,15 +138,11 @@ func TestNativeGetWindowActivity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWindow: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
 
-	activity, err := pm.GetWindowActivity("test-activity")
-	if err != nil {
-		t.Fatalf("GetWindowActivity: %v", err)
-	}
-	if activity.Before(before) {
-		t.Errorf("expected activity after %v, got %v", before, activity)
-	}
+	waitFor(t, "activity timestamp to be set", func() bool {
+		activity, err := pm.GetWindowActivity("test-activity")
+		return err == nil && !activity.Before(before)
+	})
 }
 
 func TestNativeAttachReturnsError(t *testing.T) {
@@ -204,5 +205,80 @@ func TestNativeWindowNotFound(t *testing.T) {
 	err = pm.SendMessage("nonexistent", "test")
 	if err == nil {
 		t.Fatal("expected error for nonexistent window")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency / race condition tests (run with -race)
+// ---------------------------------------------------------------------------
+
+// TestConcurrentCreateWindow verifies that simultaneous CreateWindow calls for
+// the same window name result in exactly one success and the rest returning
+// "already exists" errors.
+func TestConcurrentCreateWindow(t *testing.T) {
+	pm := NewNativeProcessManager(80, 24)
+	defer pm.KillSession()
+
+	const workers = 5
+	var (
+		successCount int32
+		wg           sync.WaitGroup
+	)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			if err := pm.CreateWindow("concurrent-window", t.TempDir(), "sleep", "60"); err == nil {
+				atomic.AddInt32(&successCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 successful CreateWindow, got %d", successCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scrollback buffer tests
+// ---------------------------------------------------------------------------
+
+// TestScrollbackRingBuffer verifies that the scrollback ring buffer caps at
+// maxScrollbackLines even when more lines are produced.
+func TestScrollbackRingBuffer(t *testing.T) {
+	const extraLines = 500
+	w := &ptyWindow{}
+
+	for i := 0; i < maxScrollbackLines+extraLines; i++ {
+		w.appendToScrollback([]byte(fmt.Sprintf("line-%d\n", i)))
+	}
+
+	w.sbMu.Lock()
+	total := len(w.sbBuf)
+	w.sbMu.Unlock()
+
+	if total != maxScrollbackLines {
+		t.Errorf("scrollback length = %d, want %d (ring buffer cap)", total, maxScrollbackLines)
+	}
+}
+
+// TestScrollbackCurByteCap verifies that the current-line accumulation buffer
+// does not grow beyond maxScrollbackCurBytes even when no newline is received.
+func TestScrollbackCurByteCap(t *testing.T) {
+	w := &ptyWindow{}
+	// Feed 2x the cap without any newline.
+	data := make([]byte, maxScrollbackCurBytes*2)
+	for i := range data {
+		data[i] = 'a'
+	}
+	w.appendToScrollback(data)
+
+	w.sbMu.Lock()
+	curLen := len(w.sbCur)
+	w.sbMu.Unlock()
+
+	if curLen > maxScrollbackCurBytes {
+		t.Errorf("sbCur length = %d, want <= %d", curLen, maxScrollbackCurBytes)
 	}
 }

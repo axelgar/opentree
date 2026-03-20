@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
@@ -38,14 +39,13 @@ type Service struct {
 }
 
 // New creates a Service by constructing all dependencies from repoRoot and config.
-// This is the typical entry point for CLI commands.
-func New(repoRoot string, cfg *config.Config) (*Service, error) {
+// The caller provides the ProcessManager (typically a daemon.Client).
+func New(repoRoot string, cfg *config.Config, pm ProcessManager) (*Service, error) {
 	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
 	st, err := state.New(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize state: %w", err)
 	}
-	pm := NewNativeProcessManager(0, 0)
 	gh := github.New()
 	return NewService(repoRoot, cfg, wt, pm, st, gh), nil
 }
@@ -201,10 +201,22 @@ func (s *Service) Delete(name string) error {
 	return nil
 }
 
-// DeleteMultiple removes multiple workspaces in sequence.
+// DeleteMultiple removes multiple workspaces. Window kills happen in parallel
+// (each has up to a 2s timeout), then worktree and state cleanup runs serially.
 func (s *Service) DeleteMultiple(names []string) error {
+	// Kill all windows in parallel.
+	var wg sync.WaitGroup
+	wg.Add(len(names))
 	for _, name := range names {
-		_ = s.process.KillWindow(name)
+		go func(n string) {
+			defer wg.Done()
+			_ = s.process.KillWindow(n)
+		}(name)
+	}
+	wg.Wait()
+
+	// Delete worktrees and state serially for consistency.
+	for _, name := range names {
 		if err := s.worktrees.Delete(name, true); err != nil {
 			return fmt.Errorf("delete %s: %w", name, err)
 		}

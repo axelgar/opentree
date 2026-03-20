@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +17,9 @@ import (
 )
 
 // mockProcessManager is a test double for ProcessManager that records calls
-// and returns configurable results.
+// and returns configurable results. Thread-safe for concurrent KillWindow calls.
 type mockProcessManager struct {
+	mu                sync.Mutex
 	createWindowCalls []string
 	killWindowCalls   []string
 	killSessionCalled bool
@@ -37,7 +39,9 @@ func (m *mockProcessManager) AttachCmd(name string) (*exec.Cmd, error) {
 	return exec.Command("echo", "mock"), nil
 }
 func (m *mockProcessManager) KillWindow(name string) error {
+	m.mu.Lock()
 	m.killWindowCalls = append(m.killWindowCalls, name)
+	m.mu.Unlock()
 	return nil
 }
 func (m *mockProcessManager) KillSession() error {
@@ -502,7 +506,8 @@ func TestHasChanges_NoWorkspace(t *testing.T) {
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
 
-	svc, err := New(repoDir, cfg)
+	pm := NewNativeProcessManager(0, 0)
+	svc, err := New(repoDir, cfg, pm)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

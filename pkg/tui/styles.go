@@ -1,13 +1,8 @@
 package tui
 
 import (
-	"regexp"
-
 	"github.com/charmbracelet/lipgloss"
 )
-
-// ansiEscapeRe strips ANSI escape sequences from terminal output.
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]`)
 
 // Styles
 var (
@@ -219,9 +214,10 @@ var (
 				Foreground(lipgloss.Color("#888")).
 				Italic(true)
 
-	// split-pane borders
+	// split-pane borders — double border for focused pane so the state
+	// is visible even without color (accessibility).
 	focusedPaneBorder = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
+				Border(lipgloss.DoubleBorder()).
 				BorderForeground(lipgloss.Color("#F4A261")).
 				Padding(0, 1)
 
@@ -238,6 +234,17 @@ var (
 	termPaneHeaderFocusedStyle = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("#F4A261")).
 					Bold(true)
+
+	// agent selection overlay — reusable styles (avoid NewStyle in loops)
+	agentNotFoundStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
+	agentInstalledStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+
+	// config overlay — reusable styles
+	configLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#888"))
+	configValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#eee"))
+
+	// error display style
+	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

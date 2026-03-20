@@ -6,15 +6,14 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/axelgar/opentree/pkg/config"
 )
 
 const (
-	headerFooterHeight  = 8
-	minDiffHeight       = 5
-	defaultPreviewWidth = 60
-	minPreviewWidth     = 20
+	headerFooterHeight = 8
+	minDiffHeight      = 5
 )
 
 func (m Model) View() string {
@@ -53,10 +52,10 @@ func (m Model) View() string {
 			}
 
 			status := "not found"
-			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
+			statusSt := agentNotFoundStyle
 			if agent.IsInstalled() {
 				status = "installed"
-				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+				statusSt = agentInstalledStyle
 			}
 
 			cmdStr := agent.Command
@@ -75,7 +74,10 @@ func (m Model) View() string {
 	}
 
 	if m.diffViewing {
-		lines := strings.Split(m.diffContent, "\n")
+		lines := m.diffLines
+		if lines == nil {
+			lines = strings.Split(m.diffContent, "\n")
+		}
 		availHeight := m.height - headerFooterHeight
 		if availHeight < minDiffHeight {
 			availHeight = minDiffHeight
@@ -213,13 +215,35 @@ func (m Model) View() string {
 		))
 	}
 
+	if m.showConfig {
+		cfgPath := config.FindConfigFile()
+		agentCmd := m.cfg.Agent.CommandLine()
+		autoPush := "false"
+		if m.cfg.GitHub.AutoPush != nil && *m.cfg.GitHub.AutoPush {
+			autoPush = "true"
+		}
+		row := func(label, value string) string {
+			return fmt.Sprintf("  %s %s\n", configLabelStyle.Render(fmt.Sprintf("%-24s", label)), configValueStyle.Render(value))
+		}
+		var sb strings.Builder
+		sb.WriteString(titleStyle.Render("Configuration") + "\n\n")
+		sb.WriteString(row("agent.command:", agentCmd))
+		sb.WriteString(row("worktree.base_dir:", m.cfg.Worktree.BaseDir))
+		sb.WriteString(row("worktree.default_base:", m.cfg.Worktree.DefaultBase))
+		sb.WriteString(row("github.auto_push:", autoPush))
+		sb.WriteString(row("config file:", cfgPath))
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render("A  switch agent  •  esc/c  close"))
+		return appStyle.Render(sb.String())
+	}
+
 	// --- Split-pane main view ---
 	leftWidth := m.leftPaneWidth()
-	rightWidth := m.width - leftWidth - 3 // 3 for borders + separator
-	if rightWidth < 20 {
-		rightWidth = 20
-	}
-	paneHeight := m.height - 2 // padding
+	rightCols, rightRows := m.rightPaneSize()
+	// Use rightPaneSize as the single source of truth for dimensions.
+	// Add back the border+padding overhead for the lipgloss border style.
+	rightWidth := rightCols
+	paneHeight := rightRows
 	if paneHeight < 10 {
 		paneHeight = 10
 	}
@@ -267,7 +291,7 @@ func (m Model) renderLeftPane(width, height int) string {
 
 	// Error message (transient)
 	if m.err != nil {
-		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(fmt.Sprintf("Error: %v", m.err)))
+		s.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 		s.WriteString("\n\n")
 	}
 
@@ -323,6 +347,8 @@ func (m Model) renderLeftPane(width, height int) string {
 				title += " " + closedBadgeStyle.Render("closed")
 			case ws.RemoteDeleted:
 				title += " " + remoteDeletedBadgeStyle.Render("gone")
+			case ws.PRStatus == "open" && ws.MergeConflicts:
+				title += " " + conflictsBadgeStyle.Render("PR conflicts")
 			case ws.PRStatus == "open":
 				title += " " + prOpenBadgeStyle.Render("PR")
 				if ci, ok := m.ciStatus[ws.Name]; ok {
@@ -396,11 +422,11 @@ func (m Model) renderLeftPane(width, height int) string {
 	s.WriteString(m.statusBar())
 	s.WriteString("\n")
 
-	// Help (compact)
+	// Help — use the bubbles/help model so '?' toggles full key-binding view.
 	if m.terminalFocused {
-		s.WriteString(helpStyle.Render("Esc: dashboard"))
+		s.WriteString(helpStyle.Render("Ctrl+]: dashboard"))
 	} else {
-		s.WriteString(helpStyle.Render("Enter: terminal • n:new • d:diff • x:del • ?:help"))
+		s.WriteString(m.help.View(m.keys))
 	}
 
 	return s.String()
@@ -416,19 +442,63 @@ func (m Model) renderRightPane(width, height int) string {
 	ws := visible[m.cursor]
 
 	// Header
-	header := termPaneHeaderStyle.Render("Terminal: " + ws.Name)
+	agentExited := !m.terminalRunning
+	headerTitle := "Terminal: " + ws.Name
 	if m.terminalFocused {
-		header = termPaneHeaderFocusedStyle.Render("Terminal: " + ws.Name + " (focused)")
+		if agentExited {
+			headerTitle += " (exited — Enter to restart • Ctrl+] to exit)"
+		} else {
+			headerTitle += " (focused)"
+		}
+	}
+	if m.termScrollOffset > 0 {
+		headerTitle += fmt.Sprintf(" [scroll ↑%d]", m.termScrollOffset)
+	}
+	var header string
+	if m.terminalFocused || m.termScrollOffset > 0 {
+		header = termPaneHeaderFocusedStyle.Render(headerTitle)
+	} else {
+		header = termPaneHeaderStyle.Render(headerTitle)
 	}
 
 	// Get terminal screen content
 	var termContent string
-	if m.nativePM != nil {
-		screen, err := m.nativePM.RenderScreen(ws.Name)
-		if err != nil {
-			termContent = helpStyle.Render("No terminal output yet")
+	if m.termPM != nil {
+		// Scrollback mode: use history buffer.
+		if m.termScrollOffset > 0 {
+			_, paneH := m.rightPaneSize()
+			linesNeeded := paneH - 3
+			if linesNeeded < 1 {
+				linesNeeded = 1
+			}
+			sbLines, err := m.termPM.ScrollbackLines(ws.Name, m.termScrollOffset, linesNeeded)
+			if err == nil && len(sbLines) > 0 {
+				termContent = strings.Join(sbLines, "\n")
+			} else {
+				termContent = helpStyle.Render("No scrollback available")
+			}
+		} else if agentExited {
+			// Process has exited: show a clear restart prompt regardless of VT state.
+			if m.terminalFocused {
+				termContent = helpStyle.Render("Agent process exited.\n\n  Enter    restart agent\n  Ctrl+]   return to dashboard")
+			} else {
+				termContent = helpStyle.Render("Press Enter to start terminal")
+			}
 		} else {
-			termContent = screen
+			// Live view: render current VT screen.
+			screen, err := m.termPM.RenderScreen(ws.Name)
+			switch {
+			case err != nil && m.terminalFocused:
+				termContent = helpStyle.Render("Starting…")
+			case err != nil:
+				termContent = helpStyle.Render("Press Enter to start terminal")
+			case strings.TrimSpace(screen) == "" && m.terminalRunning:
+				termContent = helpStyle.Render("Starting…")
+			case strings.TrimSpace(screen) == "":
+				termContent = helpStyle.Render("Press Enter to start terminal")
+			default:
+				termContent = screen
+			}
 		}
 	} else {
 		termContent = helpStyle.Render("Terminal not available")
@@ -475,9 +545,11 @@ func (m Model) statusBar() string {
 			doneCount++
 		}
 	}
+	sortNames := [4]string{"name", "age", "activity", "pr"}
 	parts := []string{
 		fmt.Sprintf("%d ws", total),
 		fmt.Sprintf("%d active", active),
+		"↕" + sortNames[m.sortMode],
 	}
 	if openPRs > 0 {
 		parts = append(parts, fmt.Sprintf("%d PRs", openPRs))
@@ -495,7 +567,11 @@ func (m Model) statusBar() string {
 }
 
 // visibleWorkspaces returns the sorted and filtered workspace list.
+// Results are cached and only recomputed when viewCacheDirty is set.
 func (m Model) visibleWorkspaces() []WorkspaceItem {
+	if !m.viewCacheDirty && m.cachedVisible != nil {
+		return m.cachedVisible
+	}
 	sorted := m.sortedWorkspaces()
 	if m.filterQuery == "" {
 		return sorted
@@ -511,7 +587,11 @@ func (m Model) visibleWorkspaces() []WorkspaceItem {
 }
 
 // sortedWorkspaces returns a copy of m.workspaces sorted by m.sortMode.
+// Results are cached and only recomputed when viewCacheDirty is set.
 func (m Model) sortedWorkspaces() []WorkspaceItem {
+	if !m.viewCacheDirty && m.cachedSorted != nil {
+		return m.cachedSorted
+	}
 	ws := make([]WorkspaceItem, len(m.workspaces))
 	copy(ws, m.workspaces)
 	switch m.sortMode {
@@ -557,15 +637,8 @@ func renderCIBadge(ci string) string {
 	return ""
 }
 
-// truncateString truncates a string to maxWidth visible characters.
+// truncateString truncates a string to maxWidth visible characters,
+// correctly handling ANSI escape sequences.
 func truncateString(s string, maxWidth int) string {
-	w := 0
-	for i, r := range s {
-		w++
-		if w > maxWidth {
-			return s[:i]
-		}
-		_ = r
-	}
-	return s
+	return ansi.Truncate(s, maxWidth, "")
 }

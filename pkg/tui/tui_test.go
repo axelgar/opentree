@@ -3,9 +3,11 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 // ---------------------------------------------------------------------------
@@ -223,73 +226,8 @@ func TestDeleteConfirmation_ViewContainsConfirmHints(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Live agent output preview
+// 2. Terminal focus / pane
 // ---------------------------------------------------------------------------
-
-func TestCleanPreview_StripsANSIEscapes(t *testing.T) {
-	input := "\x1b[32mHello\x1b[0m World"
-	got := cleanPreview(input)
-	if strings.Contains(got, "\x1b") {
-		t.Errorf("cleanPreview() left ANSI codes: %q", got)
-	}
-	if !strings.Contains(got, "Hello") || !strings.Contains(got, "World") {
-		t.Errorf("cleanPreview() removed real content: %q", got)
-	}
-}
-
-func TestCleanPreview_KeepsLast5NonEmptyLines(t *testing.T) {
-	lines := []string{"line1", "line2", "line3", "line4", "line5", "line6", "line7"}
-	input := strings.Join(lines, "\n")
-
-	got := cleanPreview(input)
-	gotLines := strings.Split(got, "\n")
-
-	if len(gotLines) != 5 {
-		t.Errorf("cleanPreview() returned %d lines, want 5", len(gotLines))
-	}
-	if gotLines[0] != "line3" {
-		t.Errorf("first line = %q, want %q", gotLines[0], "line3")
-	}
-	if gotLines[4] != "line7" {
-		t.Errorf("last line = %q, want %q", gotLines[4], "line7")
-	}
-}
-
-func TestCleanPreview_FiltersBlankLines(t *testing.T) {
-	input := "real\n   \n\noutput\n\t\n"
-	got := cleanPreview(input)
-	gotLines := strings.Split(got, "\n")
-
-	for _, l := range gotLines {
-		if strings.TrimSpace(l) == "" {
-			t.Errorf("cleanPreview() kept a blank line: %q", l)
-		}
-	}
-}
-
-func TestCleanPreview_EmptyInputReturnsEmpty(t *testing.T) {
-	if got := cleanPreview(""); got != "" {
-		t.Errorf("cleanPreview(\"\") = %q, want empty string", got)
-	}
-}
-
-func TestCleanPreview_FewerThan5LinesReturnedAsIs(t *testing.T) {
-	input := "a\nb\nc"
-	got := cleanPreview(input)
-	if got != "a\nb\nc" {
-		t.Errorf("cleanPreview() = %q, want %q", got, "a\nb\nc")
-	}
-}
-
-func TestCleanPreview_TrailingSpacesTrimmed(t *testing.T) {
-	input := "line1   \nline2\t\t"
-	got := cleanPreview(input)
-	for _, l := range strings.Split(got, "\n") {
-		if l != strings.TrimRight(l, " \t") {
-			t.Errorf("line has trailing whitespace: %q", l)
-		}
-	}
-}
 
 func TestTerminalFocus_EnterFocusesTerminal(t *testing.T) {
 	m := newTestModel(testWS("ws1"))
@@ -300,14 +238,25 @@ func TestTerminalFocus_EnterFocusesTerminal(t *testing.T) {
 	}
 }
 
-func TestTerminalFocus_EscUnfocusesTerminal(t *testing.T) {
+func TestTerminalFocus_CtrlBracketUnfocusesTerminal(t *testing.T) {
+	m := newTestModel(testWS("ws1"))
+	m.terminalFocused = true
+
+	m, _ = applyUpdate(m, keyMsg("ctrl+]"))
+
+	if m.terminalFocused {
+		t.Error("expected terminalFocused=false after pressing ctrl+]")
+	}
+}
+
+func TestTerminalFocus_EscForwardedToTerminal(t *testing.T) {
 	m := newTestModel(testWS("ws1"))
 	m.terminalFocused = true
 
 	m, _ = applyUpdate(m, keyMsg("esc"))
 
-	if m.terminalFocused {
-		t.Error("expected terminalFocused=false after pressing esc")
+	if !m.terminalFocused {
+		t.Error("esc should NOT unfocus terminal (it's forwarded to the PTY)")
 	}
 }
 
@@ -333,13 +282,13 @@ func TestTerminalFocus_CursorDownStillWorks(t *testing.T) {
 	}
 }
 
-func TestTerminalTick_ReturnsCmd(t *testing.T) {
+func TestTerminalTick_ReturnsNilWhenNoTerminalRunning(t *testing.T) {
 	m := newTestModel(testWS("ws"))
 
 	_, cmd := applyUpdate(m, terminalTickMsg{})
 
-	if cmd == nil {
-		t.Error("expected non-nil cmd after terminalTickMsg")
+	if cmd != nil {
+		t.Error("expected nil cmd when no terminal is running")
 	}
 }
 
@@ -1344,5 +1293,137 @@ func TestAgentSelection_ViewShowsOverlay(t *testing.T) {
 	}
 	if !strings.Contains(view, "▶") {
 		t.Errorf("View() does not show selection indicator\ngot: %s", view)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mockTermPM — in-memory TerminalProcessManager for testing
+// ---------------------------------------------------------------------------
+
+// mockTermPM is a minimal stub that satisfies workspace.TerminalProcessManager.
+// Tests set fields (running, screen, etc.) to control the mock's behavior.
+type mockTermPM struct {
+	running bool
+	screen  string
+	written []byte
+}
+
+func (m *mockTermPM) CreateWindow(_, _, _ string, _ ...string) error { return nil }
+func (m *mockTermPM) CreateWindowSized(_, _, _ string, _, _ int, _ ...string) error {
+	m.running = true
+	return nil
+}
+func (m *mockTermPM) ListWindows() ([]workspace.Window, error)    { return nil, nil }
+func (m *mockTermPM) SelectWindow(_ string) error                  { return nil }
+func (m *mockTermPM) AttachWindow(_ string) error                  { return fmt.Errorf("not supported") }
+func (m *mockTermPM) AttachCmd(_ string) (*exec.Cmd, error)        { return nil, fmt.Errorf("not supported") }
+func (m *mockTermPM) KillWindow(_ string) error                    { return nil }
+func (m *mockTermPM) KillSession() error                           { return nil }
+func (m *mockTermPM) CapturePane(_ string, _ int) (string, error)  { return "", nil }
+func (m *mockTermPM) GetWindowActivity(_ string) (time.Time, error) { return time.Time{}, nil }
+func (m *mockTermPM) SendMessage(_, _ string) error                { return nil }
+func (m *mockTermPM) RenderScreen(_ string) (string, error)        { return m.screen, nil }
+func (m *mockTermPM) ResizeWindow(_ string, _, _ int) error        { return nil }
+func (m *mockTermPM) WriteInput(_ string, data []byte) error {
+	m.written = append(m.written, data...)
+	return nil
+}
+func (m *mockTermPM) IsRunning(_ string) bool { return m.running }
+func (m *mockTermPM) ScrollbackLines(_ string, _, _ int) ([]string, error) { return nil, nil }
+
+// ---------------------------------------------------------------------------
+// Terminal focus / key forwarding tests (require mockTermPM)
+// ---------------------------------------------------------------------------
+
+func TestTerminalFocus_KeyForwardedWhenRunning(t *testing.T) {
+	mock := &mockTermPM{running: true, screen: "hello"}
+	m := newTestModel(testWS("ws1"))
+	m.termPM = mock
+	m.terminalFocused = true
+	m.terminalRunning = true
+
+	m, _ = applyUpdate(m, keyMsg("a"))
+
+	if len(mock.written) == 0 {
+		t.Error("expected keypress to be forwarded to termPM.WriteInput")
+	}
+}
+
+func TestTerminalFocus_KeyBlockedWhenNotRunning(t *testing.T) {
+	mock := &mockTermPM{running: false}
+	m := newTestModel(testWS("ws1"))
+	m.termPM = mock
+	m.terminalFocused = true
+	m.terminalRunning = false
+
+	m, cmd := applyUpdate(m, keyMsg("a"))
+
+	if len(mock.written) > 0 {
+		t.Error("expected no keypress forwarded when terminal is not running")
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd when key is blocked for dead PTY")
+	}
+	_ = m
+}
+
+func TestTerminalFocus_ScrollOffsetSnapsToLiveOnInput(t *testing.T) {
+	mock := &mockTermPM{running: true}
+	m := newTestModel(testWS("ws1"))
+	m.termPM = mock
+	m.terminalFocused = true
+	m.terminalRunning = true
+	m.termScrollOffset = 10
+
+	m, _ = applyUpdate(m, keyMsg("a"))
+
+	if m.termScrollOffset != 0 {
+		t.Errorf("termScrollOffset = %d, want 0 (should snap to live view on input)", m.termScrollOffset)
+	}
+}
+
+func TestTerminalTick_SetsRunningFromTermPM(t *testing.T) {
+	mock := &mockTermPM{running: true}
+	m := newTestModel(testWS("ws1"))
+	m.termPM = mock
+	m.terminalFocused = true
+
+	m, cmd := applyUpdate(m, terminalTickMsg{})
+
+	if !m.terminalRunning {
+		t.Error("terminalRunning should be true when IsRunning returns true")
+	}
+	if cmd == nil {
+		t.Error("expected non-nil cmd (next tick) when terminal is focused")
+	}
+}
+
+func TestTerminalTick_StopsTickingWhenNotFocusedAndNotRunning(t *testing.T) {
+	mock := &mockTermPM{running: false}
+	m := newTestModel(testWS("ws1"))
+	m.termPM = mock
+	m.terminalFocused = false
+	m.terminalRunning = false
+
+	_, cmd := applyUpdate(m, terminalTickMsg{})
+
+	if cmd != nil {
+		t.Error("expected nil cmd when neither focused nor running")
+	}
+}
+
+func TestTerminalFocus_EnterStartsAgentViaTermPM(t *testing.T) {
+	mock := &mockTermPM{running: false}
+	m := newTestModel(testWS("ws1"))
+	m.termPM = mock
+	m.cfg.Agent.Command = "echo" // use a safe command so CreateWindowSized succeeds
+
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if !m.terminalFocused {
+		t.Error("expected terminalFocused=true after enter")
+	}
+	if !m.terminalRunning {
+		t.Error("expected terminalRunning=true after enter starts agent")
 	}
 }

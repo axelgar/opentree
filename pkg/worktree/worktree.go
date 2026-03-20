@@ -7,14 +7,28 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
+
+// diffCacheTTL is how long cached DiffStats results remain valid.
+const diffCacheTTL = 30 * time.Second
+
+type diffCacheEntry struct {
+	stat      string
+	files     []FileChange
+	timestamp time.Time
+}
 
 // Manager handles git worktree operations
 type Manager struct {
 	repoRoot string
 	baseDir  string
+
+	diffCacheMu sync.RWMutex
+	diffCache   map[string]diffCacheEntry
 }
 
 // New creates a new worktree manager with explicit repo root and base directory.
@@ -52,7 +66,7 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 	cmd := exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, baseBranch)
 	cmd.Dir = m.repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create git worktree: %w\nOutput: %s", err, output)
+		return fmt.Errorf("failed to create git worktree: %s", parseGitWorktreeError(branchName, string(output)))
 	}
 
 	return nil
@@ -289,11 +303,22 @@ func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]File
 // DiffStats returns both the diffstat string and per-file change stats in a
 // single call, computing git merge-base only once.
 // If baseBranch is empty, it defaults to "main".
+// Results are cached for 30 seconds to reduce git subprocess overhead.
 func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat string, files []FileChange, err error) {
 	base := "main"
 	if len(baseBranch) > 0 && baseBranch[0] != "" {
 		base = baseBranch[0]
 	}
+
+	cacheKey := branchName + ":" + base
+
+	// Check cache.
+	m.diffCacheMu.RLock()
+	if entry, ok := m.diffCache[cacheKey]; ok && time.Since(entry.timestamp) < diffCacheTTL {
+		m.diffCacheMu.RUnlock()
+		return entry.stat, entry.files, nil
+	}
+	m.diffCacheMu.RUnlock()
 
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
@@ -332,7 +357,28 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat strin
 			files[i].Uncommitted = true
 		}
 	}
+
+	// Store in cache.
+	m.diffCacheMu.Lock()
+	if m.diffCache == nil {
+		m.diffCache = make(map[string]diffCacheEntry)
+	}
+	m.diffCache[cacheKey] = diffCacheEntry{
+		stat:      stat,
+		files:     files,
+		timestamp: time.Now(),
+	}
+	m.diffCacheMu.Unlock()
+
 	return
+}
+
+// InvalidateDiffCache removes all cached DiffStats entries.
+// Call this when workspaces are created or deleted.
+func (m *Manager) InvalidateDiffCache() {
+	m.diffCacheMu.Lock()
+	m.diffCache = nil
+	m.diffCacheMu.Unlock()
 }
 
 // resolveBase finds the merge-base commit between branchName and the given base.
@@ -408,4 +454,33 @@ func parseNumstat(output string) []FileChange {
 		})
 	}
 	return files
+}
+
+// parseGitWorktreeError turns raw git stderr into a user-friendly message.
+func parseGitWorktreeError(branchName, output string) string {
+	out := strings.TrimSpace(output)
+
+	// "cannot lock ref 'refs/heads/feat': 'refs/heads/feat/native-terminal' exists"
+	// → branch "feat" conflicts with existing branch "feat/native-terminal"
+	if strings.Contains(out, "cannot lock ref") {
+		// Extract the conflicting ref from the output.
+		// Pattern: '<existing-ref>' exists; cannot create '<new-ref>'
+		if idx := strings.Index(out, "' exists"); idx > 0 {
+			// Walk back to find the opening quote.
+			start := strings.LastIndex(out[:idx], "'")
+			if start >= 0 {
+				conflicting := out[start+1 : idx]
+				conflicting = strings.TrimPrefix(conflicting, "refs/heads/")
+				return fmt.Sprintf("branch %q conflicts with existing branch %q — git cannot have both because they overlap in the ref hierarchy", branchName, conflicting)
+			}
+		}
+		return fmt.Sprintf("branch %q conflicts with an existing branch in git's ref hierarchy — choose a different name", branchName)
+	}
+
+	// "fatal: A branch named 'foo' already exists."
+	if strings.Contains(out, "already exists") {
+		return fmt.Sprintf("branch %q already exists — use a different name or check out the existing branch with 'opentree new -r'", branchName)
+	}
+
+	return out
 }

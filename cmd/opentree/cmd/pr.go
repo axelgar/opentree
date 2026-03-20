@@ -7,7 +7,6 @@ import (
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
-	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 var PrCmd = &cobra.Command{
@@ -30,7 +29,7 @@ var PrCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		svc, err := workspace.New(repoRoot, cfg)
+		svc, err := newService(repoRoot, cfg)
 		if err != nil {
 			return err
 		}
