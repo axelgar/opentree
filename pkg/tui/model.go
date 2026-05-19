@@ -39,6 +39,53 @@ const (
 
 var sortModeNames = []string{"name", "age", "activity", "PR"}
 
+// Per-mode state sub-structs. Active-mode booleans live on m.mode instead;
+// these structs hold only the data fields each mode reads or writes.
+
+type listState struct {
+	cursor      int
+	selected    map[string]bool
+	sortMode    int
+	filtering   bool // sub-state: filter prompt visible
+	filterQuery string
+}
+
+type createState struct {
+	step                   int
+	newBranchName          string
+	remoteBranches         []string
+	filteredBranches       []string
+	branchSuggestionCursor int
+}
+
+type deleteState struct {
+	target string // empty = batch delete using m.list.selected
+}
+
+type diffState struct {
+	content      string
+	scrollOffset int
+	wsName       string
+}
+
+type prState struct {
+	step        int // 0 = title, 1 = body
+	title       string
+	bodyPrefill string
+	wsName      string
+	branch      string
+	base        string
+	cancelled   bool // set when esc'd out of ModePRGenerating; suppresses late content msg
+}
+
+type agentSelectState struct {
+	cursor int
+}
+
+type errorLogState struct {
+	entries []string
+}
+
 // Model is the main Bubble Tea model for the opentree TUI.
 type Model struct {
 	svc         *workspace.Service
@@ -48,73 +95,38 @@ type Model struct {
 	cfg         *config.Config
 	repoRoot    string
 
+	// Active mode — single source of truth for the dispatcher.
+	mode Mode
+
+	width  int
+	height int
+
+	// Workspaces and async-refreshed data (shared across modes).
 	workspaces []WorkspaceItem
-	cursor     int
-	width      int
-	height     int
+	ciStatus   map[string]string // wsName -> CI status
 
-	// two-step create dialog
-	input            textinput.Model
-	creating         bool
-	issueMode        bool
-	remoteBranchMode bool
-	createStep       int
-	newBranchName    string
+	// Shared textinput widget; each mode borrows it via m.focusInput.
+	input textinput.Model
 
-	// remote branch suggestion list (used in remoteBranchMode)
-	remoteBranches         []string
-	filteredBranches       []string
-	branchSuggestionCursor int
+	// Per-mode state.
+	list     listState
+	create   createState
+	del      deleteState
+	diff     diffState
+	pr       prState
+	agentSel agentSelectState
+	errorLog errorLogState
 
-	// delete confirmation (single or batch)
-	deleting     bool
-	deleteTarget string // single target; empty means batch (use m.selected)
+	// Agent output preview (periodically refreshed).
+	agentPreview string
 
-	// in-flight operation feedback
+	// In-flight tracking for workspace creation/deletion.
 	workspaceCreating      bool
 	workspaceCreatingName  string
 	workspaceDeleting      bool
 	workspaceDeletingName  string
 	workspaceDeletingNames map[string]bool
 	spinnerFrame           int
-
-	// agent output preview
-	agentPreview string
-
-	// PR creation dialog
-	prCreating    bool
-	prGenerating  bool
-	prStep        int // 0 = title, 1 = body
-	prTitle       string
-	prBodyPrefill string
-	prWsName      string
-	prBranch      string
-	prBase        string
-
-	// CI status per workspace
-	ciStatus map[string]string // wsName -> "success"/"failure"/"pending"/""
-
-	// multi-select
-	selected map[string]bool
-
-	// sorting & filtering
-	sortMode    int
-	filtering   bool
-	filterQuery string
-
-	// diff view
-	diffViewing      bool
-	diffContent      string
-	diffScrollOffset int
-	diffWsName       string
-
-	// agent selection overlay
-	agentSelecting bool
-	agentCursor    int
-
-	// error log
-	errLog     []string
-	showErrLog bool
 
 	help help.Model
 	keys keyMap
@@ -208,13 +220,40 @@ func NewModel() (*Model, error) {
 		prMgr:                  gh,
 		cfg:                    cfg,
 		repoRoot:               repoRoot,
+		mode:                   ModeList,
 		input:                  ti,
 		help:                   help.New(),
 		keys:                   keys,
 		ciStatus:               make(map[string]string),
-		selected:               make(map[string]bool),
+		list:                   listState{selected: make(map[string]bool)},
 		workspaceDeletingNames: make(map[string]bool),
 	}, nil
+}
+
+// focusInput resets the shared textinput widget for a new mode/step.
+// Consolidates the placeholder/value/Focus dance used by every modal that
+// reuses m.input (Create, CreateFromIssue, CreateFromRemote, PRCreating).
+func (m *Model) focusInput(placeholder, value string) {
+	m.input.Placeholder = placeholder
+	m.input.SetValue(value)
+	m.input.Focus()
+}
+
+// resetToList exhaustively returns the model to ModeList, zeroing every
+// per-mode sub-struct so a stale flag from an aborted dialog never leaks
+// into the next session. Bug A fix: the errMsg handler used to clear only
+// some flags; calling this from any error-recovery path is now sufficient.
+// errorLog.entries are preserved so the user can still review past errors.
+func (m *Model) resetToList() {
+	m.mode = ModeList
+	m.list.filtering = false
+	m.create = createState{}
+	m.del = deleteState{}
+	m.diff = diffState{}
+	m.pr = prState{}
+	m.agentSel = agentSelectState{}
+	m.input.SetValue("")
+	m.input.Placeholder = "New branch name"
 }
 
 // Init starts the initial commands: load workspaces, periodic tickers.
