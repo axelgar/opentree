@@ -21,6 +21,7 @@ var PredefinedAgents = []PredefinedAgent{
 	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent", ConfigDir: ""},
 	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI", ConfigDir: ""},
 	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent", ConfigDir: "~/.gemini"},
+	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent", ConfigDir: "~/.pi"},
 }
 
 // FindAgent performs a case-insensitive lookup by Name or Command.
