@@ -6,80 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/axelgar/opentree/pkg/config"
-	"github.com/axelgar/opentree/pkg/state"
 )
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// newTestModel builds a Model with no external dependencies. Tests that only
-// exercise in-process logic (state transitions, View rendering, pure functions)
-// should use this instead of NewModel, which requires a real git repo and tmux.
-func newTestModel(workspaces ...WorkspaceItem) Model {
-	ti := textinput.New()
-	ti.Placeholder = "New branch name"
-	ti.CharLimit = 50
-	ti.Width = 30
-	return Model{
-		cfg:        config.Default(),
-		input:      ti,
-		help:       help.New(),
-		keys:       keys,
-		workspaces: workspaces,
-		width:      120,
-		height:     40,
-	}
-}
-
-func testWS(name string) WorkspaceItem {
-	return WorkspaceItem{
-		Workspace: &state.Workspace{
-			Name:       name,
-			Branch:     "feature/" + name,
-			BaseBranch: "main",
-		},
-		DiffStat: "2 files changed",
-	}
-}
-
-func testWSWithPR(name, prURL string) WorkspaceItem {
-	ws := testWS(name)
-	ws.PRURL = prURL
-	ws.PRStatus = "open"
-	return ws
-}
-
-func testWSWithWindow(name string) WorkspaceItem {
-	ws := testWS(name)
-	ws.WindowID = "@1"
-	return ws
-}
-
-// applyUpdate calls m.Update and casts the result back to Model.
-func applyUpdate(m Model, msg tea.Msg) (Model, tea.Cmd) {
-	newM, cmd := m.Update(msg)
-	return newM.(Model), cmd
-}
-
-func keyMsg(k string) tea.KeyMsg {
-	switch k {
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	case "ctrl+c":
-		return tea.KeyMsg{Type: tea.KeyCtrlC}
-	default:
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
-	}
-}
+// Test helpers (newTestModel, testWS*, applyUpdate, keyMsg) live in helpers_test.go.
 
 // ---------------------------------------------------------------------------
 // 1. Delete confirmation dialog
@@ -89,11 +18,11 @@ func TestDeleteConfirmation_XEntersConfirmMode(t *testing.T) {
 	m := newTestModel(testWS("alpha"))
 	m, _ = applyUpdate(m, keyMsg("x"))
 
-	if !m.deleting {
+	if m.mode != ModeDelete {
 		t.Error("expected deleting=true after pressing x")
 	}
-	if m.deleteTarget != "alpha" {
-		t.Errorf("deleteTarget = %q, want %q", m.deleteTarget, "alpha")
+	if m.del.target != "alpha" {
+		t.Errorf("deleteTarget = %q, want %q", m.del.target, "alpha")
 	}
 }
 
@@ -101,23 +30,23 @@ func TestDeleteConfirmation_XNoOpWhenNoWorkspaces(t *testing.T) {
 	m := newTestModel()
 	m, _ = applyUpdate(m, keyMsg("x"))
 
-	if m.deleting {
+	if m.mode == ModeDelete {
 		t.Error("expected deleting=false when workspace list is empty")
 	}
 }
 
 func TestDeleteConfirmation_YConfirmsAndResets(t *testing.T) {
 	m := newTestModel(testWS("beta"))
-	m.deleting = true
-	m.deleteTarget = "beta"
+	m.mode = ModeDelete
+	m.del.target = "beta"
 
 	m, cmd := applyUpdate(m, keyMsg("y"))
 
-	if m.deleting {
+	if m.mode == ModeDelete {
 		t.Error("expected deleting=false after confirming with y")
 	}
-	if m.deleteTarget != "" {
-		t.Errorf("deleteTarget = %q, want empty string", m.deleteTarget)
+	if m.del.target != "" {
+		t.Errorf("deleteTarget = %q, want empty string", m.del.target)
 	}
 	// cmd should be non-nil (deleteWorkspaceCmd returned)
 	if cmd == nil {
@@ -127,12 +56,12 @@ func TestDeleteConfirmation_YConfirmsAndResets(t *testing.T) {
 
 func TestDeleteConfirmation_UpperYConfirms(t *testing.T) {
 	m := newTestModel(testWS("beta"))
-	m.deleting = true
-	m.deleteTarget = "beta"
+	m.mode = ModeDelete
+	m.del.target = "beta"
 
 	m, cmd := applyUpdate(m, keyMsg("Y"))
 
-	if m.deleting {
+	if m.mode == ModeDelete {
 		t.Error("expected deleting=false after Y")
 	}
 	if cmd == nil {
@@ -142,16 +71,16 @@ func TestDeleteConfirmation_UpperYConfirms(t *testing.T) {
 
 func TestDeleteConfirmation_NAbortsDelete(t *testing.T) {
 	m := newTestModel(testWS("gamma"))
-	m.deleting = true
-	m.deleteTarget = "gamma"
+	m.mode = ModeDelete
+	m.del.target = "gamma"
 
 	m, cmd := applyUpdate(m, keyMsg("n"))
 
-	if m.deleting {
+	if m.mode == ModeDelete {
 		t.Error("expected deleting=false after n")
 	}
-	if m.deleteTarget != "" {
-		t.Errorf("deleteTarget = %q, want empty string after abort", m.deleteTarget)
+	if m.del.target != "" {
+		t.Errorf("deleteTarget = %q, want empty string after abort", m.del.target)
 	}
 	if cmd != nil {
 		t.Error("expected nil cmd after aborting delete")
@@ -160,16 +89,16 @@ func TestDeleteConfirmation_NAbortsDelete(t *testing.T) {
 
 func TestDeleteConfirmation_EscAbortsDelete(t *testing.T) {
 	m := newTestModel(testWS("delta"))
-	m.deleting = true
-	m.deleteTarget = "delta"
+	m.mode = ModeDelete
+	m.del.target = "delta"
 
 	m, cmd := applyUpdate(m, keyMsg("esc"))
 
-	if m.deleting {
+	if m.mode == ModeDelete {
 		t.Error("expected deleting=false after esc")
 	}
-	if m.deleteTarget != "" {
-		t.Errorf("deleteTarget = %q, want empty after esc", m.deleteTarget)
+	if m.del.target != "" {
+		t.Errorf("deleteTarget = %q, want empty after esc", m.del.target)
 	}
 	if cmd != nil {
 		t.Error("expected nil cmd after esc")
@@ -178,13 +107,13 @@ func TestDeleteConfirmation_EscAbortsDelete(t *testing.T) {
 
 func TestDeleteConfirmation_UnrelatedKeysIgnored(t *testing.T) {
 	m := newTestModel(testWS("epsilon"))
-	m.deleting = true
-	m.deleteTarget = "epsilon"
+	m.mode = ModeDelete
+	m.del.target = "epsilon"
 
 	m, cmd := applyUpdate(m, keyMsg("q"))
 
 	// q should not quit while in confirm mode
-	if !m.deleting {
+	if m.mode != ModeDelete {
 		t.Error("expected deleting to remain true when pressing q in confirm mode")
 	}
 	if cmd != nil {
@@ -194,8 +123,8 @@ func TestDeleteConfirmation_UnrelatedKeysIgnored(t *testing.T) {
 
 func TestDeleteConfirmation_ViewContainsWorkspaceName(t *testing.T) {
 	m := newTestModel(testWS("myfeature"))
-	m.deleting = true
-	m.deleteTarget = "myfeature"
+	m.mode = ModeDelete
+	m.del.target = "myfeature"
 
 	view := m.View()
 
@@ -209,8 +138,8 @@ func TestDeleteConfirmation_ViewContainsWorkspaceName(t *testing.T) {
 
 func TestDeleteConfirmation_ViewContainsConfirmHints(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.deleting = true
-	m.deleteTarget = "ws"
+	m.mode = ModeDelete
+	m.del.target = "ws"
 
 	view := m.View()
 
@@ -366,7 +295,7 @@ func TestAgentPreview_ViewHidesPanelWhenEmpty(t *testing.T) {
 
 func TestAgentPreview_CursorUpTriggersCapture(t *testing.T) {
 	m := newTestModel(testWS("ws1"), testWS("ws2"))
-	m.cursor = 1 // start at second item
+	m.list.cursor = 1 // start at second item
 
 	_, cmd := applyUpdate(m, keyMsg("k"))
 
@@ -377,7 +306,7 @@ func TestAgentPreview_CursorUpTriggersCapture(t *testing.T) {
 
 func TestAgentPreview_CursorDownTriggersCapture(t *testing.T) {
 	m := newTestModel(testWS("ws1"), testWS("ws2"))
-	m.cursor = 0 // start at first item
+	m.list.cursor = 0 // start at first item
 
 	_, cmd := applyUpdate(m, keyMsg("j"))
 
@@ -423,13 +352,13 @@ func TestAutoRefresh_RefreshTickReturnsNonNilCmd(t *testing.T) {
 
 func TestAutoRefresh_RefreshTickDoesNotChangeModelState(t *testing.T) {
 	m := newTestModel(testWS("a"), testWS("b"))
-	m.cursor = 1
+	m.list.cursor = 1
 
 	newM, _ := applyUpdate(m, refreshTickMsg{})
 
 	// State should be unchanged; only cmds are issued
-	if newM.cursor != 1 {
-		t.Errorf("cursor changed after refreshTickMsg: got %d, want 1", newM.cursor)
+	if newM.list.cursor != 1 {
+		t.Errorf("cursor changed after refreshTickMsg: got %d, want 1", newM.list.cursor)
 	}
 	if len(newM.workspaces) != 2 {
 		t.Errorf("workspaces changed after refreshTickMsg: got %d, want 2", len(newM.workspaces))
@@ -455,38 +384,38 @@ func TestCreateDialog_NKeyEntersStep1(t *testing.T) {
 	m := newTestModel()
 	m, _ = applyUpdate(m, keyMsg("n"))
 
-	if !m.creating {
+	if m.mode == ModeList {
 		t.Error("expected creating=true after pressing n")
 	}
-	if m.createStep != 0 {
-		t.Errorf("createStep = %d, want 0", m.createStep)
+	if m.create.step != 0 {
+		t.Errorf("createStep = %d, want 0", m.create.step)
 	}
 }
 
 func TestCreateDialog_Step1EnterAdvancesToStep2(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 0
+	m.mode = ModeCreate
+	m.create.step = 0
 	_ = m.input.Focus()
 	m.input.SetValue("feat/new")
 
 	m, _ = applyUpdate(m, keyMsg("enter"))
 
-	if !m.creating {
+	if m.mode == ModeList {
 		t.Error("expected creating=true after step 1 enter (should move to step 2)")
 	}
-	if m.createStep != 1 {
-		t.Errorf("createStep = %d, want 1 after step 1 enter", m.createStep)
+	if m.create.step != 1 {
+		t.Errorf("createStep = %d, want 1 after step 1 enter", m.create.step)
 	}
-	if m.newBranchName != "feat/new" {
-		t.Errorf("newBranchName = %q, want %q", m.newBranchName, "feat/new")
+	if m.create.newBranchName != "feat/new" {
+		t.Errorf("newBranchName = %q, want %q", m.create.newBranchName, "feat/new")
 	}
 }
 
 func TestCreateDialog_Step2PrefilledWithConfigDefault(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 0
+	m.mode = ModeCreate
+	m.create.step = 0
 	_ = m.input.Focus()
 	m.input.SetValue("my-feature")
 
@@ -501,22 +430,22 @@ func TestCreateDialog_Step2PrefilledWithConfigDefault(t *testing.T) {
 
 func TestCreateDialog_Step2EnterCreatesWorkspace(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 1
-	m.newBranchName = "feat/thing"
+	m.mode = ModeCreate
+	m.create.step = 1
+	m.create.newBranchName = "feat/thing"
 	_ = m.input.Focus()
 	m.input.SetValue("develop")
 
 	m, cmd := applyUpdate(m, keyMsg("enter"))
 
-	if m.creating {
+	if m.mode != ModeList {
 		t.Error("expected creating=false after step 2 enter")
 	}
-	if m.createStep != 0 {
-		t.Errorf("createStep = %d, want 0 after completion", m.createStep)
+	if m.create.step != 0 {
+		t.Errorf("createStep = %d, want 0 after completion", m.create.step)
 	}
-	if m.newBranchName != "" {
-		t.Errorf("newBranchName = %q, want empty after completion", m.newBranchName)
+	if m.create.newBranchName != "" {
+		t.Errorf("newBranchName = %q, want empty after completion", m.create.newBranchName)
 	}
 	if m.input.Value() != "" {
 		t.Errorf("input value = %q, want empty after completion", m.input.Value())
@@ -529,18 +458,18 @@ func TestCreateDialog_Step2EnterCreatesWorkspace(t *testing.T) {
 
 func TestCreateDialog_EmptyNameInStep1IsIgnored(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 0
+	m.mode = ModeCreate
+	m.create.step = 0
 	m.input.SetValue("")
 
 	m, cmd := applyUpdate(m, keyMsg("enter"))
 
 	// Should stay in step 1 and not advance
-	if !m.creating {
+	if m.mode == ModeList {
 		t.Error("expected creating=true when submitting empty name")
 	}
-	if m.createStep != 0 {
-		t.Errorf("createStep = %d, want 0 when name is empty", m.createStep)
+	if m.create.step != 0 {
+		t.Errorf("createStep = %d, want 0 when name is empty", m.create.step)
 	}
 	if cmd != nil {
 		t.Error("expected nil cmd when name is empty")
@@ -549,17 +478,17 @@ func TestCreateDialog_EmptyNameInStep1IsIgnored(t *testing.T) {
 
 func TestCreateDialog_EscCancelsAtStep1(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 0
+	m.mode = ModeCreate
+	m.create.step = 0
 	m.input.SetValue("partial-name")
 
 	m, cmd := applyUpdate(m, keyMsg("esc"))
 
-	if m.creating {
+	if m.mode != ModeList {
 		t.Error("expected creating=false after esc")
 	}
-	if m.createStep != 0 {
-		t.Errorf("createStep = %d, want 0 after esc", m.createStep)
+	if m.create.step != 0 {
+		t.Errorf("createStep = %d, want 0 after esc", m.create.step)
 	}
 	if m.input.Value() != "" {
 		t.Errorf("input value = %q, want empty after esc", m.input.Value())
@@ -571,21 +500,21 @@ func TestCreateDialog_EscCancelsAtStep1(t *testing.T) {
 
 func TestCreateDialog_EscCancelsAtStep2(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 1
-	m.newBranchName = "feat/foo"
+	m.mode = ModeCreate
+	m.create.step = 1
+	m.create.newBranchName = "feat/foo"
 	m.input.SetValue("develop")
 
 	m, cmd := applyUpdate(m, keyMsg("esc"))
 
-	if m.creating {
+	if m.mode != ModeList {
 		t.Error("expected creating=false after esc at step 2")
 	}
-	if m.createStep != 0 {
-		t.Errorf("createStep = %d, want 0 after esc at step 2", m.createStep)
+	if m.create.step != 0 {
+		t.Errorf("createStep = %d, want 0 after esc at step 2", m.create.step)
 	}
-	if m.newBranchName != "" {
-		t.Errorf("newBranchName = %q, want empty after esc at step 2", m.newBranchName)
+	if m.create.newBranchName != "" {
+		t.Errorf("newBranchName = %q, want empty after esc at step 2", m.create.newBranchName)
 	}
 	if cmd != nil {
 		t.Error("expected nil cmd after esc")
@@ -594,8 +523,8 @@ func TestCreateDialog_EscCancelsAtStep2(t *testing.T) {
 
 func TestCreateDialog_ViewShowsStep1Label(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 0
+	m.mode = ModeCreate
+	m.create.step = 0
 
 	view := m.View()
 
@@ -609,9 +538,9 @@ func TestCreateDialog_ViewShowsStep1Label(t *testing.T) {
 
 func TestCreateDialog_ViewShowsStep2LabelWithBranchName(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.createStep = 1
-	m.newBranchName = "feat/awesome"
+	m.mode = ModeCreate
+	m.create.step = 1
+	m.create.newBranchName = "feat/awesome"
 
 	view := m.View()
 
@@ -626,7 +555,7 @@ func TestCreateDialog_ViewShowsStep2LabelWithBranchName(t *testing.T) {
 
 func TestCreateDialog_ViewShowsCreateHeader(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
+	m.mode = ModeCreate
 
 	view := m.View()
 
@@ -747,33 +676,33 @@ func TestCursorNavigation_WrapsAtBounds(t *testing.T) {
 
 	// Up at top should stay at 0
 	m, _ = applyUpdate(m, keyMsg("k"))
-	if m.cursor != 0 {
-		t.Errorf("cursor = %d, want 0 (can't go above 0)", m.cursor)
+	if m.list.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 (can't go above 0)", m.list.cursor)
 	}
 
 	// Move to bottom
 	m, _ = applyUpdate(m, keyMsg("j"))
 	m, _ = applyUpdate(m, keyMsg("j"))
-	if m.cursor != 2 {
-		t.Errorf("cursor = %d, want 2", m.cursor)
+	if m.list.cursor != 2 {
+		t.Errorf("cursor = %d, want 2", m.list.cursor)
 	}
 
 	// Down at bottom should stay at 2
 	m, _ = applyUpdate(m, keyMsg("j"))
-	if m.cursor != 2 {
-		t.Errorf("cursor = %d, want 2 (can't go past last item)", m.cursor)
+	if m.list.cursor != 2 {
+		t.Errorf("cursor = %d, want 2 (can't go past last item)", m.list.cursor)
 	}
 }
 
 func TestCursorClamped_OnLoadedWorkspacesShrink(t *testing.T) {
 	m := newTestModel(testWS("a"), testWS("b"), testWS("c"))
-	m.cursor = 2
+	m.list.cursor = 2
 
 	// Simulate list shrinking to 1 item
 	m, _ = applyUpdate(m, loadedWorkspacesMsg{workspaces: []WorkspaceItem{testWS("a")}})
 
-	if m.cursor != 0 {
-		t.Errorf("cursor = %d, want 0 after list shrinks below cursor", m.cursor)
+	if m.list.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 after list shrinks below cursor", m.list.cursor)
 	}
 }
 
@@ -799,13 +728,6 @@ func TestErrorMessage_DisplayedAndCleared(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Issue badge tests
 // ---------------------------------------------------------------------------
-
-func testWSWithIssue(name string, issueNumber int, issueTitle string) WorkspaceItem {
-	ws := testWS(name)
-	ws.IssueNumber = issueNumber
-	ws.IssueTitle = issueTitle
-	return ws
-}
 
 func TestView_IssueBadge_Shown(t *testing.T) {
 	m := newTestModel(testWSWithIssue("my-issue-branch", 42, "Add dark mode"))
@@ -894,13 +816,13 @@ func TestDiffScrolling_JScrollsDown(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
-	m.diffViewing = true
-	m.diffContent = strings.Join(lines, "\n")
-	m.diffScrollOffset = 0
+	m.mode = ModeDiff
+	m.diff.content = strings.Join(lines, "\n")
+	m.diff.scrollOffset = 0
 
 	m, _ = applyUpdate(m, keyMsg("j"))
-	if m.diffScrollOffset != 1 {
-		t.Errorf("diffScrollOffset = %d, want 1", m.diffScrollOffset)
+	if m.diff.scrollOffset != 1 {
+		t.Errorf("diffScrollOffset = %d, want 1", m.diff.scrollOffset)
 	}
 }
 
@@ -910,13 +832,13 @@ func TestDiffScrolling_KScrollsUp(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
-	m.diffViewing = true
-	m.diffContent = strings.Join(lines, "\n")
-	m.diffScrollOffset = 5
+	m.mode = ModeDiff
+	m.diff.content = strings.Join(lines, "\n")
+	m.diff.scrollOffset = 5
 
 	m, _ = applyUpdate(m, keyMsg("k"))
-	if m.diffScrollOffset != 4 {
-		t.Errorf("diffScrollOffset = %d, want 4", m.diffScrollOffset)
+	if m.diff.scrollOffset != 4 {
+		t.Errorf("diffScrollOffset = %d, want 4", m.diff.scrollOffset)
 	}
 }
 
@@ -926,26 +848,26 @@ func TestDiffScrolling_JClampsAtMaxScroll(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
-	m.diffViewing = true
-	m.diffContent = strings.Join(lines, "\n")
+	m.mode = ModeDiff
+	m.diff.content = strings.Join(lines, "\n")
 	// maxScroll = 50 - 32 = 18
-	m.diffScrollOffset = 18
+	m.diff.scrollOffset = 18
 
 	m, _ = applyUpdate(m, keyMsg("j"))
-	if m.diffScrollOffset != 18 {
-		t.Errorf("diffScrollOffset = %d after j at maxScroll, want 18 (clamped)", m.diffScrollOffset)
+	if m.diff.scrollOffset != 18 {
+		t.Errorf("diffScrollOffset = %d after j at maxScroll, want 18 (clamped)", m.diff.scrollOffset)
 	}
 }
 
 func TestDiffScrolling_KClampsAtZero(t *testing.T) {
 	m := newTestModel()
-	m.diffViewing = true
-	m.diffContent = "line 1\nline 2\nline 3"
-	m.diffScrollOffset = 0
+	m.mode = ModeDiff
+	m.diff.content = "line 1\nline 2\nline 3"
+	m.diff.scrollOffset = 0
 
 	m, _ = applyUpdate(m, keyMsg("k"))
-	if m.diffScrollOffset != 0 {
-		t.Errorf("diffScrollOffset = %d after k at 0, want 0 (clamped)", m.diffScrollOffset)
+	if m.diff.scrollOffset != 0 {
+		t.Errorf("diffScrollOffset = %d after k at 0, want 0 (clamped)", m.diff.scrollOffset)
 	}
 }
 
@@ -1095,35 +1017,34 @@ func TestRemoteBranchMode_RKeyEntersMode(t *testing.T) {
 	m := newTestModel()
 	m, _ = applyUpdate(m, keyMsg("r"))
 
-	if !m.creating {
+	if m.mode == ModeList {
 		t.Error("expected creating=true after pressing r")
 	}
-	if !m.remoteBranchMode {
+	if m.mode != ModeCreateFromRemote {
 		t.Error("expected remoteBranchMode=true after pressing r")
 	}
 }
 
 func TestRemoteBranchMode_EscResets(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.remoteBranches = []string{"feat/a", "feat/b"}
-	m.filteredBranches = []string{"feat/a", "feat/b"}
-	m.branchSuggestionCursor = 1
+	m.mode = ModeCreateFromRemote
+	m.create.remoteBranches = []string{"feat/a", "feat/b"}
+	m.create.filteredBranches = []string{"feat/a", "feat/b"}
+	m.create.branchSuggestionCursor = 1
 
 	m, cmd := applyUpdate(m, keyMsg("esc"))
 
-	if m.creating {
+	if m.mode != ModeList {
 		t.Error("expected creating=false after esc")
 	}
-	if m.remoteBranchMode {
+	if m.mode == ModeCreateFromRemote {
 		t.Error("expected remoteBranchMode=false after esc")
 	}
-	if len(m.remoteBranches) != 0 {
-		t.Errorf("remoteBranches should be cleared after esc, got %v", m.remoteBranches)
+	if len(m.create.remoteBranches) != 0 {
+		t.Errorf("remoteBranches should be cleared after esc, got %v", m.create.remoteBranches)
 	}
-	if m.branchSuggestionCursor != 0 {
-		t.Errorf("branchSuggestionCursor = %d, want 0 after esc", m.branchSuggestionCursor)
+	if m.create.branchSuggestionCursor != 0 {
+		t.Errorf("branchSuggestionCursor = %d, want 0 after esc", m.create.branchSuggestionCursor)
 	}
 	if cmd != nil {
 		t.Error("expected nil cmd after esc")
@@ -1132,91 +1053,85 @@ func TestRemoteBranchMode_EscResets(t *testing.T) {
 
 func TestRemoteBranchMode_DownMovescursor(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.filteredBranches = []string{"feat/a", "feat/b", "feat/c"}
-	m.branchSuggestionCursor = 0
+	m.mode = ModeCreateFromRemote
+	m.create.filteredBranches = []string{"feat/a", "feat/b", "feat/c"}
+	m.create.branchSuggestionCursor = 0
 
 	m, _ = applyUpdate(m, keyMsg("down"))
 
-	if m.branchSuggestionCursor != 1 {
-		t.Errorf("branchSuggestionCursor = %d, want 1 after down", m.branchSuggestionCursor)
+	if m.create.branchSuggestionCursor != 1 {
+		t.Errorf("branchSuggestionCursor = %d, want 1 after down", m.create.branchSuggestionCursor)
 	}
 }
 
 func TestRemoteBranchMode_UpMovescursor(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.filteredBranches = []string{"feat/a", "feat/b"}
-	m.branchSuggestionCursor = 1
+	m.mode = ModeCreateFromRemote
+	m.create.filteredBranches = []string{"feat/a", "feat/b"}
+	m.create.branchSuggestionCursor = 1
 
 	m, _ = applyUpdate(m, keyMsg("up"))
 
-	if m.branchSuggestionCursor != 0 {
-		t.Errorf("branchSuggestionCursor = %d, want 0 after up", m.branchSuggestionCursor)
+	if m.create.branchSuggestionCursor != 0 {
+		t.Errorf("branchSuggestionCursor = %d, want 0 after up", m.create.branchSuggestionCursor)
 	}
 }
 
 func TestRemoteBranchMode_UpClampsAtZero(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.filteredBranches = []string{"feat/a", "feat/b"}
-	m.branchSuggestionCursor = 0
+	m.mode = ModeCreateFromRemote
+	m.create.filteredBranches = []string{"feat/a", "feat/b"}
+	m.create.branchSuggestionCursor = 0
 
 	m, _ = applyUpdate(m, keyMsg("up"))
 
-	if m.branchSuggestionCursor != 0 {
-		t.Errorf("branchSuggestionCursor = %d, want 0 (clamped)", m.branchSuggestionCursor)
+	if m.create.branchSuggestionCursor != 0 {
+		t.Errorf("branchSuggestionCursor = %d, want 0 (clamped)", m.create.branchSuggestionCursor)
 	}
 }
 
 func TestRemoteBranchMode_DownClampsAtEnd(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.filteredBranches = []string{"feat/a", "feat/b"}
-	m.branchSuggestionCursor = 1
+	m.mode = ModeCreateFromRemote
+	m.create.filteredBranches = []string{"feat/a", "feat/b"}
+	m.create.branchSuggestionCursor = 1
 
 	m, _ = applyUpdate(m, keyMsg("down"))
 
-	if m.branchSuggestionCursor != 1 {
-		t.Errorf("branchSuggestionCursor = %d, want 1 (clamped at end)", m.branchSuggestionCursor)
+	if m.create.branchSuggestionCursor != 1 {
+		t.Errorf("branchSuggestionCursor = %d, want 1 (clamped at end)", m.create.branchSuggestionCursor)
 	}
 }
 
 func TestRemoteBranchMode_TabSelectsSuggestion(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.remoteBranches = []string{"feat/alpha", "feat/beta"}
-	m.filteredBranches = []string{"feat/alpha", "feat/beta"}
-	m.branchSuggestionCursor = 1
+	m.mode = ModeCreateFromRemote
+	m.create.remoteBranches = []string{"feat/alpha", "feat/beta"}
+	m.create.filteredBranches = []string{"feat/alpha", "feat/beta"}
+	m.create.branchSuggestionCursor = 1
 
 	m, _ = applyUpdate(m, keyMsg("tab"))
 
 	if m.input.Value() != "feat/beta" {
 		t.Errorf("input value after tab = %q, want %q", m.input.Value(), "feat/beta")
 	}
-	if m.branchSuggestionCursor != 0 {
-		t.Errorf("cursor should reset to 0 after tab, got %d", m.branchSuggestionCursor)
+	if m.create.branchSuggestionCursor != 0 {
+		t.Errorf("cursor should reset to 0 after tab, got %d", m.create.branchSuggestionCursor)
 	}
 }
 
 func TestRemoteBranchMode_EnterWithHighlightedSuggestion(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.filteredBranches = []string{"feat/alpha", "feat/beta"}
-	m.branchSuggestionCursor = 1
+	m.mode = ModeCreateFromRemote
+	m.create.filteredBranches = []string{"feat/alpha", "feat/beta"}
+	m.create.branchSuggestionCursor = 1
 
 	m, cmd := applyUpdate(m, keyMsg("enter"))
 
-	if m.creating {
+	if m.mode != ModeList {
 		t.Error("expected creating=false after enter")
 	}
-	if m.remoteBranchMode {
+	if m.mode == ModeCreateFromRemote {
 		t.Error("expected remoteBranchMode=false after enter")
 	}
 	if cmd == nil {
@@ -1226,23 +1141,21 @@ func TestRemoteBranchMode_EnterWithHighlightedSuggestion(t *testing.T) {
 
 func TestRemoteBranchMode_LoadedBranchesMsgSetsFields(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
+	m.mode = ModeCreateFromRemote
 
 	m, _ = applyUpdate(m, remoteBranchesLoadedMsg{branches: []string{"feat/a", "feat/b"}})
 
-	if len(m.remoteBranches) != 2 {
-		t.Errorf("remoteBranches len = %d, want 2", len(m.remoteBranches))
+	if len(m.create.remoteBranches) != 2 {
+		t.Errorf("remoteBranches len = %d, want 2", len(m.create.remoteBranches))
 	}
-	if len(m.filteredBranches) != 2 {
-		t.Errorf("filteredBranches len = %d, want 2", len(m.filteredBranches))
+	if len(m.create.filteredBranches) != 2 {
+		t.Errorf("filteredBranches len = %d, want 2", len(m.create.filteredBranches))
 	}
 }
 
 func TestRemoteBranchMode_ViewShowsTitle(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
+	m.mode = ModeCreateFromRemote
 
 	view := m.View()
 
@@ -1253,10 +1166,9 @@ func TestRemoteBranchMode_ViewShowsTitle(t *testing.T) {
 
 func TestRemoteBranchMode_ViewShowsSuggestions(t *testing.T) {
 	m := newTestModel()
-	m.creating = true
-	m.remoteBranchMode = true
-	m.filteredBranches = []string{"feat/alpha", "feat/beta"}
-	m.branchSuggestionCursor = 0
+	m.mode = ModeCreateFromRemote
+	m.create.filteredBranches = []string{"feat/alpha", "feat/beta"}
+	m.create.branchSuggestionCursor = 0
 
 	view := m.View()
 
@@ -1315,7 +1227,7 @@ func TestAgentSelection_AKeyEntersMode(t *testing.T) {
 	m := newTestModel(testWS("ws"))
 	m, _ = applyUpdate(m, keyMsg("A"))
 
-	if !m.agentSelecting {
+	if m.mode != ModeAgentSelect {
 		t.Error("expected agentSelecting=true after pressing A")
 	}
 }
@@ -1325,67 +1237,67 @@ func TestAgentSelection_CursorStartsOnActiveAgent(t *testing.T) {
 	// Default agent is opencode (index 0)
 	m, _ = applyUpdate(m, keyMsg("A"))
 
-	if m.agentCursor != 0 {
-		t.Errorf("agentCursor = %d, want 0 (OpenCode is default)", m.agentCursor)
+	if m.agentSel.cursor != 0 {
+		t.Errorf("agentCursor = %d, want 0 (OpenCode is default)", m.agentSel.cursor)
 	}
 }
 
 func TestAgentSelection_DownMovescursor(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 0
+	m.mode = ModeAgentSelect
+	m.agentSel.cursor = 0
 
 	m, _ = applyUpdate(m, keyMsg("j"))
 
-	if m.agentCursor != 1 {
-		t.Errorf("agentCursor = %d, want 1 after down", m.agentCursor)
+	if m.agentSel.cursor != 1 {
+		t.Errorf("agentCursor = %d, want 1 after down", m.agentSel.cursor)
 	}
 }
 
 func TestAgentSelection_UpMovescursor(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 1
+	m.mode = ModeAgentSelect
+	m.agentSel.cursor = 1
 
 	m, _ = applyUpdate(m, keyMsg("k"))
 
-	if m.agentCursor != 0 {
-		t.Errorf("agentCursor = %d, want 0 after up", m.agentCursor)
+	if m.agentSel.cursor != 0 {
+		t.Errorf("agentCursor = %d, want 0 after up", m.agentSel.cursor)
 	}
 }
 
 func TestAgentSelection_UpClampsAtZero(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 0
+	m.mode = ModeAgentSelect
+	m.agentSel.cursor = 0
 
 	m, _ = applyUpdate(m, keyMsg("k"))
 
-	if m.agentCursor != 0 {
-		t.Errorf("agentCursor = %d, want 0 (clamped)", m.agentCursor)
+	if m.agentSel.cursor != 0 {
+		t.Errorf("agentCursor = %d, want 0 (clamped)", m.agentSel.cursor)
 	}
 }
 
 func TestAgentSelection_EscCancels(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 2
+	m.mode = ModeAgentSelect
+	m.agentSel.cursor = 2
 
 	m, _ = applyUpdate(m, keyMsg("esc"))
 
-	if m.agentSelecting {
+	if m.mode == ModeAgentSelect {
 		t.Error("expected agentSelecting=false after esc")
 	}
 }
 
 func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 1 // Claude Code
+	m.mode = ModeAgentSelect
+	m.agentSel.cursor = 1 // Claude Code
 
 	m, _ = applyUpdate(m, keyMsg("enter"))
 
-	if m.agentSelecting {
+	if m.mode == ModeAgentSelect {
 		t.Error("expected agentSelecting=false after enter")
 	}
 	if m.cfg.Agent.Command != "claude" {
@@ -1395,8 +1307,8 @@ func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
 
 func TestAgentSelection_ViewShowsOverlay(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 0
+	m.mode = ModeAgentSelect
+	m.agentSel.cursor = 0
 
 	view := m.View()
 

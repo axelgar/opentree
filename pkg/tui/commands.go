@@ -232,10 +232,10 @@ func (m Model) capturePreviewCmd() tea.Cmd {
 		return nil
 	}
 	visible := m.visibleWorkspaces()
-	if len(visible) == 0 || m.cursor >= len(visible) {
+	if len(visible) == 0 || m.list.cursor >= len(visible) {
 		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
 	}
-	ws := visible[m.cursor]
+	ws := visible[m.list.cursor]
 	if ws.WindowID == "" {
 		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
 	}
