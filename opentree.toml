@@ -1,5 +1,5 @@
 [agent]
-command = 'pi'
+command = 'claude'
 args = []
 
 [worktree]

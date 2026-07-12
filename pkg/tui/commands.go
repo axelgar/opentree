@@ -221,7 +221,7 @@ func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bo
 	return func() tea.Msg {
 		status, err := m.prMgr.GetBranchAndPRStatus(branch, repoDir, wasPushed)
 		if err != nil {
-			return errMsg{err}
+			return statusCheckErrMsg{err: err}
 		}
 		return branchStatusCheckedMsg{wsName: wsName, status: status}
 	}

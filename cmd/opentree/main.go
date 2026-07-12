@@ -17,6 +17,8 @@ var rootCmd = &cobra.Command{
 Each session runs in an isolated git worktree, managed via tmux.
 
 Think Conductor, but for the terminal.`,
+	SilenceErrors: true, // main prints the error once itself
+	SilenceUsage:  true,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Launch TUI dashboard
 		if err := tui.Run(); err != nil {

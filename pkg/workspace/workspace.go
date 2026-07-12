@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/axelgar/opentree/pkg/config"
@@ -224,20 +225,34 @@ func (s *Service) DeleteMultiple(names []string) error {
 	return nil
 }
 
-// HasChanges returns the diff between a workspace branch and its base branch.
-// Returns empty string if there are no changes. Used by CLI for delete confirmation.
+// HasChanges reports work that would be lost by deleting the workspace:
+// commits ahead of the base branch, tracked modifications, and untracked files.
+// Returns an empty string when the worktree is clean or absent from disk.
+// A missing state entry does not skip the check — the worktree itself is inspected.
 func (s *Service) HasChanges(name string) (string, error) {
-	ws, err := s.state.GetWorkspace(name)
+	if _, err := os.Stat(s.WorktreePath(name)); err != nil {
+		return "", nil // no worktree on disk — nothing to lose
+	}
+
+	baseBranch := "main"
+	if ws, err := s.state.GetWorkspace(name); err == nil && ws.BaseBranch != "" {
+		baseBranch = ws.BaseBranch
+	}
+
+	// Merge-base → working tree: catches commits ahead plus tracked modifications.
+	diff, err := s.worktrees.Diff(name, baseBranch)
 	if err != nil {
-		return "", nil // No state entry means we can't check
+		return "", err
 	}
-
-	baseBranch := ws.BaseBranch
-	if baseBranch == "" {
-		baseBranch = "main"
+	untracked, err := s.worktrees.UntrackedFiles(name)
+	if err != nil {
+		return "", err
 	}
-
-	return s.worktrees.DiffBranches(name, baseBranch)
+	if len(untracked) > 0 {
+		diff = strings.TrimRight(diff, "\n") + fmt.Sprintf("\n %d untracked file(s):\n   %s\n",
+			len(untracked), strings.Join(untracked, "\n   "))
+	}
+	return diff, nil
 }
 
 // SendReviewsToAgent fetches all PR review comments for the workspace's branch
@@ -250,7 +265,9 @@ func (s *Service) SendReviewsToAgent(name string) (int, error) {
 	}
 
 	comments, err := s.github.FetchPRReviews(ws.Branch)
-	if err != nil {
+	// Partial results (top-level reviews fetched, inline-thread fetch failed)
+	// are still sent rather than discarded.
+	if err != nil && len(comments) == 0 {
 		return 0, fmt.Errorf("failed to fetch PR reviews: %w", err)
 	}
 	if len(comments) == 0 {

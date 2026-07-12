@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -9,6 +10,32 @@ import (
 // isGHAvailable returns true when the gh CLI is found on PATH.
 func isGHAvailable() bool {
 	return exec.Command("gh", "--version").Run() == nil
+}
+
+// skipIfGHUnauthenticated skips when gh is installed but not authenticated,
+// since PR-view failures other than "no PR" now surface as real errors.
+func skipIfGHUnauthenticated(t *testing.T) {
+	t.Helper()
+	if isGHAvailable() && exec.Command("gh", "auth", "status").Run() != nil {
+		t.Skip("gh installed but not authenticated")
+	}
+}
+
+func TestPRViewError_NoPRVsRealFailure(t *testing.T) {
+	exitErr := errors.New("exit status 1")
+	if err := prViewError([]byte(`no pull requests found for branch "x"`), exitErr); err != nil {
+		t.Errorf("prViewError() on 'no pull requests found' = %v, want nil", err)
+	}
+	if err := prViewError([]byte("no git remotes found"), exitErr); err != nil {
+		t.Errorf("prViewError() on 'no git remotes found' = %v, want nil", err)
+	}
+	err := prViewError([]byte("HTTP 401: Bad credentials"), exitErr)
+	if err == nil {
+		t.Fatal("prViewError() on auth failure = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "Bad credentials") {
+		t.Errorf("prViewError() = %q, want to contain the gh output", err.Error())
+	}
 }
 
 func TestNew(t *testing.T) {
@@ -142,6 +169,7 @@ func TestGetBranchAndPRStatus_LSRemoteError(t *testing.T) {
 	if exec.Command("git", "--version").Run() != nil {
 		t.Skip("git not available")
 	}
+	skipIfGHUnauthenticated(t)
 	dir := t.TempDir()
 	initCmd := exec.Command("git", "init")
 	initCmd.Dir = dir
@@ -334,6 +362,7 @@ func TestFetchPRReviews_NoBranchPR(t *testing.T) {
 	if !isGHAvailable() {
 		t.Skip("gh not available, skipping integration test")
 	}
+	skipIfGHUnauthenticated(t)
 	pm := New()
 	// A branch name that certainly has no PR.
 	comments, err := pm.FetchPRReviews("this-branch-certainly-has-no-pr-xyz-99999")
@@ -352,8 +381,9 @@ func TestGetPRStatus_NoPRForBranch(t *testing.T) {
 	if !isGHAvailable() {
 		t.Skip("gh not available, skipping integration test")
 	}
+	skipIfGHUnauthenticated(t)
 	pm := New()
-	// A branch name unlikely to have a PR; errors are swallowed and return "".
+	// A branch name unlikely to have a PR; "no PR" is a normal, non-error result.
 	url, err := pm.GetPRStatus("this-branch-certainly-has-no-pr-xyz-12345")
 	if err != nil {
 		t.Fatalf("GetPRStatus() unexpected error: %v", err)
@@ -366,6 +396,7 @@ func TestGetFullPRStatus_NoPRForBranch(t *testing.T) {
 	if !isGHAvailable() {
 		t.Skip("gh not available, skipping integration test")
 	}
+	skipIfGHUnauthenticated(t)
 	pm := New()
 	url, state, err := pm.GetFullPRStatus("this-branch-certainly-has-no-pr-xyz-12345")
 	if err != nil {

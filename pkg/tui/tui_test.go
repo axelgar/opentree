@@ -68,6 +68,22 @@ func applyUpdate(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return newM.(Model), cmd
 }
 
+func TestStatusCheckErrMsg_LogsOnceWithoutBanner(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, statusCheckErrMsg{err: fmt.Errorf("gh pr view failed: auth")})
+	m, _ = applyUpdate(m, statusCheckErrMsg{err: fmt.Errorf("gh pr view failed: auth")})
+
+	if m.err != nil {
+		t.Errorf("statusCheckErrMsg must not set the transient error banner, got %v", m.err)
+	}
+	if len(m.errLog) != 1 {
+		t.Fatalf("errLog len = %d, want 1 (consecutive duplicates collapse)", len(m.errLog))
+	}
+	if !strings.Contains(m.errLog[0], "auth") {
+		t.Errorf("errLog[0] = %q, want to contain the failure reason", m.errLog[0])
+	}
+}
+
 func keyMsg(k string) tea.KeyMsg {
 	switch k {
 	case "enter":

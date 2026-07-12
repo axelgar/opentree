@@ -95,10 +95,20 @@ func (s *Store) loadFromDisk() error {
 		}
 		return err
 	}
-	return json.Unmarshal(data, s.state)
+	// Unmarshal into a fresh State and swap: unmarshalling into the existing
+	// map would merge keys and resurrect workspaces deleted by other processes.
+	fresh := &State{}
+	if err := json.Unmarshal(data, fresh); err != nil {
+		return err
+	}
+	if fresh.Workspaces == nil { // e.g. `{}` or `"workspaces": null` on disk
+		fresh.Workspaces = make(map[string]*Workspace)
+	}
+	s.state = fresh
+	return nil
 }
 
-// atomicWrite marshals and writes state to disk via temp file + rename.
+// atomicWrite marshals and writes state to disk via temp file + fsync + rename.
 // Caller must hold an exclusive lock.
 func (s *Store) atomicWrite() error {
 	dir := filepath.Dir(s.filePath)
@@ -112,7 +122,19 @@ func (s *Store) atomicWrite() error {
 	}
 
 	tmpPath := s.filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create temp state file: %w", err)
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync() // flush to disk so the rename never installs a truncated file
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to write temp state file: %w", err)
 	}
 	if err := os.Rename(tmpPath, s.filePath); err != nil {
@@ -124,14 +146,17 @@ func (s *Store) atomicWrite() error {
 
 // mutate performs an atomic read-modify-write cycle under an exclusive lock.
 // It reloads the latest state from disk, applies the mutation, then writes back.
-func (s *Store) mutate(fn func()) error {
+// If fn returns an error, nothing is written.
+func (s *Store) mutate(fn func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.withFileLock(syscall.LOCK_EX, func() error {
 		if err := s.loadFromDisk(); err != nil {
 			return err
 		}
-		fn()
+		if err := fn(); err != nil {
+			return err
+		}
 		return s.atomicWrite()
 	})
 }
@@ -145,23 +170,16 @@ func (s *Store) Load() error {
 	})
 }
 
-// Save writes the state to disk under an exclusive lock using atomic write.
-func (s *Store) Save() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.withFileLock(syscall.LOCK_EX, func() error {
-		return s.atomicWrite()
-	})
-}
-
 // AddWorkspace adds a new workspace to the state
 func (s *Store) AddWorkspace(ws *Workspace) error {
-	return s.mutate(func() {
-		s.state.Workspaces[ws.Name] = ws
+	return s.mutate(func() error {
+		cp := *ws // store a copy so later caller mutations don't alias the map
+		s.state.Workspaces[ws.Name] = &cp
+		return nil
 	})
 }
 
-// GetWorkspace retrieves a workspace by name
+// GetWorkspace retrieves a copy of a workspace by name
 func (s *Store) GetWorkspace(name string) (*Workspace, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -169,39 +187,38 @@ func (s *Store) GetWorkspace(name string) (*Workspace, error) {
 	if !ok {
 		return nil, fmt.Errorf("workspace not found: %s", name)
 	}
-	return ws, nil
+	cp := *ws
+	return &cp, nil
 }
 
 // UpdateWorkspace updates an existing workspace
 func (s *Store) UpdateWorkspace(ws *Workspace) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.withFileLock(syscall.LOCK_EX, func() error {
-		if err := s.loadFromDisk(); err != nil {
-			return err
-		}
+	return s.mutate(func() error {
 		if _, ok := s.state.Workspaces[ws.Name]; !ok {
 			return fmt.Errorf("workspace not found: %s", ws.Name)
 		}
-		s.state.Workspaces[ws.Name] = ws
-		return s.atomicWrite()
+		cp := *ws
+		s.state.Workspaces[ws.Name] = &cp
+		return nil
 	})
 }
 
 // DeleteWorkspace removes a workspace from the state
 func (s *Store) DeleteWorkspace(name string) error {
-	return s.mutate(func() {
+	return s.mutate(func() error {
 		delete(s.state.Workspaces, name)
+		return nil
 	})
 }
 
-// ListWorkspaces returns all workspaces
+// ListWorkspaces returns copies of all workspaces
 func (s *Store) ListWorkspaces() []*Workspace {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	workspaces := make([]*Workspace, 0, len(s.state.Workspaces))
 	for _, ws := range s.state.Workspaces {
-		workspaces = append(workspaces, ws)
+		cp := *ws
+		workspaces = append(workspaces, &cp)
 	}
 	return workspaces
 }

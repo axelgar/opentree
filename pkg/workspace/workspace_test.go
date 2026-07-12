@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -137,6 +138,41 @@ func TestSendReviewsToAgent_FetchError(t *testing.T) {
 	}
 	if !strings.Contains(sendErr.Error(), fetchErr.Error()) {
 		t.Errorf("error = %q, want to contain wrapped error %q", sendErr.Error(), fetchErr.Error())
+	}
+}
+
+func TestSendReviewsToAgent_PartialFetchStillSendsComments(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	ghMock := &mockGitHubManager{
+		fetchReviewsResult: []github.ReviewComment{{Author: "alice", Body: "Fix this.", State: "CHANGES_REQUESTED"}},
+		fetchReviewsErr:    errors.New("graphql query failed"),
+	}
+
+	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("my-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	count, err := svc.SendReviewsToAgent(ws.Name)
+	if err != nil {
+		t.Fatalf("SendReviewsToAgent() with partial fetch: unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (partial results still sent)", count)
+	}
+	if len(mock.sendMessageCalls) != 1 {
+		t.Errorf("SendMessage calls = %d, want 1", len(mock.sendMessageCalls))
 	}
 }
 
@@ -514,6 +550,46 @@ func TestHasChanges_NoWorkspace(t *testing.T) {
 	}
 	if diff != "" {
 		t.Errorf("HasChanges on nonexistent: expected empty diff, got %q", diff)
+	}
+}
+
+func TestHasChanges_ReportsUntrackedFiles(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	ws, err := svc.Create("guard-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	diff, err := svc.HasChanges("guard-branch")
+	if err != nil {
+		t.Fatalf("HasChanges on clean worktree: %v", err)
+	}
+	if strings.TrimSpace(diff) != "" {
+		t.Errorf("HasChanges on clean worktree = %q, want empty", diff)
+	}
+
+	if err := os.WriteFile(filepath.Join(ws.WorktreeDir, "untracked.txt"), []byte("unsaved work"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	diff, err = svc.HasChanges("guard-branch")
+	if err != nil {
+		t.Fatalf("HasChanges with untracked file: %v", err)
+	}
+	if !strings.Contains(diff, "untracked.txt") {
+		t.Errorf("HasChanges = %q, want mention of untracked.txt", diff)
 	}
 }
 

@@ -362,6 +362,26 @@ func (m *Manager) DiffUncommitted(branchName string) (string, error) {
 	return string(output), nil
 }
 
+// UntrackedFiles returns the paths of untracked (non-ignored) files in a worktree.
+func (m *Manager) UntrackedFiles(branchName string) ([]string, error) {
+	dirName := gitutil.SanitizeBranchName(branchName)
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	cmd := exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list untracked files: %w", err)
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
 // uncommittedFiles returns a set of file names that have uncommitted changes in a worktree.
 func uncommittedFiles(worktreePath string) (map[string]bool, error) {
 	cmd := exec.Command("git", "diff", "--name-only", "HEAD")

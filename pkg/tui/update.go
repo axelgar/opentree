@@ -589,6 +589,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ciStatus[msg.wsName] = msg.status.CIStatus
 		}
 
+	case statusCheckErrMsg:
+		// Background status polls fail as a group (auth expired, offline, ...);
+		// log without the transient banner so a 30s tick can't flash N errors.
+		m.appendErrLog(fmt.Sprintf("PR status check: %v", msg.err))
+
 	case attachFinishedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -670,6 +675,10 @@ func (m *Model) transientErrCmd(msg string) tea.Cmd {
 func (m *Model) appendErrLog(msg string) {
 	ts := time.Now().Format("15:04:05")
 	entry := fmt.Sprintf("[%s] %s", ts, msg)
+	if n := len(m.errLog); n > 0 && strings.HasSuffix(m.errLog[n-1], "] "+msg) {
+		m.errLog[n-1] = entry // refresh timestamp instead of flooding the log
+		return
+	}
 	m.errLog = append(m.errLog, entry)
 	if len(m.errLog) > 20 {
 		m.errLog = m.errLog[len(m.errLog)-20:]

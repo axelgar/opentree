@@ -293,6 +293,80 @@ func TestConcurrentWriters(t *testing.T) {
 	}
 }
 
+func TestMutate_DoesNotResurrectDeletedWorkspace(t *testing.T) {
+	dir := t.TempDir()
+
+	s1, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	if err := s1.AddWorkspace(sampleWorkspace("keep")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+	if err := s1.AddWorkspace(sampleWorkspace("victim")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	// Second store instance (a separate process in real usage) loads both.
+	s2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	// Process 1 deletes "victim" on disk.
+	if err := s1.DeleteWorkspace("victim"); err != nil {
+		t.Fatalf("DeleteWorkspace() failed: %v", err)
+	}
+
+	// Process 2 performs an unrelated mutation; it must not write "victim" back.
+	if err := s2.AddWorkspace(sampleWorkspace("extra")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	final, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	if _, err := final.GetWorkspace("victim"); err == nil {
+		t.Error("deleted workspace was resurrected by a concurrent store's write")
+	}
+	for _, name := range []string{"keep", "extra"} {
+		if _, err := final.GetWorkspace(name); err != nil {
+			t.Errorf("GetWorkspace(%q) failed: %v", name, err)
+		}
+	}
+}
+
+func TestGetWorkspace_And_List_ReturnCopies(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.AddWorkspace(sampleWorkspace("iso")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	got, err := store.GetWorkspace("iso")
+	if err != nil {
+		t.Fatalf("GetWorkspace() failed: %v", err)
+	}
+	got.Status = "mutated"
+
+	again, err := store.GetWorkspace("iso")
+	if err != nil {
+		t.Fatalf("GetWorkspace() failed: %v", err)
+	}
+	if again.Status == "mutated" {
+		t.Error("GetWorkspace() returned a live pointer into the store")
+	}
+
+	store.ListWorkspaces()[0].Status = "mutated-via-list"
+	again, err = store.GetWorkspace("iso")
+	if err != nil {
+		t.Fatalf("GetWorkspace() failed: %v", err)
+	}
+	if again.Status == "mutated-via-list" {
+		t.Error("ListWorkspaces() returned live pointers into the store")
+	}
+}
+
 func TestAtomicWrite_NoPartialReads(t *testing.T) {
 	dir := t.TempDir()
 	store, err := New(dir)

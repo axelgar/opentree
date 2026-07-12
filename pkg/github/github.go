@@ -53,15 +53,10 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,reviews")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// gh exits 4 when the resource (PR) is not found; also guard on output text
-		// for older gh versions that may use exit code 1 with a message.
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 4 {
-			return nil, nil
+		if pErr := prViewError(output, err); pErr != nil {
+			return nil, pErr
 		}
-		if strings.Contains(string(output), "no pull requests found") {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("gh pr view failed: %w", err)
+		return nil, nil // branch has no PR
 	}
 
 	var prData struct {
@@ -361,6 +356,17 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 	return prURL, nil
 }
 
+// prViewError interprets a failed `gh pr view` invocation. A branch with no
+// PR, or a repo with no GitHub remote, is a normal condition and yields nil;
+// anything else (auth expired, offline, ...) is a real error.
+func prViewError(output []byte, err error) error {
+	out := string(output)
+	if strings.Contains(out, "no pull requests found") || strings.Contains(out, "no git remotes") {
+		return nil
+	}
+	return fmt.Errorf("gh pr view failed: %w\nOutput: %s", err, strings.TrimSpace(out))
+}
+
 // GetPRStatus checks if a PR exists for the given branch
 func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 	if !pm.IsInstalled() {
@@ -370,7 +376,7 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", nil // No PR exists
+		return "", prViewError(output, err)
 	}
 
 	return strings.TrimSpace(string(output)), nil
@@ -386,7 +392,7 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", "", nil // No PR exists
+		return "", "", prViewError(output, err)
 	}
 
 	parts := strings.SplitN(strings.TrimSpace(string(output)), "\t", 2)
@@ -406,7 +412,7 @@ func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "statusCheckRollup")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", nil
+		return "", prViewError(output, err)
 	}
 	var result struct {
 		StatusCheckRollup []struct {
@@ -475,10 +481,13 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 		return status, nil
 	}
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
+	if repoDir != "" {
+		cmd.Dir = repoDir
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// No PR found for this branch — not an error.
-		return status, nil
+		// Partial ls-remote status is still returned alongside any real error.
+		return status, prViewError(output, err)
 	}
 	var raw struct {
 		URL               string `json:"url"`

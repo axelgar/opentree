@@ -34,11 +34,13 @@ var DeleteCmd = &cobra.Command{
 			return err
 		}
 
-		// Check for uncommitted changes and prompt user
+		// Check for work that would be lost and prompt user
 		diff, err := svc.HasChanges(branchName)
 		if err != nil {
-			fmt.Printf("Warning: failed to check diff: %v\n", err)
-		} else if strings.TrimSpace(diff) != "" {
+			fmt.Printf("Warning: failed to check for changes: %v\n", err)
+			diff = "(could not verify — the worktree may contain unsaved work)"
+		}
+		if strings.TrimSpace(diff) != "" {
 			fmt.Printf("\nChanges detected in '%s':\n", branchName)
 			fmt.Println(diff)
 			fmt.Printf("\nThis will delete the worktree and branch '%s'. Continue? [y/N]: ", branchName)

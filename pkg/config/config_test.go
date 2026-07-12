@@ -32,6 +32,7 @@ func TestDefault(t *testing.T) {
 }
 
 func TestLoad_NonExistentFile_ReturnsDefaults(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent.toml"))
 	if err != nil {
 		t.Fatalf("Load() with non-existent file failed: %v", err)
@@ -92,6 +93,7 @@ auto_push = true
 }
 
 func TestLoad_PartialTOML_MergesWithDefaults(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	toml := `
 [agent]
 command = "override"

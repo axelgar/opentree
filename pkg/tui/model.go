@@ -158,6 +158,7 @@ type branchStatusCheckedMsg struct {
 	wsName string
 	status github.BranchStatus
 }
+type statusCheckErrMsg struct{ err error }
 type refreshTickMsg struct{}
 type previewTickMsg struct{}
 type spinnerTickMsg struct{}
