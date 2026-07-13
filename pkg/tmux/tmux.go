@@ -51,16 +51,31 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 	// so that tools like claude and opencode don't hit the default macOS limit.
 	fullCmd := command
 	if len(args) > 0 {
-		fullCmd = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
+		quoted := make([]string, len(args))
+		for i, a := range args {
+			quoted[i] = shellQuote(a)
+		}
+		fullCmd = command + " " + strings.Join(quoted, " ")
 	}
 	fullCmd = fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", fullCmd)
 
-	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", sessionName, windowName), fullCmd, "Enter")
+	target := fmt.Sprintf("%s:%s", sessionName, windowName)
+	// -l types the command line literally so tmux never interprets it as key names.
+	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", target, "--", fullCmd)
 	if output, err := sendCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to send command to window: %w\nOutput: %s", err, output)
 	}
+	enterCmd := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	if output, err := enterCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
+	}
 
 	return nil
+}
+
+// shellQuote single-quotes s for safe inclusion in a POSIX shell command line.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ListWindows returns all windows in the opentree session
@@ -221,14 +236,26 @@ func (c *Controller) KillWindow(name string) error {
 }
 
 // SendMessage sends a text message to a tmux window as if typed by the user,
-// followed by Enter. This is used to deliver instructions to a running agent.
+// followed by Enter. The text is delivered through a tmux paste buffer with
+// bracketed paste so multi-line payloads and words that look like tmux key
+// names ("Enter", "C-c", ...) arrive literally instead of being interpreted.
 func (c *Controller) SendMessage(name, text string) error {
 	sessionName := c.getSessionName()
 	windowName := c.sanitizeWindowName(name)
 	target := fmt.Sprintf("%s:%s", sessionName, windowName)
-	cmd := exec.Command("tmux", "send-keys", "-t", target, text, "Enter")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send message to window: %w\nOutput: %s", err, output)
+
+	load := exec.Command("tmux", "load-buffer", "-b", "opentree-msg", "-")
+	load.Stdin = strings.NewReader(text)
+	if output, err := load.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to load message buffer: %w\nOutput: %s", err, output)
+	}
+	paste := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", "opentree-msg", "-t", target)
+	if output, err := paste.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to paste message to window: %w\nOutput: %s", err, output)
+	}
+	enter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	if output, err := enter.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
 	}
 	return nil
 }

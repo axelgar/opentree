@@ -26,8 +26,8 @@ func TestDefault(t *testing.T) {
 	if cfg.Tmux.SessionPrefix != "opentree" {
 		t.Errorf("Tmux.SessionPrefix = %q, want %q", cfg.Tmux.SessionPrefix, "opentree")
 	}
-	if cfg.GitHub.AutoPush == nil || *cfg.GitHub.AutoPush != false {
-		t.Errorf("GitHub.AutoPush = %v, want false", cfg.GitHub.AutoPush)
+	if cfg.GitHub.AutoPush == nil || *cfg.GitHub.AutoPush != true {
+		t.Errorf("GitHub.AutoPush = %v, want true", cfg.GitHub.AutoPush)
 	}
 }
 
@@ -201,21 +201,6 @@ func TestAgentConfig_Validate_ValidBinary(t *testing.T) {
 	a := AgentConfig{Command: "go"}
 	if err := a.Validate(); err != nil {
 		t.Fatalf("Validate() with valid binary failed: %v", err)
-	}
-}
-
-func TestAgentConfig_CommandLine_NoArgs(t *testing.T) {
-	a := AgentConfig{Command: "opencode"}
-	if got := a.CommandLine(); got != "opencode" {
-		t.Errorf("CommandLine() = %q, want %q", got, "opencode")
-	}
-}
-
-func TestAgentConfig_CommandLine_WithArgs(t *testing.T) {
-	a := AgentConfig{Command: "claude", Args: []string{"--flag", "value"}}
-	want := "claude --flag value"
-	if got := a.CommandLine(); got != want {
-		t.Errorf("CommandLine() = %q, want %q", got, want)
 	}
 }
 

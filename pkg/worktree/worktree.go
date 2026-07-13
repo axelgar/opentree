@@ -49,7 +49,7 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 	}
 
 	// Create git worktree
-	cmd := exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, baseBranch)
+	cmd := exec.Command("git", "worktree", "add", "-b", branchName, "--", worktreePath, baseBranch)
 	cmd.Dir = m.repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create git worktree: %w\nOutput: %s", err, output)
@@ -83,11 +83,11 @@ func (m *Manager) CreateFromRemote(branchName string) error {
 	}
 
 	// Try to create worktree tracking the remote branch (creates local branch)
-	cmd := exec.Command("git", "worktree", "add", "--track", "-b", branchName, worktreePath, "origin/"+branchName)
+	cmd := exec.Command("git", "worktree", "add", "--track", "-b", branchName, "--", worktreePath, "origin/"+branchName)
 	cmd.Dir = m.repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// Local branch may already exist; fall back to checking it out directly
-		cmd2 := exec.Command("git", "worktree", "add", worktreePath, branchName)
+		cmd2 := exec.Command("git", "worktree", "add", "--", worktreePath, branchName)
 		cmd2.Dir = m.repoRoot
 		if output2, err2 := cmd2.CombinedOutput(); err2 != nil {
 			return fmt.Errorf("failed to create git worktree: %w\nOutput: %s\nFallback output: %s", err, output, output2)
@@ -123,13 +123,37 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 
 	// Delete branch if requested
 	if deleteBranch {
-		cmd = exec.Command("git", "branch", "-D", branchName)
+		cmd = exec.Command("git", "branch", "-D", "--", branchName)
 		cmd.Dir = m.repoRoot
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to delete branch: %w\nOutput: %s", err, output)
 		}
 	}
 
+	return nil
+}
+
+// Push pushes a worktree's branch to origin, setting the upstream.
+func (m *Manager) Push(branchName string) error {
+	dirName := gitutil.SanitizeBranchName(branchName)
+	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	cmd := exec.Command("git", "push", "-u", "origin", "HEAD")
+	cmd.Dir = worktreePath
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to push branch: %w\nOutput: %s", err, output)
+	}
+	return nil
+}
+
+// Prune removes stale git worktree metadata (registered worktrees whose
+// directories no longer exist on disk).
+func (m *Manager) Prune() error {
+	cmd := exec.Command("git", "worktree", "prune")
+	cmd.Dir = m.repoRoot
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to prune worktrees: %w\nOutput: %s", err, output)
+	}
 	return nil
 }
 
@@ -249,41 +273,6 @@ type FileChange struct {
 	Added       int
 	Removed     int
 	Uncommitted bool // true if the file has uncommitted changes
-}
-
-// DiffFileStats returns per-file change stats for a worktree vs its base branch.
-// Includes both committed and uncommitted changes, with each file marked accordingly.
-// If baseBranch is empty, it defaults to "main".
-func (m *Manager) DiffFileStats(branchName string, baseBranch ...string) ([]FileChange, error) {
-	base := "main"
-	if len(baseBranch) > 0 && baseBranch[0] != "" {
-		base = baseBranch[0]
-	}
-
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
-
-	baseCommit := m.resolveBase(branchName, base, worktreePath)
-	cmd := exec.Command("git", "diff", "--numstat", baseCommit)
-	cmd.Dir = worktreePath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file stats: %w", err)
-	}
-
-	files := parseNumstat(string(output))
-
-	uncommitted, err := uncommittedFiles(worktreePath)
-	if err != nil {
-		return nil, err
-	}
-	for i := range files {
-		if uncommitted[files[i].FileName] {
-			files[i].Uncommitted = true
-		}
-	}
-
-	return files, nil
 }
 
 // DiffStats returns both the diffstat string and per-file change stats in a

@@ -12,9 +12,9 @@ import (
 var AgentsCmd = &cobra.Command{
 	Use:   "agents",
 	Short: "Manage predefined coding agents",
-	Long: `View and select from predefined coding agents.
+	Long: fmt.Sprintf(`View and select from predefined coding agents.
 
-Available agents: OpenCode, Claude Code, Codex, GitHub Copilot, Gemini CLI.`,
+Available agents: %s.`, strings.Join(config.AgentNames(), ", ")),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},

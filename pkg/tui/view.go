@@ -246,6 +246,12 @@ func (m Model) View() string {
 		s.WriteString("\n\n")
 	}
 
+	// Success notice (transient)
+	if m.notice != "" {
+		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(m.notice))
+		s.WriteString("\n\n")
+	}
+
 	visible := m.visibleWorkspaces()
 
 	// Workspace list

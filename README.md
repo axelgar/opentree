@@ -213,7 +213,7 @@ args = []                     # Additional arguments
 session_prefix = "opentree"   # Prefix for the tmux session name
 
 [github]
-auto_push = false             # Auto-push branch before creating PR
+auto_push = true              # Push branch before creating a PR (set false to push manually)
 ```
 
 ### Using Different Agents
@@ -224,12 +224,6 @@ To use a different coding agent instead of OpenCode:
 [agent]
 command = "claude"            # Or "aider", "cursor", etc.
 args = ["--some-flag"]
-```
-
-Or override per workspace:
-
-```bash
-OPENTREE_AGENT_COMMAND="claude" opentree new feat/my-feature
 ```
 
 ## How It Works

@@ -16,6 +16,9 @@ var NewCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
+		if err := gitutil.ValidateBranchName(branchName); err != nil {
+			return err
+		}
 		fromRemote, _ := cmd.Flags().GetBool("remote")
 
 		// Load config

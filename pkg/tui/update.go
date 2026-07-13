@@ -281,6 +281,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Normal mode
 		visible := m.visibleWorkspaces()
 		switch {
+		case msg.String() == "esc" && m.filterQuery != "":
+			m.filterQuery = ""
+			m.cursor = 0
+			return m, m.capturePreviewCmd()
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Up):
@@ -628,9 +632,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reviewsSentMsg:
 		if msg.count == 0 {
-			m.err = fmt.Errorf("no review comments found for %q", msg.wsName)
-			m.appendErrLog(m.err.Error())
+			return m, m.transientErrCmd(fmt.Sprintf("no review comments found for %q", msg.wsName))
 		}
+		m.notice = fmt.Sprintf("sent %d review comment(s) to %s", msg.count, msg.wsName)
+		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{}
+		})
+
+	case clearNoticeMsg:
+		m.notice = ""
 	}
 
 	return m, cmd

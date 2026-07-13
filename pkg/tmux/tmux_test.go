@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNew(t *testing.T) {
@@ -380,6 +381,65 @@ func TestCapturePane(t *testing.T) {
 
 	if output == "" {
 		t.Error("CapturePane() returned empty output")
+	}
+}
+
+func TestSendMessage_MultilineArrivesIntact(t *testing.T) {
+	if !isTmuxAvailable() {
+		t.Skip("tmux not available, skipping integration test")
+	}
+
+	ctrl := New("test-opentree-sendmsg")
+	sessionName := ctrl.getSessionName()
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	windowName := "test-sendmsg"
+	if err := ctrl.CreateWindow(windowName, "/tmp", "cat"); err != nil {
+		t.Fatalf("CreateWindow() failed: %v", err)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	time.Sleep(500 * time.Millisecond) // let the shell start cat
+
+	msg := "line one\nline two\nEnter"
+	if err := ctrl.SendMessage(windowName, msg); err != nil {
+		t.Fatalf("SendMessage() failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	output, err := ctrl.CapturePane(windowName, 20)
+	if err != nil {
+		t.Fatalf("CapturePane() failed: %v", err)
+	}
+	for _, want := range []string{"line one", "line two", "Enter"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("pane output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestCreateWindow_QuotesArgs(t *testing.T) {
+	if !isTmuxAvailable() {
+		t.Skip("tmux not available, skipping integration test")
+	}
+
+	ctrl := New("test-opentree-quotes")
+	sessionName := ctrl.getSessionName()
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	if err := ctrl.CreateWindow("test-quotes", "/tmp", "printf", "%s\n", "two words"); err != nil {
+		t.Fatalf("CreateWindow() failed: %v", err)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	time.Sleep(500 * time.Millisecond)
+
+	output, err := ctrl.CapturePane("test-quotes", 10)
+	if err != nil {
+		t.Fatalf("CapturePane() failed: %v", err)
+	}
+	if !strings.Contains(output, "two words") {
+		t.Errorf("pane output missing %q (args not shell-quoted?):\n%s", "two words", output)
 	}
 }
 

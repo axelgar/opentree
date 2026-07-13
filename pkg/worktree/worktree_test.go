@@ -523,37 +523,30 @@ func TestDiffUncommitted_OnlyUncommittedChanges(t *testing.T) {
 	}
 }
 
-func TestDiffFileStats_MarksUncommittedFiles(t *testing.T) {
-	_, branch, m := initWorktreeRepo(t)
+func TestPush(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
 
-	files, err := m.DiffFileStats(branch)
+	localDir := initRepoWithRemote(t, "feat/seed")
+	m := New(localDir, ".opentree")
+
+	// A brand-new branch that origin doesn't know about yet.
+	if err := m.Create("feat/push-me", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.Push("feat/push-me"); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	cmd := exec.Command("git", "ls-remote", "--heads", "origin", "feat/push-me")
+	cmd.Dir = localDir
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("DiffFileStats: %v", err)
+		t.Fatalf("ls-remote: %v\n%s", err, out)
 	}
-
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d", len(files))
-	}
-
-	fileMap := make(map[string]FileChange)
-	for _, f := range files {
-		fileMap[f.FileName] = f
-	}
-
-	committed, ok := fileMap["done.txt"]
-	if !ok {
-		t.Fatal("done.txt not in DiffFileStats results")
-	}
-	if committed.Uncommitted {
-		t.Error("done.txt should NOT be marked as Uncommitted")
-	}
-
-	uncommitted, ok := fileMap["wip.txt"]
-	if !ok {
-		t.Fatal("wip.txt not in DiffFileStats results")
-	}
-	if !uncommitted.Uncommitted {
-		t.Error("wip.txt should be marked as Uncommitted")
+	if strings.TrimSpace(string(out)) == "" {
+		t.Error("branch not found on origin after Push()")
 	}
 }
 

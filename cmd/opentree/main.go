@@ -40,6 +40,7 @@ func init() {
 	rootCmd.AddCommand(cmd.ConfigCmd)
 	rootCmd.AddCommand(cmd.AgentsCmd)
 	rootCmd.AddCommand(cmd.ReviewCmd)
+	rootCmd.AddCommand(cmd.PruneCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {

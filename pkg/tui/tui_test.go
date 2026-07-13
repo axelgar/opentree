@@ -68,6 +68,51 @@ func applyUpdate(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return newM.(Model), cmd
 }
 
+func TestEscClearsFilterInNormalMode(t *testing.T) {
+	m := newTestModel(testWS("alpha"), testWS("beta"))
+	m.filterQuery = "alp"
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.filterQuery != "" {
+		t.Errorf("filterQuery = %q after esc, want empty", m.filterQuery)
+	}
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d after esc, want 0", m.cursor)
+	}
+}
+
+func TestReviewsSentMsg_Feedback(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+
+	// count == 0 → transient error that auto-clears.
+	m, cmd := applyUpdate(m, reviewsSentMsg{wsName: "alpha", count: 0})
+	if m.err == nil {
+		t.Error("expected error banner for zero review comments")
+	}
+	if cmd == nil {
+		t.Error("expected auto-clear command for zero-count error")
+	}
+
+	// count > 0 → transient success notice.
+	m.err = nil
+	m, cmd = applyUpdate(m, reviewsSentMsg{wsName: "alpha", count: 3})
+	if m.err != nil {
+		t.Errorf("unexpected error banner: %v", m.err)
+	}
+	if !strings.Contains(m.notice, "3 review comment") {
+		t.Errorf("notice = %q, want mention of 3 review comments", m.notice)
+	}
+	if cmd == nil {
+		t.Error("expected auto-clear command for the notice")
+	}
+
+	m, _ = applyUpdate(m, clearNoticeMsg{})
+	if m.notice != "" {
+		t.Errorf("notice = %q after clearNoticeMsg, want empty", m.notice)
+	}
+}
+
 func TestStatusCheckErrMsg_LogsOnceWithoutBanner(t *testing.T) {
 	m := newTestModel()
 	m, _ = applyUpdate(m, statusCheckErrMsg{err: fmt.Errorf("gh pr view failed: auth")})

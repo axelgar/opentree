@@ -10,4 +10,4 @@ default_base = 'main'
 session_prefix = 'opentree'
 
 [github]
-auto_push = false
+auto_push = true

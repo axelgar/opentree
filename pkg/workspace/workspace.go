@@ -293,10 +293,47 @@ func (s *Service) CreatePR(name, title, body string) (string, error) {
 		return "", fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
 	}
 
+	if s.cfg.GitHub.AutoPush != nil && *s.cfg.GitHub.AutoPush {
+		if err := s.worktrees.Push(ws.Branch); err != nil {
+			return "", fmt.Errorf("failed to push branch: %w", err)
+		}
+	}
+
 	prURL, err := s.github.CreatePR(ws.Branch, ws.BaseBranch, title, body)
 	if err != nil {
 		return "", fmt.Errorf("failed to create PR: %w", err)
 	}
 
+	// Best-effort: the 30s status poll self-corrects BranchPushed from
+	// ls-remote, so a failed state write must not fail a created PR.
+	ws.BranchPushed = true
+	_ = s.state.UpdateWorkspace(ws)
+
 	return prURL, nil
+}
+
+// Prune removes state entries (and their tmux windows) for workspaces whose
+// worktree directory no longer exists on disk, and clears git's stale
+// worktree metadata. Branches are deliberately left intact.
+func (s *Service) Prune() ([]string, error) {
+	if err := s.worktrees.Prune(); err != nil {
+		return nil, err
+	}
+
+	var pruned []string
+	for _, ws := range s.state.ListWorkspaces() {
+		dir := ws.WorktreeDir
+		if dir == "" {
+			dir = s.WorktreePath(ws.Name)
+		}
+		if _, err := os.Stat(dir); err == nil {
+			continue
+		}
+		_ = s.process.KillWindow(ws.Name)
+		if err := s.state.DeleteWorkspace(ws.Name); err != nil {
+			return pruned, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
+		}
+		pruned = append(pruned, ws.Name)
+	}
+	return pruned, nil
 }

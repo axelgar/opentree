@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -33,14 +32,6 @@ func (a AgentConfig) Validate() error {
 		return fmt.Errorf("agent command %q not found on PATH: %w", a.Command, err)
 	}
 	return nil
-}
-
-// CommandLine returns the full command string (command + args) for shell execution.
-func (a AgentConfig) CommandLine() string {
-	if len(a.Args) == 0 {
-		return a.Command
-	}
-	return a.Command + " " + strings.Join(a.Args, " ")
 }
 
 // WorktreeConfig configures git worktree behavior
@@ -93,7 +84,7 @@ func Default() *Config {
 			SessionPrefix: "opentree",
 		},
 		GitHub: GitHubConfig{
-			AutoPush: boolPtr(false),
+			AutoPush: boolPtr(true),
 		},
 	}
 }

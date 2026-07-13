@@ -102,6 +102,9 @@ type Model struct {
 	filtering   bool
 	filterQuery string
 
+	// transient success notice (e.g. "sent N review comments")
+	notice string
+
 	// diff view
 	diffViewing      bool
 	diffContent      string
@@ -141,6 +144,7 @@ type createdWorkspaceMsg struct {
 type deletedWorkspaceMsg struct{}
 type errMsg struct{ err error }
 type clearErrorMsg struct{}
+type clearNoticeMsg struct{}
 type attachFinishedMsg struct{ err error }
 type prStatusTickMsg struct{}
 type prCreatedMsg struct{ wsName, prURL string }

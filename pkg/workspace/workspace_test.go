@@ -63,6 +63,7 @@ type sendMessageCall struct {
 type mockGitHubManager struct {
 	fetchReviewsResult []github.ReviewComment
 	fetchReviewsErr    error
+	createPRResult     string
 }
 
 func (m *mockGitHubManager) IsInstalled() bool { return true }
@@ -70,6 +71,9 @@ func (m *mockGitHubManager) GetIssue(number int) (*github.Issue, error) {
 	return nil, errors.New("not implemented")
 }
 func (m *mockGitHubManager) CreatePR(branch, baseBranch, title, body string) (string, error) {
+	if m.createPRResult != "" {
+		return m.createPRResult, nil
+	}
 	return "", errors.New("not implemented")
 }
 func (m *mockGitHubManager) FetchPRReviews(branch string) ([]github.ReviewComment, error) {
@@ -550,6 +554,162 @@ func TestHasChanges_NoWorkspace(t *testing.T) {
 	}
 	if diff != "" {
 		t.Errorf("HasChanges on nonexistent: expected empty diff, got %q", diff)
+	}
+}
+
+func TestCreatePR_AutoPushesBranch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t, "feat/seed")
+	cfg := config.Default() // AutoPush defaults to true
+	cfg.Worktree.BaseDir = ".opentree"
+
+	ghMock := &mockGitHubManager{createPRResult: "https://github.com/acme/repo/pull/7"}
+	svc, err := newWithMockFull(localDir, cfg, &mockProcessManager{}, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("feat/autopush", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	url, err := svc.CreatePR(ws.Name, "title", "body")
+	if err != nil {
+		t.Fatalf("CreatePR: %v", err)
+	}
+	if url != ghMock.createPRResult {
+		t.Errorf("CreatePR url = %q, want %q", url, ghMock.createPRResult)
+	}
+
+	lsCmd := exec.Command("git", "ls-remote", "--heads", "origin", "feat/autopush")
+	lsCmd.Dir = localDir
+	out, lsErr := lsCmd.CombinedOutput()
+	if lsErr != nil {
+		t.Fatalf("ls-remote: %v\n%s", lsErr, out)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		t.Error("branch not pushed to origin by CreatePR with auto_push enabled")
+	}
+
+	// BranchPushed persisted.
+	st, err := state.New(localDir)
+	if err != nil {
+		t.Fatalf("state.New: %v", err)
+	}
+	got, err := st.GetWorkspace(ws.Name)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if !got.BranchPushed {
+		t.Error("BranchPushed not persisted after CreatePR")
+	}
+}
+
+func TestCreatePR_NoAutoPushWhenDisabled(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t, "feat/seed")
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+	off := false
+	cfg.GitHub.AutoPush = &off
+
+	ghMock := &mockGitHubManager{createPRResult: "https://github.com/acme/repo/pull/8"}
+	svc, err := newWithMockFull(localDir, cfg, &mockProcessManager{}, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("feat/nopush", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := svc.CreatePR(ws.Name, "title", "body"); err != nil {
+		t.Fatalf("CreatePR: %v", err)
+	}
+
+	lsCmd := exec.Command("git", "ls-remote", "--heads", "origin", "feat/nopush")
+	lsCmd.Dir = localDir
+	out, lsErr := lsCmd.CombinedOutput()
+	if lsErr != nil {
+		t.Fatalf("ls-remote: %v\n%s", lsErr, out)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Error("branch was pushed despite auto_push = false")
+	}
+}
+
+func TestPrune_RemovesStaleEntries(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("keep-me", "main"); err != nil {
+		t.Fatalf("Create keep-me: %v", err)
+	}
+	stale, err := svc.Create("stale-one", "main")
+	if err != nil {
+		t.Fatalf("Create stale-one: %v", err)
+	}
+
+	// Simulate an external `rm -rf` of the worktree.
+	if err := os.RemoveAll(stale.WorktreeDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+
+	pruned, err := svc.Prune()
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(pruned) != 1 || pruned[0] != "stale-one" {
+		t.Errorf("Prune() = %v, want [stale-one]", pruned)
+	}
+
+	st, err := state.New(repoDir)
+	if err != nil {
+		t.Fatalf("state.New: %v", err)
+	}
+	if _, err := st.GetWorkspace("keep-me"); err != nil {
+		t.Errorf("keep-me should survive prune: %v", err)
+	}
+	if _, err := st.GetWorkspace("stale-one"); err == nil {
+		t.Error("stale-one should be pruned from state")
+	}
+
+	// git's stale worktree metadata is gone too.
+	wt := worktree.New(repoDir, ".opentree")
+	list, err := wt.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, w := range list {
+		if strings.Contains(w.Path, "stale-one") {
+			t.Errorf("git still lists pruned worktree: %s", w.Path)
+		}
+	}
+
+	found := false
+	for _, name := range mock.killWindowCalls {
+		if name == "stale-one" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Prune did not kill the stale workspace's tmux window")
 	}
 }
 

@@ -11,17 +11,16 @@ type PredefinedAgent struct {
 	Command     string   // binary: "claude"
 	Args        []string // default args
 	Description string   // short description for list display
-	ConfigDir   string   // informational, for future use
 }
 
 // PredefinedAgents is the built-in registry of known agents.
 var PredefinedAgents = []PredefinedAgent{
-	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI", ConfigDir: "~/.opencode"},
-	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent", ConfigDir: "~/.claude"},
-	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent", ConfigDir: ""},
-	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI", ConfigDir: ""},
-	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent", ConfigDir: "~/.gemini"},
-	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent", ConfigDir: "~/.pi"},
+	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI"},
+	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent"},
+	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},
+	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI"},
+	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent"},
+	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent"},
 }
 
 // FindAgent performs a case-insensitive lookup by Name or Command.
