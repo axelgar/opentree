@@ -210,6 +210,12 @@ var (
 	agentInProgressStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#E9C46A"))
 
+	agentNeedsInputStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#000")).
+				Background(lipgloss.Color("#F4A261")). // amber — distinct from success/fail/in_progress
+				Bold(true).
+				Padding(0, 1)
+
 	// inline loading states
 	pendingItemStyle = lipgloss.NewStyle().
 				Padding(0, 1).

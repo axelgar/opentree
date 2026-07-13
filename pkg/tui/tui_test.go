@@ -1069,7 +1069,7 @@ func TestReadAgentStatus_UnknownStatus(t *testing.T) {
 }
 
 func TestReadAgentStatus_AllValidStatuses(t *testing.T) {
-	for _, status := range []string{"success", "failure", "error", "in_progress"} {
+	for _, status := range []string{"success", "failure", "error", "in_progress", "needs_input"} {
 		dir := t.TempDir()
 		data := fmt.Sprintf(`{"status":"%s"}`, status)
 		os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644)
@@ -1100,6 +1100,31 @@ func TestView_AgentStatusBadge_Failure(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "failed") {
 		t.Errorf("View() should show 'failed' badge\ngot: %s", view)
+	}
+}
+
+func TestView_AgentStatusBadge_NeedsInput(t *testing.T) {
+	ws := testWS("waiting-branch")
+	ws.AgentStatus = &AgentStatus{Status: "needs_input", Message: "Approve running tests?"}
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "needs input") {
+		t.Errorf("View() should show 'needs input' badge for needs_input status\ngot: %s", view)
+	}
+	if !strings.Contains(view, "Approve running tests?") {
+		t.Errorf("View() should show agent message in description\ngot: %s", view)
+	}
+}
+
+func TestView_StatusBar_NeedsInputCount(t *testing.T) {
+	ws1 := testWS("branch-a")
+	ws1.AgentStatus = &AgentStatus{Status: "needs_input"}
+	ws2 := testWS("branch-b")
+	ws2.AgentStatus = &AgentStatus{Status: "in_progress"} // not counted
+	m := newTestModel(ws1, ws2)
+	bar := m.statusBar()
+	if !strings.Contains(bar, "1 need input") {
+		t.Errorf("statusBar() should show '1 need input', got: %s", bar)
 	}
 }
 

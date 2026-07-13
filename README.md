@@ -226,6 +226,67 @@ command = "claude"            # Or "aider", "cursor", etc.
 args = ["--some-flag"]
 ```
 
+### Agent status signals
+
+Agents can tell opentree how they're doing by writing a `.opentree-status.json`
+file to the **worktree root**. The workspace list reads it on every refresh and
+shows a badge (and, for `needs_input`, a `N need input` count in the status bar),
+so a glance across the dashboard tells you which worktree is waiting on you.
+
+```jsonc
+{
+  "status": "needs_input",              // required
+  "message": "Approve running tests?",  // optional — shown on the row
+  "updated_at": "2026-07-13T12:00:00Z"  // optional
+}
+```
+
+Valid `status` values:
+
+| `status`      | Badge          |
+| ------------- | -------------- |
+| `in_progress` | `working...`   |
+| `needs_input` | `needs input`  |
+| `success`     | `done`         |
+| `failure`     | `failed`       |
+| `error`       | `error`        |
+
+**One-step setup.** Let opentree install the hooks for you:
+
+```bash
+opentree agents setup claude   # or: codex, gemini, opencode
+```
+
+This merges the guarded status hooks into the agent's user-level config
+(`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/settings.json`, or
+an OpenCode plugin), backing up any existing file first. It's idempotent — safe
+to re-run. opentree exports `OPENTREE_STATUS_FILE` into every agent shell it
+launches, so the hooks write to the right worktree and stay inert (a no-op) in
+any session opentree didn't start. That means you install once, globally, and it
+just works across all your worktrees.
+
+`opentree agents setup <agent>` maps a new prompt → `in_progress` and a
+permission prompt / notification / turn-end → `needs_input`.
+
+**GitHub Copilot** and **Pi** can't be fully automated (Copilot has no
+"waiting for input" event; Pi's notify config holds a single script) — running
+`opentree agents setup gh` / `pi` prints tailored manual instructions.
+
+**Manual wiring / other agents.** Any agent can drive the badge by writing the
+status file itself. Point it at `$OPENTREE_STATUS_FILE` (exported by opentree),
+e.g. a Claude Code hook in `~/.claude/settings.json`:
+
+```jsonc
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
+      "command": "[ -n \"$OPENTREE_STATUS_FILE\" ] && printf '{\"status\":\"in_progress\"}' > \"$OPENTREE_STATUS_FILE\"" }] }],
+    "Notification": [{ "hooks": [{ "type": "command",
+      "command": "[ -n \"$OPENTREE_STATUS_FILE\" ] && printf '{\"status\":\"needs_input\"}' > \"$OPENTREE_STATUS_FILE\"" }] }]
+  }
+}
+```
+
 ## How It Works
 
 1. **Worktrees**: Git worktrees allow multiple checkouts of the same repo in different directories. Each workspace lives in `.opentree/<branch-name>/`.

@@ -23,14 +23,22 @@ var PredefinedAgents = []PredefinedAgent{
 	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent"},
 }
 
-// FindAgent performs a case-insensitive lookup by Name or Command.
-// Returns nil if no match is found.
+// FindAgent performs a case-insensitive lookup by Name or Command, falling back
+// to a match on any single word of the Name (so "copilot" resolves to
+// "GitHub Copilot"). Returns nil if no match is found.
 func FindAgent(name string) *PredefinedAgent {
 	lower := strings.ToLower(name)
 	for i := range PredefinedAgents {
 		if strings.ToLower(PredefinedAgents[i].Name) == lower ||
 			strings.ToLower(PredefinedAgents[i].Command) == lower {
 			return &PredefinedAgents[i]
+		}
+	}
+	for i := range PredefinedAgents {
+		for _, word := range strings.Fields(strings.ToLower(PredefinedAgents[i].Name)) {
+			if word == lower {
+				return &PredefinedAgents[i]
+			}
 		}
 	}
 	return nil

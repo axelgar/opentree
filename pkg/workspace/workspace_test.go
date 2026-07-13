@@ -782,3 +782,14 @@ func dirExists(path string) bool {
 	_ = info
 	return err == nil
 }
+
+func TestAgentLaunchCommand(t *testing.T) {
+	got := agentLaunchCommand("claude", "/tmp/wt")
+	want := `export OPENTREE_STATUS_FILE='/tmp/wt/.opentree-status.json'; claude`
+	if got != want {
+		t.Errorf("agentLaunchCommand:\n got %q\nwant %q", got, want)
+	}
+	if q := shellSingleQuote(`a'b`); q != `'a'\''b'` {
+		t.Errorf("shellSingleQuote(a'b) = %q, want 'a'\\''b'", q)
+	}
+}

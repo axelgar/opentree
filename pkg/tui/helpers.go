@@ -36,7 +36,7 @@ func readAgentStatus(worktreeDir string) *AgentStatus {
 		return nil
 	}
 	switch s.Status {
-	case "success", "failure", "error", "in_progress":
+	case "success", "failure", "error", "in_progress", "needs_input":
 		return &s
 	default:
 		return nil

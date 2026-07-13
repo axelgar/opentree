@@ -82,6 +82,20 @@ func (s *Service) WorktreePath(name string) string {
 // StatusFileName is the conventional file agents write to signal completion.
 const StatusFileName = ".opentree-status.json"
 
+// agentLaunchCommand prefixes the agent command with an export of
+// OPENTREE_STATUS_FILE so status hooks (see `opentree agents setup`) know where
+// to write and stay inert outside opentree. Args are appended by CreateWindow.
+func agentLaunchCommand(agentCmd, worktreePath string) string {
+	statusFile := filepath.Join(worktreePath, StatusFileName)
+	return fmt.Sprintf("export OPENTREE_STATUS_FILE=%s; %s", shellSingleQuote(statusFile), agentCmd)
+}
+
+// shellSingleQuote wraps s in single quotes, escaping embedded single quotes,
+// for safe inclusion in a POSIX shell command line.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
@@ -91,7 +105,8 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	worktreePath := s.WorktreePath(name)
 
 	agentCmd := s.cfg.Agent.Command
-	if err := s.process.CreateWindow(name, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
+	launchCmd := agentLaunchCommand(agentCmd, worktreePath)
+	if err := s.process.CreateWindow(name, worktreePath, launchCmd, s.cfg.Agent.Args...); err != nil {
 		_ = s.worktrees.Delete(name, true) // cleanup orphaned worktree
 		return nil, fmt.Errorf("failed to create tmux window: %w", err)
 	}
@@ -162,7 +177,8 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	worktreePath := s.WorktreePath(branchName)
 
 	agentCmd := s.cfg.Agent.Command
-	if err := s.process.CreateWindow(branchName, worktreePath, agentCmd, s.cfg.Agent.Args...); err != nil {
+	launchCmd := agentLaunchCommand(agentCmd, worktreePath)
+	if err := s.process.CreateWindow(branchName, worktreePath, launchCmd, s.cfg.Agent.Args...); err != nil {
 		_ = s.worktrees.Delete(branchName, true) // cleanup orphaned worktree
 		return nil, fmt.Errorf("failed to create tmux window: %w", err)
 	}

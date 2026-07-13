@@ -336,6 +336,8 @@ func (m Model) View() string {
 					title += "  " + agentErrorStyle.Render("error")
 				case "in_progress":
 					title += "  " + agentInProgressStyle.Render("working...")
+				case "needs_input":
+					title += "  " + agentNeedsInputStyle.Render("needs input")
 				}
 			}
 
@@ -427,6 +429,7 @@ func (m Model) statusBar() string {
 	active := 0
 	openPRs := 0
 	doneCount := 0
+	needsInput := 0
 	for _, ws := range m.workspaces {
 		if ws.Active {
 			active++
@@ -437,12 +440,18 @@ func (m Model) statusBar() string {
 		if ws.AgentStatus != nil && (ws.AgentStatus.Status == "success" || ws.AgentStatus.Status == "failure" || ws.AgentStatus.Status == "error") {
 			doneCount++
 		}
+		if ws.AgentStatus != nil && ws.AgentStatus.Status == "needs_input" {
+			needsInput++
+		}
 	}
 	parts := []string{
 		fmt.Sprintf("%d workspaces", total),
 		fmt.Sprintf("%d active", active),
 		fmt.Sprintf("%d open PRs", openPRs),
 		"sort: " + sortModeNames[m.sortMode],
+	}
+	if needsInput > 0 {
+		parts = append(parts, fmt.Sprintf("%d need input", needsInput))
 	}
 	if doneCount > 0 {
 		parts = append(parts, fmt.Sprintf("%d done", doneCount))
