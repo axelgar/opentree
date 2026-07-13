@@ -24,6 +24,7 @@ type mockProcessManager struct {
 	killSessionCalled bool
 	sendMessageCalls  []sendMessageCall
 	sendMessageErr    error
+	windows           []Window
 }
 
 func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ...string) error {
@@ -31,7 +32,7 @@ func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ..
 	return nil
 }
 
-func (m *mockProcessManager) ListWindows() ([]Window, error) { return nil, nil }
+func (m *mockProcessManager) ListWindows() ([]Window, error) { return m.windows, nil }
 func (m *mockProcessManager) SelectWindow(name string) error { return nil }
 func (m *mockProcessManager) AttachWindow(name string) error { return nil }
 func (m *mockProcessManager) AttachCmd(name string) (*exec.Cmd, error) {
@@ -641,6 +642,54 @@ func TestCreatePR_NoAutoPushWhenDisabled(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Error("branch was pushed despite auto_push = false")
+	}
+}
+
+func TestWindowStatuses(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("active-ws", "main"); err != nil {
+		t.Fatalf("Create active-ws: %v", err)
+	}
+	if _, err := svc.Create("idle-ws", "main"); err != nil {
+		t.Fatalf("Create idle-ws: %v", err)
+	}
+	if _, err := svc.Create("gone-ws", "main"); err != nil {
+		t.Fatalf("Create gone-ws: %v", err)
+	}
+	// A slashed branch: its window is keyed by the sanitized name ("feat-x").
+	if _, err := svc.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create feat/x: %v", err)
+	}
+
+	mock.windows = []Window{
+		{ID: "@1", Name: "active-ws", Active: true},
+		{ID: "@2", Name: "idle-ws", Active: false},
+		{ID: "@3", Name: "feat-x", Active: true},
+	}
+
+	statuses := svc.WindowStatuses()
+	want := map[string]string{
+		"active-ws": "active",
+		"idle-ws":   "idle",
+		"gone-ws":   "stopped",
+		"feat/x":    "active", // matched via SanitizeBranchName fallback
+	}
+	for name, exp := range want {
+		if statuses[name] != exp {
+			t.Errorf("status[%q] = %q, want %q", name, statuses[name], exp)
+		}
 	}
 }
 

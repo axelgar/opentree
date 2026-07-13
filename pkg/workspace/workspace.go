@@ -74,6 +74,42 @@ func (s *Service) Process() ProcessManager {
 	return s.process
 }
 
+// ListWorkspaces returns all persisted workspaces.
+func (s *Service) ListWorkspaces() []*state.Workspace {
+	return s.state.ListWorkspaces()
+}
+
+// WindowStatuses returns each workspace's live status derived from process
+// windows: "active" (window present and focused), "idle" (window exists but
+// not focused), or "stopped" (no window). If the window list is unavailable
+// (e.g. no tmux session), the returned map is empty and callers should degrade.
+func (s *Service) WindowStatuses() map[string]string {
+	result := make(map[string]string)
+	windows, err := s.process.ListWindows()
+	if err != nil {
+		return result
+	}
+	byName := make(map[string]Window, len(windows))
+	for _, w := range windows {
+		byName[w.Name] = w
+	}
+	for _, ws := range s.state.ListWorkspaces() {
+		win, ok := byName[ws.Name]
+		if !ok {
+			win, ok = byName[gitutil.SanitizeBranchName(ws.Name)]
+		}
+		switch {
+		case ok && win.Active:
+			result[ws.Name] = "active"
+		case ok:
+			result[ws.Name] = "idle"
+		default:
+			result[ws.Name] = "stopped"
+		}
+	}
+	return result
+}
+
 // WorktreePath returns the filesystem path for a workspace's worktree directory.
 func (s *Service) WorktreePath(name string) string {
 	return filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(name))

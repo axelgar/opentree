@@ -261,39 +261,10 @@ func (m Model) sendReviewsCmd(wsName string) tea.Cmd {
 
 func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 	return func() tea.Msg {
-		committed, err := m.worktreeMgr.DiffFull(ws.Branch, ws.BaseBranch)
+		content, err := m.worktreeMgr.DiffCombined(ws.Branch, ws.BaseBranch)
 		if err != nil {
 			return errMsg{err}
 		}
-
-		uncommitted, uncommittedErr := m.worktreeMgr.DiffUncommitted(ws.Branch)
-
-		committedTrimmed := strings.TrimSpace(committed)
-		uncommittedTrimmed := strings.TrimSpace(uncommitted)
-
-		var sections []string
-
-		if committedTrimmed != "" {
-			header := "══════ Committed Changes ══════"
-			if uncommittedTrimmed != "" {
-				sections = append(sections, header+"\n\n"+committedTrimmed)
-			} else {
-				sections = append(sections, committedTrimmed)
-			}
-		}
-
-		if uncommittedErr != nil {
-			sections = append(sections, "══════ Uncommitted Changes ══════\n\n(error: "+uncommittedErr.Error()+")")
-		} else if uncommittedTrimmed != "" {
-			header := "══════ Uncommitted Changes ══════"
-			sections = append(sections, header+"\n\n"+uncommittedTrimmed)
-		}
-
-		content := strings.Join(sections, "\n\n")
-		if content == "" {
-			content = "No changes."
-		}
-
 		return diffLoadedMsg{content: content, wsName: ws.Name}
 	}
 }

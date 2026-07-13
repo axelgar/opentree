@@ -157,14 +157,19 @@ func (m *Manager) Prune() error {
 	return nil
 }
 
+// defaultBase returns the base branch, defaulting to "main" when unset.
+func defaultBase(baseBranch ...string) string {
+	if len(baseBranch) > 0 && baseBranch[0] != "" {
+		return baseBranch[0]
+	}
+	return "main"
+}
+
 // Diff returns the diffstat for a worktree vs its base branch.
 // Includes both committed and uncommitted changes (compares merge-base to working tree).
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) {
-	base := "main"
-	if len(baseBranch) > 0 && baseBranch[0] != "" {
-		base = baseBranch[0]
-	}
+	base := defaultBase(baseBranch...)
 
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
@@ -184,10 +189,7 @@ func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) 
 // DiffFull returns the full unified diff for a worktree vs its base branch.
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, error) {
-	base := "main"
-	if len(baseBranch) > 0 && baseBranch[0] != "" {
-		base = baseBranch[0]
-	}
+	base := defaultBase(baseBranch...)
 
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
@@ -211,17 +213,39 @@ func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, err
 	return string(output), nil
 }
 
-// DiffBranches compares a worktree branch with a base branch
-func (m *Manager) DiffBranches(branchName, baseBranch string) (string, error) {
-	// Use git diff to compare the two branches
-	cmd := exec.Command("git", "diff", "--stat", baseBranch+"..."+branchName)
-	cmd.Dir = m.repoRoot
-	output, err := cmd.CombinedOutput()
+// DiffCombined returns the full unified diff for a worktree: committed changes
+// (merge-base → HEAD) followed by uncommitted changes (HEAD → working tree),
+// separated by section headers. The committed section is unlabeled when there
+// are no uncommitted changes. Returns "No changes." when the worktree is clean.
+func (m *Manager) DiffCombined(branchName string, baseBranch ...string) (string, error) {
+	committed, err := m.DiffFull(branchName, baseBranch...)
 	if err != nil {
-		return "", fmt.Errorf("failed to get diff between branches: %w", err)
+		return "", err
+	}
+	uncommitted, uncommittedErr := m.DiffUncommitted(branchName)
+
+	committedTrimmed := strings.TrimSpace(committed)
+	uncommittedTrimmed := strings.TrimSpace(uncommitted)
+
+	var sections []string
+	if committedTrimmed != "" {
+		if uncommittedTrimmed != "" {
+			sections = append(sections, "══════ Committed Changes ══════\n\n"+committedTrimmed)
+		} else {
+			sections = append(sections, committedTrimmed)
+		}
+	}
+	if uncommittedErr != nil {
+		sections = append(sections, "══════ Uncommitted Changes ══════\n\n(error: "+uncommittedErr.Error()+")")
+	} else if uncommittedTrimmed != "" {
+		sections = append(sections, "══════ Uncommitted Changes ══════\n\n"+uncommittedTrimmed)
 	}
 
-	return string(output), nil
+	content := strings.Join(sections, "\n\n")
+	if content == "" {
+		content = "No changes."
+	}
+	return content, nil
 }
 
 // parseWorktrees parses the output of git worktree list --porcelain
@@ -279,10 +303,7 @@ type FileChange struct {
 // single call, computing git merge-base only once.
 // If baseBranch is empty, it defaults to "main".
 func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat string, files []FileChange, err error) {
-	base := "main"
-	if len(baseBranch) > 0 && baseBranch[0] != "" {
-		base = baseBranch[0]
-	}
+	base := defaultBase(baseBranch...)
 
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)

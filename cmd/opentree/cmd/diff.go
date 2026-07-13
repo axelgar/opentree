@@ -38,7 +38,14 @@ var DiffCmd = &cobra.Command{
 		}
 
 		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
-		diff, err := wt.Diff(branchName, baseBranch)
+
+		statOnly, _ := cmd.Flags().GetBool("stat")
+		var diff string
+		if statOnly {
+			diff, err = wt.Diff(branchName, baseBranch)
+		} else {
+			diff, err = wt.DiffCombined(branchName, baseBranch)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to get diff: %w", err)
 		}
@@ -46,4 +53,8 @@ var DiffCmd = &cobra.Command{
 		fmt.Println(diff)
 		return nil
 	},
+}
+
+func init() {
+	DiffCmd.Flags().Bool("stat", false, "Show only a file summary instead of the full diff")
 }

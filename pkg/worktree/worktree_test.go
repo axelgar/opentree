@@ -507,6 +507,27 @@ func TestDiffFull_OnlyCommittedChanges(t *testing.T) {
 	}
 }
 
+func TestDiffCombined_SectionsAndContent(t *testing.T) {
+	_, branch, m := initWorktreeRepo(t)
+
+	out, err := m.DiffCombined(branch)
+	if err != nil {
+		t.Fatalf("DiffCombined: %v", err)
+	}
+	// Both committed and uncommitted changes exist, so both files and both
+	// section headers must appear.
+	for _, want := range []string{
+		"done.txt",
+		"wip.txt",
+		"══════ Committed Changes ══════",
+		"══════ Uncommitted Changes ══════",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("DiffCombined output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestDiffUncommitted_OnlyUncommittedChanges(t *testing.T) {
 	_, branch, m := initWorktreeRepo(t)
 

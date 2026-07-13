@@ -13,7 +13,7 @@ builds:
       - -s -w
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
 
 brews:
   - repository:
