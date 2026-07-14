@@ -188,7 +188,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 	// Write TASK.md with issue context for the AI agent
 	taskContent := github.IssueTaskContent(issue)
 	taskFile := filepath.Join(ws.WorktreeDir, "TASK.md")
-	if err := os.WriteFile(taskFile, []byte(taskContent), 0644); err != nil {
+	if err := os.WriteFile(taskFile, []byte(taskContent), 0600); err != nil {
 		// Non-fatal: workspace was created successfully
 		fmt.Printf("Warning: could not write TASK.md: %v\n", err)
 	}

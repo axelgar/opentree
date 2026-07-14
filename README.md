@@ -360,7 +360,7 @@ State file might be corrupted. Check `.opentree/state.json` or delete and recrea
 
 ## Contributing
 
-Contributions welcome! Please open an issue or PR.
+Contributions welcome! Please open an issue or PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the quality checks to run first.
 
 ### Development Setup
 

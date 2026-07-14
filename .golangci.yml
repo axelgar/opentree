@@ -12,6 +12,7 @@ linters:
     - goimports
     - misspell
     - revive
+    - gosec
 
 linters-settings:
   goimports:
@@ -26,3 +27,11 @@ issues:
     - path: _test\.go
       linters:
         - errcheck
+        - gosec
+    # G204 (subprocess with dynamic args) is a structural non-issue here: every
+    # exec.Command call in this repo passes args directly (argv), never through
+    # a shell, so shell-metacharacter injection isn't possible. Other gosec
+    # rules (e.g. G306 file perms) still apply everywhere.
+    - linters:
+        - gosec
+      text: "G204"

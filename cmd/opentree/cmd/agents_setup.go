@@ -158,7 +158,7 @@ func installOpenCodeHooks() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(openCodePlugin), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(openCodePlugin), 0600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
 	fmt.Printf("✓ Installed OpenCode status plugin at %s\n", path)
@@ -303,7 +303,7 @@ func writeJSONObject(path string, m map[string]any) error {
 	if err := enc.Encode(m); err != nil {
 		return err
 	}
-	return os.WriteFile(path, buf.Bytes(), 0644)
+	return os.WriteFile(path, buf.Bytes(), 0600)
 }
 
 // backupOnce copies path to path+".opentree.bak" the first time we touch it, so
@@ -321,7 +321,7 @@ func backupOnce(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(bak, data, 0644)
+	return os.WriteFile(bak, data, 0600)
 }
 
 func printInstallResult(name, path string, added int) {

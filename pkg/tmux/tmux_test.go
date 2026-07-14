@@ -1,7 +1,6 @@
 package tmux
 
 import (
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -572,15 +571,6 @@ func TestDetectEnv(t *testing.T) {
 		// valid
 	default:
 		t.Errorf("detectEnv() returned unexpected value: %d", env)
-	}
-}
-
-func TestIsInsideTmux(t *testing.T) {
-	result := IsInsideTmux()
-	tmuxVar := os.Getenv("TMUX")
-	expected := tmuxVar != ""
-	if result != expected {
-		t.Errorf("IsInsideTmux() = %v, want %v (TMUX=%q)", result, expected, tmuxVar)
 	}
 }
 

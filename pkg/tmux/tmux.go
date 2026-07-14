@@ -147,11 +147,6 @@ func isTerminal(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// IsInsideTmux reports whether the current process is running inside tmux.
-func IsInsideTmux() bool {
-	return os.Getenv("TMUX") != ""
-}
-
 // AttachWindow attaches to a specific tmux window using the correct
 // strategy based on the current environment.
 func (c *Controller) AttachWindow(name string) error {

@@ -17,6 +17,14 @@ jobs:
       - uses: golangci/golangci-lint-action@v6
         with:
           version: v1.64
+      - run: go tool govulncheck ./...
+      - name: deadcode
+        run: |
+          out=$(go tool deadcode ./cmd/opentree)
+          if [ -n "$out" ]; then
+            echo "$out"
+            exit 1
+          fi
 
   test:
     runs-on: ubuntu-latest
