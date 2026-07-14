@@ -38,8 +38,23 @@ func detectShell() string {
 	return filepath.Base(shell)
 }
 
+// zshCompletionDir chooses where to write the zsh completion script. oh-my-zsh
+// keeps $ZSH/completions on fpath, so installing there works with no .zshrc edit;
+// otherwise we fall back to ~/.zsh/completions, which the user must add to fpath.
+func zshCompletionDir() (dir string, ohMyZsh bool) {
+	home := os.Getenv("HOME")
+	omz := os.Getenv("ZSH")
+	if omz == "" {
+		omz = filepath.Join(home, ".oh-my-zsh")
+	}
+	if fi, err := os.Stat(omz); err == nil && fi.IsDir() {
+		return filepath.Join(omz, "completions"), true
+	}
+	return filepath.Join(home, ".zsh", "completions"), false
+}
+
 func installZshCompletion(root *cobra.Command) error {
-	dir := filepath.Join(os.Getenv("HOME"), ".zsh", "completions")
+	dir, ohMyZsh := zshCompletionDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create %s: %w", dir, err)
 	}
@@ -49,22 +64,31 @@ func installZshCompletion(root *cobra.Command) error {
 	if err := root.GenZshCompletion(&buf); err != nil {
 		return fmt.Errorf("failed to generate completion: %w", err)
 	}
-	if err := os.WriteFile(dest, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(dest, buf.Bytes(), 0600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", dest, err)
 	}
 
 	fmt.Printf("✓ Installed zsh completion to %s\n\n", dest)
-	fmt.Println("Make sure your ~/.zshrc contains:")
+
+	if ohMyZsh {
+		// $ZSH/completions is already on fpath; just rebuild the cache and reload.
+		fmt.Println("oh-my-zsh detected — this directory is already on your fpath.")
+		fmt.Println("Activate it now with:")
+		fmt.Println("  rm -f ~/.zcompdump*; exec zsh")
+		return nil
+	}
+
+	// Plain zsh: the directory must be on fpath before compinit runs.
+	fmt.Println("Make sure your ~/.zshrc contains this BEFORE any compinit call:")
 	fmt.Printf("  fpath=(%s $fpath)\n", dir)
 	fmt.Println("  autoload -U compinit && compinit")
-	fmt.Println("\nThen restart your shell or run: exec zsh")
 
-	// Check if fpath line is already in .zshrc
 	zshrc := filepath.Join(os.Getenv("HOME"), ".zshrc")
 	data, _ := os.ReadFile(zshrc)
 	if !strings.Contains(string(data), dir) {
 		fmt.Printf("\nTo add it automatically:\n  echo 'fpath=(%s $fpath)' >> ~/.zshrc\n", dir)
 	}
+	fmt.Println("\nThen reload your shell: rm -f ~/.zcompdump*; exec zsh")
 
 	return nil
 }
@@ -80,7 +104,7 @@ func installBashCompletion(root *cobra.Command) error {
 	if err := root.GenBashCompletionV2(&buf, true); err != nil {
 		return fmt.Errorf("failed to generate completion: %w", err)
 	}
-	if err := os.WriteFile(dest, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(dest, buf.Bytes(), 0600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", dest, err)
 	}
 
@@ -109,7 +133,7 @@ func installFishCompletion(root *cobra.Command) error {
 	if err := root.GenFishCompletion(&buf, true); err != nil {
 		return fmt.Errorf("failed to generate completion: %w", err)
 	}
-	if err := os.WriteFile(dest, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(dest, buf.Bytes(), 0600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", dest, err)
 	}
 
