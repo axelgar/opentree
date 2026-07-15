@@ -1,37 +1,52 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
   enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - ineffassign
-    - unused
-    - gofmt
-    - goimports
+    - gosec
     - misspell
     - revive
-    - gosec
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/axelgar/opentree
-  revive:
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        disabled: true
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
-    # G204 (subprocess with dynamic args) is a structural non-issue here: every
-    # exec.Command call in this repo passes args directly (argv), never through
-    # a shell, so shell-metacharacter injection isn't possible. Other gosec
-    # rules (e.g. G306 file perms) still apply everywhere.
-    - linters:
-        - gosec
-      text: "G204"
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+      # G204: every exec.Command passes args as argv (never through a shell), so
+      # dynamic-arg subprocess calls cannot inject shell metacharacters here.
+      - linters:
+          - gosec
+        text: G204
+      # G703: taint analysis flags file paths derived from $HOME/$ZSH and known
+      # config locations. This CLI legitimately manages the user's own dotfiles
+      # (~/.zshrc, ~/.claude/settings.json, ...) — those are not untrusted input.
+      - linters:
+          - gosec
+        text: G703
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/axelgar/opentree
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

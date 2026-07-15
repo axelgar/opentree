@@ -201,7 +201,7 @@ func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, 
 		sb.WriteString("\n")
 	}
 	if issueNumber > 0 {
-		sb.WriteString(fmt.Sprintf("Closes #%d\n", issueNumber))
+		fmt.Fprintf(&sb, "Closes #%d\n", issueNumber)
 	}
 	body = sb.String()
 	return

@@ -209,17 +209,17 @@ func FormatReviewsPrompt(comments []ReviewComment) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("I have %d PR review comment(s) to address:\n\n", len(comments)))
+	fmt.Fprintf(&sb, "I have %d PR review comment(s) to address:\n\n", len(comments))
 	for i, c := range comments {
-		sb.WriteString(fmt.Sprintf("--- Review %d (by @%s", i+1, c.Author))
+		fmt.Fprintf(&sb, "--- Review %d (by @%s", i+1, c.Author)
 		if c.State != "" && c.State != "COMMENTED" {
-			sb.WriteString(fmt.Sprintf(", %s", c.State))
+			fmt.Fprintf(&sb, ", %s", c.State)
 		}
 		if c.Path != "" {
 			if c.Line > 0 {
-				sb.WriteString(fmt.Sprintf(", %s:%d", c.Path, c.Line))
+				fmt.Fprintf(&sb, ", %s:%d", c.Path, c.Line)
 			} else {
-				sb.WriteString(fmt.Sprintf(", %s", c.Path))
+				fmt.Fprintf(&sb, ", %s", c.Path)
 			}
 		}
 		sb.WriteString(") ---\n")
@@ -281,9 +281,9 @@ var issueBranchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
 // IssueTaskContent formats a GitHub issue as a TASK.md file for the AI agent.
 func IssueTaskContent(issue *Issue) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Issue #%d: %s\n\n", issue.Number, issue.Title))
+	fmt.Fprintf(&sb, "# Issue #%d: %s\n\n", issue.Number, issue.Title)
 	if len(issue.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(issue.Labels, ", ")))
+		fmt.Fprintf(&sb, "**Labels:** %s\n\n", strings.Join(issue.Labels, ", "))
 	}
 	sb.WriteString("## Description\n\n")
 	if issue.Body != "" {

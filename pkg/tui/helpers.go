@@ -97,7 +97,7 @@ func (m Model) renderFileChanges(files []worktree.FileChange, width int) string 
 			marker = uncommittedFileStyle.Render("● ")
 		}
 
-		sb.WriteString(fmt.Sprintf(" %s%s%s%s %s\n", marker, fileNameStyle.Render(name), padding, addStr, remStr))
+		fmt.Fprintf(&sb, " %s%s%s%s %s\n", marker, fileNameStyle.Render(name), padding, addStr, remStr)
 	}
 
 	if uncommittedCount > 0 {
