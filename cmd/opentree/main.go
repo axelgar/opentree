@@ -3,12 +3,29 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 
 	"github.com/axelgar/opentree/cmd/opentree/cmd"
 	"github.com/axelgar/opentree/pkg/tui"
 )
+
+// version is set at release time via -ldflags "-X main.version=...".
+// For `go install` builds it falls back to the module version (see resolveVersion).
+var version = "dev"
+
+// resolveVersion returns the release version, or the module version embedded by
+// `go install`, or "dev" for a plain local build.
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "opentree",
@@ -29,6 +46,10 @@ Think Conductor, but for the terminal.`,
 }
 
 func init() {
+	rootCmd.Version = resolveVersion()
+	rootCmd.SetVersionTemplate("opentree {{.Version}}\n")
+	rootCmd.Flags().BoolP("version", "v", false, "print the opentree version and exit")
+
 	rootCmd.AddCommand(cmd.NewCmd)
 	rootCmd.AddCommand(cmd.ListCmd)
 	rootCmd.AddCommand(cmd.AttachCmd)
