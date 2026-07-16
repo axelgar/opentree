@@ -16,18 +16,22 @@ import (
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
-// AgentStatus represents the completion signal an agent writes to
-// .opentree-status.json in its worktree directory.
+// AgentStatus represents the signal an agent writes to .opentree-status.json in
+// its worktree directory. The installed hooks only ever write "in_progress"
+// (a turn started) or "needs_input" (a turn ended, or the agent hit a prompt);
+// mtime is the file's modification time, i.e. when that last event happened.
 type AgentStatus struct {
-	Status    string `json:"status"`
-	Message   string `json:"message,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+
+	mtime time.Time // when the agent last wrote the file (from os.Stat)
 }
 
 // readAgentStatus reads the .opentree-status.json file from a worktree directory.
 // Returns nil if the file is missing, unreadable, or has an invalid status value.
 func readAgentStatus(worktreeDir string) *AgentStatus {
-	data, err := os.ReadFile(filepath.Join(worktreeDir, workspace.StatusFileName))
+	path := filepath.Join(worktreeDir, workspace.StatusFileName)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -36,11 +40,65 @@ func readAgentStatus(worktreeDir string) *AgentStatus {
 		return nil
 	}
 	switch s.Status {
-	case "success", "failure", "error", "in_progress", "needs_input":
+	case "in_progress", "needs_input":
+		if fi, err := os.Stat(path); err == nil {
+			s.mtime = fi.ModTime()
+		}
 		return &s
 	default:
 		return nil
 	}
+}
+
+// staleAfter is how long since an agent's last status event before opentree
+// treats a worktree as parked (idle/stalled) rather than freshly working or
+// waiting on you.
+// ponytail: single global knob — raise it if agents run long silent turns.
+const staleAfter = 15 * time.Minute
+
+type agentLiveness int
+
+const (
+	livenessNone    agentLiveness = iota
+	livenessWorking               // actively generating
+	livenessStalled               // turn started but no recent activity — likely dead session
+	livenessWaiting               // just stopped / hit a prompt — your turn
+	livenessIdle                  // stopped a while ago — parked/stale
+)
+
+// liveness collapses the agent's last status event and its age into the coarse
+// working-vs-stale state shown as a badge. The returned time is the reference
+// instant for the "· Xh ago" age on the stale states (zero when unused). A live
+// tmux pane keeps a long in-progress turn from reading as stalled.
+func (ws WorkspaceItem) liveness() (agentLiveness, time.Time) {
+	if ws.AgentStatus == nil {
+		return livenessNone, time.Time{}
+	}
+	mtime := ws.AgentStatus.mtime
+	statusFresh := !mtime.IsZero() && time.Since(mtime) < staleAfter
+	paneFresh := !ws.LastActivity.IsZero() && time.Since(ws.LastActivity) < staleAfter
+	switch ws.AgentStatus.Status {
+	case "in_progress":
+		if statusFresh || paneFresh {
+			return livenessWorking, time.Time{}
+		}
+		return livenessStalled, mtime
+	case "needs_input":
+		if statusFresh {
+			return livenessWaiting, time.Time{}
+		}
+		return livenessIdle, mtime
+	}
+	return livenessNone, time.Time{}
+}
+
+// badgeWithAge renders "label · 2h ago", falling back to just "label" when the
+// reference time is unknown (zero) so the badge never trails a bare "· ".
+func badgeWithAge(label string, t time.Time) string {
+	if age := formatAge(t); age != "" {
+		return label + " · " + age
+	}
+	return label
 }
 
 // cleanPreview strips ANSI codes and returns the last 5 non-empty lines.
@@ -184,8 +242,12 @@ func openURLCmd(rawURL string) tea.Cmd {
 	}
 }
 
-// formatAge returns a human-readable age string for a given timestamp.
+// formatAge returns a human-readable age string for a given timestamp, or ""
+// for the zero time (unknown) so callers never render a bogus multi-century age.
 func formatAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:

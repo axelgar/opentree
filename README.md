@@ -230,26 +230,29 @@ args = ["--some-flag"]
 
 Agents can tell opentree how they're doing by writing a `.opentree-status.json`
 file to the **worktree root**. The workspace list reads it on every refresh and
-shows a badge (and, for `needs_input`, a `N need input` count in the status bar),
-so a glance across the dashboard tells you which worktree is waiting on you.
+shows a badge, so a glance across the dashboard tells you which worktrees are
+working and which have gone quiet and want your attention.
 
 ```jsonc
 {
-  "status": "needs_input",              // required
-  "message": "Approve running tests?",  // optional — shown on the row
-  "updated_at": "2026-07-13T12:00:00Z"  // optional
+  "status": "needs_input",              // required: "in_progress" or "needs_input"
+  "message": "Approve running tests?"   // optional — shown on the row
 }
 ```
 
-Valid `status` values:
+Agents only ever report two things — `in_progress` (a turn started) and
+`needs_input` (a turn ended, or it hit a prompt). opentree pairs that with **how
+long ago** the file last changed to derive the badge, so a finished turn from an
+hour ago doesn't look the same as one that just landed:
 
-| `status`      | Badge          |
-| ------------- | -------------- |
-| `in_progress` | `working...`   |
-| `needs_input` | `needs input`  |
-| `success`     | `done`         |
-| `failure`     | `failed`       |
-| `error`       | `error`        |
+| Agent wrote   | Last change      | Badge                | Meaning                              |
+| ------------- | ---------------- | -------------------- | ------------------------------------ |
+| `in_progress` | recent           | `working…`           | actively generating                  |
+| `in_progress` | stale            | `stalled · 40m ago`  | turn never ended — likely dead session |
+| `needs_input` | recent           | `waiting · your turn`| just stopped — your move             |
+| `needs_input` | stale            | `idle · 2h ago`      | parked; nobody's touched it          |
+
+The status bar tallies the ones that want you: `N waiting` and, if any, `N stalled`.
 
 **One-step setup.** Let opentree install the hooks for you:
 
@@ -266,7 +269,8 @@ any session opentree didn't start. That means you install once, globally, and it
 just works across all your worktrees.
 
 `opentree agents setup <agent>` maps a new prompt → `in_progress` and a
-permission prompt / notification / turn-end → `needs_input`.
+permission prompt / notification / turn-end → `needs_input`. The bundled hooks
+report `status` only; the optional `message` is for hand-written or custom hooks.
 
 **GitHub Copilot** and **Pi** can't be fully automated (Copilot has no
 "waiting for input" event; Pi's notify config holds a single script) — running

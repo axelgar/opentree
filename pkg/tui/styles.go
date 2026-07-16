@@ -192,29 +192,22 @@ var (
 				Padding(0, 1)
 
 	// agent completion badges
-	agentSuccessStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FFF")).
-				Background(lipgloss.Color("#2A9D8F")).
-				Padding(0, 1)
+	// Agent liveness badges. Fresh states (working, waiting) draw the eye;
+	// stale states (stalled, idle) are dimmed so a parked worktree recedes.
+	agentWorkingStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#E9C46A")) // yellow — actively generating
 
-	agentFailureStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FFF")).
-				Background(lipgloss.Color("196")).
-				Padding(0, 1)
-
-	agentErrorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFF")).
-			Background(lipgloss.Color("#E76F51")).
-			Padding(0, 1)
-
-	agentInProgressStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#E9C46A"))
-
-	agentNeedsInputStyle = lipgloss.NewStyle().
+	agentWaitingStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#000")).
-				Background(lipgloss.Color("#F4A261")). // amber — distinct from success/fail/in_progress
+				Background(lipgloss.Color("#F4A261")). // amber — fresh, your turn
 				Bold(true).
 				Padding(0, 1)
+
+	agentStalledStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#8A6D4A")) // dim amber — was working, now quiet
+
+	agentIdleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666")) // grey — parked/stale
 
 	// inline loading states
 	pendingItemStyle = lipgloss.NewStyle().

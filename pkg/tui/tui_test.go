@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -1027,7 +1028,7 @@ func TestView_IssueBadge_MultipleWorkspaces(t *testing.T) {
 
 func TestReadAgentStatus_ValidFile(t *testing.T) {
 	dir := t.TempDir()
-	data := `{"status":"success","message":"All tests pass"}`
+	data := `{"status":"needs_input","message":"Approve running tests?"}`
 	if err := os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1035,11 +1036,14 @@ func TestReadAgentStatus_ValidFile(t *testing.T) {
 	if s == nil {
 		t.Fatal("expected non-nil AgentStatus")
 	}
-	if s.Status != "success" {
-		t.Errorf("Status = %q, want %q", s.Status, "success")
+	if s.Status != "needs_input" {
+		t.Errorf("Status = %q, want %q", s.Status, "needs_input")
 	}
-	if s.Message != "All tests pass" {
-		t.Errorf("Message = %q, want %q", s.Message, "All tests pass")
+	if s.Message != "Approve running tests?" {
+		t.Errorf("Message = %q, want %q", s.Message, "Approve running tests?")
+	}
+	if s.mtime.IsZero() {
+		t.Error("expected mtime to be populated from the file's ModTime")
 	}
 }
 
@@ -1068,8 +1072,8 @@ func TestReadAgentStatus_UnknownStatus(t *testing.T) {
 	}
 }
 
-func TestReadAgentStatus_AllValidStatuses(t *testing.T) {
-	for _, status := range []string{"success", "failure", "error", "in_progress", "needs_input"} {
+func TestReadAgentStatus_ValidStatuses(t *testing.T) {
+	for _, status := range []string{"in_progress", "needs_input"} {
 		dir := t.TempDir()
 		data := fmt.Sprintf(`{"status":"%s"}`, status)
 		os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644)
@@ -1080,64 +1084,109 @@ func TestReadAgentStatus_AllValidStatuses(t *testing.T) {
 	}
 }
 
-func TestView_AgentStatusBadge_Success(t *testing.T) {
-	ws := testWS("done-branch")
-	ws.AgentStatus = &AgentStatus{Status: "success", Message: "All done"}
+// The hooks never emit these; readAgentStatus rejects them so no dead badge shows.
+func TestReadAgentStatus_UnusedStatusesRejected(t *testing.T) {
+	for _, status := range []string{"success", "failure", "error"} {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(fmt.Sprintf(`{"status":"%s"}`, status)), 0644)
+		if s := readAgentStatus(dir); s != nil {
+			t.Errorf("readAgentStatus(%q): expected nil for unused status, got %+v", status, s)
+		}
+	}
+}
+
+func TestView_AgentStatusBadge_Working(t *testing.T) {
+	ws := testWS("work-branch")
+	ws.AgentStatus = &AgentStatus{Status: "in_progress", Message: "Editing files", mtime: time.Now()}
 	m := newTestModel(ws)
 	view := m.View()
-	if !strings.Contains(view, "done") {
-		t.Errorf("View() should show 'done' badge for success status\ngot: %s", view)
+	if !strings.Contains(view, "working") {
+		t.Errorf("View() should show 'working' badge for a fresh in_progress status\ngot: %s", view)
 	}
-	if !strings.Contains(view, "All done") {
+	if !strings.Contains(view, "Editing files") {
 		t.Errorf("View() should show agent message in description\ngot: %s", view)
 	}
 }
 
-func TestView_AgentStatusBadge_Failure(t *testing.T) {
-	ws := testWS("fail-branch")
-	ws.AgentStatus = &AgentStatus{Status: "failure"}
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "failed") {
-		t.Errorf("View() should show 'failed' badge\ngot: %s", view)
-	}
-}
-
-func TestView_AgentStatusBadge_NeedsInput(t *testing.T) {
+func TestView_AgentStatusBadge_Waiting(t *testing.T) {
 	ws := testWS("waiting-branch")
-	ws.AgentStatus = &AgentStatus{Status: "needs_input", Message: "Approve running tests?"}
+	ws.AgentStatus = &AgentStatus{Status: "needs_input", Message: "Approve running tests?", mtime: time.Now()}
 	m := newTestModel(ws)
 	view := m.View()
-	if !strings.Contains(view, "needs input") {
-		t.Errorf("View() should show 'needs input' badge for needs_input status\ngot: %s", view)
+	if !strings.Contains(view, "waiting") {
+		t.Errorf("View() should show 'waiting' badge for a fresh needs_input status\ngot: %s", view)
 	}
 	if !strings.Contains(view, "Approve running tests?") {
 		t.Errorf("View() should show agent message in description\ngot: %s", view)
 	}
 }
 
-func TestView_StatusBar_NeedsInputCount(t *testing.T) {
-	ws1 := testWS("branch-a")
-	ws1.AgentStatus = &AgentStatus{Status: "needs_input"}
-	ws2 := testWS("branch-b")
-	ws2.AgentStatus = &AgentStatus{Status: "in_progress"} // not counted
-	m := newTestModel(ws1, ws2)
-	bar := m.statusBar()
-	if !strings.Contains(bar, "1 need input") {
-		t.Errorf("statusBar() should show '1 need input', got: %s", bar)
+// A needs_input status that hasn't changed in a while is a parked worktree, not
+// a live prompt — it reads as "idle", not "waiting".
+func TestView_AgentStatusBadge_Idle(t *testing.T) {
+	ws := testWS("idle-branch")
+	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now().Add(-2 * time.Hour)}
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "idle") {
+		t.Errorf("View() should show 'idle' badge for a stale needs_input status\ngot: %s", view)
+	}
+	if strings.Contains(view, "waiting") {
+		t.Errorf("stale needs_input should not read as 'waiting'\ngot: %s", view)
 	}
 }
 
-func TestView_StatusBar_DoneCount(t *testing.T) {
+// An in_progress turn with no recent activity is a dead/hung session, not work
+// in flight — it reads as "stalled" rather than a forever-spinning "working".
+func TestView_AgentStatusBadge_Stalled(t *testing.T) {
+	ws := testWS("stalled-branch")
+	ws.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now().Add(-time.Hour)}
+	m := newTestModel(ws) // LastActivity zero → pane not fresh
+	view := m.View()
+	if !strings.Contains(view, "stalled") {
+		t.Errorf("View() should show 'stalled' badge for a stale in_progress status\ngot: %s", view)
+	}
+}
+
+// A stale in_progress whose tmux pane is still emitting output is a long, quiet
+// turn — not a dead session. Recent pane activity keeps it "working".
+func TestView_AgentStatusBadge_Working_StalePaneFresh(t *testing.T) {
+	ws := testWS("busy-branch")
+	ws.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now().Add(-time.Hour)}
+	ws.LastActivity = time.Now() // pane still active → rescued from "stalled"
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "working") {
+		t.Errorf("fresh pane activity should keep a stale in_progress as 'working'\ngot: %s", view)
+	}
+	if strings.Contains(view, "stalled") {
+		t.Errorf("should not read as 'stalled' when pane activity is fresh\ngot: %s", view)
+	}
+}
+
+func TestView_StatusBar_WaitingCount(t *testing.T) {
 	ws1 := testWS("branch-a")
-	ws1.AgentStatus = &AgentStatus{Status: "success"}
+	ws1.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()} // fresh → waiting
 	ws2 := testWS("branch-b")
-	ws2.AgentStatus = &AgentStatus{Status: "failure"}
-	ws3 := testWS("branch-c") // no agent status
+	ws2.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now()} // working, not counted
+	ws3 := testWS("branch-c")
+	ws3.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now().Add(-2 * time.Hour)} // idle, not counted
 	m := newTestModel(ws1, ws2, ws3)
 	bar := m.statusBar()
-	if !strings.Contains(bar, "2 done") {
-		t.Errorf("statusBar() should show '2 done', got: %s", bar)
+	if !strings.Contains(bar, "1 waiting") {
+		t.Errorf("statusBar() should show '1 waiting', got: %s", bar)
+	}
+}
+
+func TestView_StatusBar_StalledCount(t *testing.T) {
+	ws1 := testWS("branch-a")
+	ws1.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now().Add(-time.Hour)} // stalled
+	ws2 := testWS("branch-b")
+	ws2.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now()} // working, not counted
+	m := newTestModel(ws1, ws2)
+	bar := m.statusBar()
+	if !strings.Contains(bar, "1 stalled") {
+		t.Errorf("statusBar() should show '1 stalled', got: %s", bar)
 	}
 }
 

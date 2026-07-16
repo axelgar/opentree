@@ -325,20 +325,16 @@ func (m Model) View() string {
 				title += "  " + notPushedBadgeStyle.Render("not pushed")
 			}
 
-			// Agent completion badge
-			if ws.AgentStatus != nil {
-				switch ws.AgentStatus.Status {
-				case "success":
-					title += "  " + agentSuccessStyle.Render("done")
-				case "failure":
-					title += "  " + agentFailureStyle.Render("failed")
-				case "error":
-					title += "  " + agentErrorStyle.Render("error")
-				case "in_progress":
-					title += "  " + agentInProgressStyle.Render("working...")
-				case "needs_input":
-					title += "  " + agentNeedsInputStyle.Render("needs input")
-				}
+			// Agent liveness badge (working / waiting vs. stalled / idle)
+			switch live, since := ws.liveness(); live {
+			case livenessWorking:
+				title += "  " + agentWorkingStyle.Render("working…")
+			case livenessStalled:
+				title += "  " + agentStalledStyle.Render(badgeWithAge("stalled", since))
+			case livenessWaiting:
+				title += "  " + agentWaitingStyle.Render("waiting · your turn")
+			case livenessIdle:
+				title += "  " + agentIdleStyle.Render(badgeWithAge("idle", since))
 			}
 
 			// Description line
@@ -428,8 +424,8 @@ func (m Model) statusBar() string {
 	total := len(m.workspaces)
 	active := 0
 	openPRs := 0
-	doneCount := 0
-	needsInput := 0
+	waiting := 0
+	stalled := 0
 	for _, ws := range m.workspaces {
 		if ws.Active {
 			active++
@@ -437,11 +433,11 @@ func (m Model) statusBar() string {
 		if ws.PRStatus == "open" {
 			openPRs++
 		}
-		if ws.AgentStatus != nil && (ws.AgentStatus.Status == "success" || ws.AgentStatus.Status == "failure" || ws.AgentStatus.Status == "error") {
-			doneCount++
-		}
-		if ws.AgentStatus != nil && ws.AgentStatus.Status == "needs_input" {
-			needsInput++
+		switch live, _ := ws.liveness(); live {
+		case livenessWaiting:
+			waiting++
+		case livenessStalled:
+			stalled++
 		}
 	}
 	parts := []string{
@@ -450,11 +446,11 @@ func (m Model) statusBar() string {
 		fmt.Sprintf("%d open PRs", openPRs),
 		"sort: " + sortModeNames[m.sortMode],
 	}
-	if needsInput > 0 {
-		parts = append(parts, fmt.Sprintf("%d need input", needsInput))
+	if waiting > 0 {
+		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
 	}
-	if doneCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d done", doneCount))
+	if stalled > 0 {
+		parts = append(parts, fmt.Sprintf("%d stalled", stalled))
 	}
 	if len(m.selected) > 0 {
 		parts = append(parts, fmt.Sprintf("%d selected", len(m.selected)))
