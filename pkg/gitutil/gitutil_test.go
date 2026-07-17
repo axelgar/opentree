@@ -2,6 +2,7 @@ package gitutil
 
 import (
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -157,5 +158,42 @@ func TestRepoRoot_InGitRepo(t *testing.T) {
 	}
 	if root == "" {
 		t.Error("RepoRoot() returned empty string")
+	}
+}
+
+// Regression: RepoRoot used --show-toplevel, which inside a linked worktree
+// returns the worktree's root instead of the main repo's — so opentree run
+// from inside a workspace read the wrong state file and nested worktrees.
+func TestRepoRoot_InsideLinkedWorktree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	localDir := initRepoWithRemote(t)
+	runIn := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+	wtDir := filepath.Join(localDir, ".opentree", "feat-x")
+	runIn(localDir, "git", "worktree", "add", "-b", "feat-x", wtDir)
+
+	t.Chdir(localDir)
+	fromRoot, err := RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot() from repo root: %v", err)
+	}
+
+	t.Chdir(wtDir)
+	fromWorktree, err := RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot() from inside worktree: %v", err)
+	}
+
+	if fromWorktree != fromRoot {
+		t.Errorf("RepoRoot() inside worktree = %q, want main repo root %q", fromWorktree, fromRoot)
 	}
 }

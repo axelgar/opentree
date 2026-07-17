@@ -20,6 +20,9 @@ var DeleteCmd = &cobra.Command{
 	ValidArgsFunction: workspaceCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
+		if err := gitutil.ValidateBranchName(branchName); err != nil {
+			return err
+		}
 		repoRoot, err := gitutil.RepoRoot()
 		if err != nil {
 			return err
@@ -37,7 +40,7 @@ var DeleteCmd = &cobra.Command{
 		// Check for work that would be lost and prompt user
 		diff, err := svc.HasChanges(branchName)
 		if err != nil {
-			fmt.Printf("Warning: failed to check for changes: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to check for changes: %v\n", err)
 			diff = "(could not verify — the worktree may contain unsaved work)"
 		}
 		if strings.TrimSpace(diff) != "" {

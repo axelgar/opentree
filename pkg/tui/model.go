@@ -105,6 +105,16 @@ type Model struct {
 	// transient success notice (e.g. "sent N review comments")
 	notice string
 
+	// sequence numbers so an old banner's 3s clear-timer can't wipe a newer
+	// banner raised in the meantime
+	errSeq    int
+	noticeSeq int
+
+	// in-flight guards so slow git/gh work can't pile up under the periodic
+	// refresh ticks
+	refreshing           bool
+	statusChecksInFlight int
+
 	// diff view
 	diffViewing      bool
 	diffContent      string
@@ -141,14 +151,14 @@ type createdWorkspaceMsg struct {
 	branch      string
 	worktreeDir string
 }
-type deletedWorkspaceMsg struct{}
+type deletedWorkspaceMsg struct{ names []string }
 type errMsg struct{ err error }
-type clearErrorMsg struct{}
-type clearNoticeMsg struct{}
+type clearErrorMsg struct{ seq int }
+type clearNoticeMsg struct{ seq int }
 type attachFinishedMsg struct{ err error }
 type prStatusTickMsg struct{}
 type prCreatedMsg struct{ wsName, prURL string }
-type prContentGeneratedMsg struct{ title, body string }
+type prContentGeneratedMsg struct{ wsName, title, body string }
 type prStatusCheckedMsg struct {
 	wsName   string
 	prURL    string
@@ -171,7 +181,8 @@ type diffLoadedMsg struct {
 	wsName  string
 }
 type capturePreviewMsg struct {
-	lines string
+	wsName string // workspace the capture belongs to, so stale ones are dropped
+	lines  string
 }
 type reviewsSentMsg struct {
 	wsName string
@@ -201,9 +212,10 @@ func NewModel() (*Model, error) {
 	pm := workspace.NewTmuxProcessManager(tm)
 	svc := workspace.NewService(repoRoot, cfg, wt, pm, st, gh)
 
+	// No CharLimit: the same input holds generated PR titles and bodies,
+	// which a limit would silently truncate.
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
-	ti.CharLimit = 50
 	ti.Width = 30
 
 	return &Model{

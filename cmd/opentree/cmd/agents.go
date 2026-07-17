@@ -81,34 +81,30 @@ var agentsUseCmd = &cobra.Command{
 			return fmt.Errorf("agent %q not found", args[0])
 		}
 
+		args0 := agent.Args
+		if args0 == nil {
+			args0 = []string{}
+		}
+		// Write only the agent keys into the raw target file: saving a
+		// merged Config would freeze every default/global value into it.
+		values := map[string]any{
+			"agent.command": agent.Command,
+			"agent.args":    args0,
+		}
+
 		if agentsUseGlobal {
-			cfg, err := config.LoadGlobal()
-			if err != nil {
-				return fmt.Errorf("failed to load global config: %w", err)
+			path := config.GlobalConfigPath()
+			if path == "" {
+				return fmt.Errorf("could not determine global config path: home directory not found")
 			}
-			cfg.Agent.Command = agent.Command
-			cfg.Agent.Args = agent.Args
-			if cfg.Agent.Args == nil {
-				cfg.Agent.Args = []string{}
-			}
-			if err := config.SaveGlobal(cfg); err != nil {
+			if err := config.SetKeys(path, values); err != nil {
 				return fmt.Errorf("failed to save global config: %w", err)
 			}
 			fmt.Printf("Agent set to %q (%s)  (global)\n", agent.Name, agent.Command)
 			return nil
 		}
 
-		cfgPath := config.FindConfigFile()
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
-		cfg.Agent.Command = agent.Command
-		cfg.Agent.Args = agent.Args
-		if cfg.Agent.Args == nil {
-			cfg.Agent.Args = []string{}
-		}
-		if err := config.Save(cfg, cfgPath); err != nil {
+		if err := config.SetKeys(config.FindConfigFile(), values); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
 		fmt.Printf("Agent set to %q (%s)\n", agent.Name, agent.Command)

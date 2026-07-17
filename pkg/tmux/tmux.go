@@ -40,12 +40,17 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 		}
 	}
 
-	// Create new window
+	// Create new window, capturing its unique window ID so later commands
+	// target exactly this window (names would prefix-match and "." or digits
+	// in a name are parsed specially by tmux target syntax).
 	windowName := c.sanitizeWindowName(name)
-	cmd := exec.Command("tmux", "new-window", "-t", sessionName, "-n", windowName, "-c", workdir)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	cmd := exec.Command("tmux", "new-window", "-t", exactSession(sessionName)+":",
+		"-n", windowName, "-c", workdir, "-P", "-F", "#{window_id}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
 	}
+	windowID := strings.TrimSpace(string(output))
 
 	// Send command to the window, raising the file descriptor limit first
 	// so that tools like claude and opencode don't hit the default macOS limit.
@@ -59,18 +64,45 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 	}
 	fullCmd = fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", fullCmd)
 
-	target := fmt.Sprintf("%s:%s", sessionName, windowName)
 	// -l types the command line literally so tmux never interprets it as key names.
-	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", target, "--", fullCmd)
+	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", windowID, "--", fullCmd)
 	if output, err := sendCmd.CombinedOutput(); err != nil {
+		// Don't leave a dead window behind for the retry to collide with.
+		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
 		return fmt.Errorf("failed to send command to window: %w\nOutput: %s", err, output)
 	}
-	enterCmd := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	enterCmd := exec.Command("tmux", "send-keys", "-t", windowID, "Enter")
 	if output, err := enterCmd.CombinedOutput(); err != nil {
+		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
 		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
 	}
 
 	return nil
+}
+
+// exactSession prefixes a session name with "=" so tmux matches it exactly
+// instead of by prefix (without it, "opentree-app" would match a session
+// named "opentree-app-docs").
+func exactSession(name string) string {
+	return "=" + name
+}
+
+// findWindowID returns the unique tmux window ID (e.g. "@3") for the window
+// with the given name. Matching is exact and done in Go: tmux "-t sess:name"
+// targets prefix-match window names and parse "." and digits specially, so
+// they can silently resolve to the wrong window.
+func (c *Controller) findWindowID(name string) (string, error) {
+	windowName := c.sanitizeWindowName(name)
+	windows, err := c.ListWindows()
+	if err != nil {
+		return "", err
+	}
+	for _, w := range windows {
+		if w.Name == windowName {
+			return w.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no tmux window named %q", windowName)
 }
 
 // shellQuote single-quotes s for safe inclusion in a POSIX shell command line.
@@ -86,8 +118,9 @@ func (c *Controller) ListWindows() ([]Window, error) {
 		return []Window{}, nil
 	}
 
-	// Format: window_id window_name window_active
-	cmd := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_id}|#{window_name}|#{window_active}")
+	// Format: window_id window_active window_name — the name is last so
+	// names containing "|" survive parsing (SplitN keeps the remainder).
+	cmd := exec.Command("tmux", "list-windows", "-t", exactSession(sessionName), "-F", "#{window_id}|#{window_active}|#{window_name}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list windows: %w", err)
@@ -98,9 +131,11 @@ func (c *Controller) ListWindows() ([]Window, error) {
 
 // SelectWindow selects a tmux window by name without attaching.
 func (c *Controller) SelectWindow(name string) error {
-	sessionName := c.getSessionName()
-	windowName := c.sanitizeWindowName(name)
-	cmd := exec.Command("tmux", "select-window", "-t", fmt.Sprintf("%s:%s", sessionName, windowName))
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("tmux", "select-window", "-t", windowID)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to select window: %w\nOutput: %s", err, output)
 	}
@@ -152,15 +187,18 @@ func isTerminal(f *os.File) bool {
 func (c *Controller) AttachWindow(name string) error {
 	env := c.detectEnv()
 	sessionName := c.getSessionName()
-	windowTarget := fmt.Sprintf("%s:%s", sessionName, c.sanitizeWindowName(name))
 
 	switch env {
 	case envNoTTY:
 		return fmt.Errorf("attach requires an interactive terminal (no TTY detected)")
 
 	case envOutsideTmux:
-		_ = c.SelectWindow(name)
-		cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
+		// Fail on a missing window instead of silently attaching to
+		// whatever window happens to be current in the session.
+		if err := c.SelectWindow(name); err != nil {
+			return err
+		}
+		cmd := exec.Command("tmux", "attach-session", "-t", exactSession(sessionName))
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		var stderr bytes.Buffer
@@ -176,7 +214,10 @@ func (c *Controller) AttachWindow(name string) error {
 		return c.SelectWindow(name)
 
 	case envInsideDifferentSession:
-		cmd := exec.Command("tmux", "switch-client", "-t", windowTarget)
+		if err := c.SelectWindow(name); err != nil {
+			return err
+		}
+		cmd := exec.Command("tmux", "switch-client", "-t", exactSession(sessionName))
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -197,21 +238,29 @@ func (c *Controller) AttachWindow(name string) error {
 func (c *Controller) AttachCmd(name string) (*exec.Cmd, error) {
 	env := c.detectEnv()
 	sessionName := c.getSessionName()
-	windowTarget := fmt.Sprintf("%s:%s", sessionName, c.sanitizeWindowName(name))
 
 	switch env {
 	case envNoTTY:
 		return nil, fmt.Errorf("attach requires an interactive terminal (no TTY detected)")
 
 	case envOutsideTmux:
-		_ = c.SelectWindow(name)
-		return exec.Command("tmux", "attach-session", "-t", sessionName), nil
+		if err := c.SelectWindow(name); err != nil {
+			return nil, err
+		}
+		return exec.Command("tmux", "attach-session", "-t", exactSession(sessionName)), nil
 
 	case envInsideSameSession:
-		return exec.Command("tmux", "select-window", "-t", windowTarget), nil
+		windowID, err := c.findWindowID(name)
+		if err != nil {
+			return nil, err
+		}
+		return exec.Command("tmux", "select-window", "-t", windowID), nil
 
 	case envInsideDifferentSession:
-		return exec.Command("tmux", "switch-client", "-t", windowTarget), nil
+		if err := c.SelectWindow(name); err != nil {
+			return nil, err
+		}
+		return exec.Command("tmux", "switch-client", "-t", exactSession(sessionName)), nil
 	}
 
 	return nil, fmt.Errorf("unknown tmux environment")
@@ -219,10 +268,12 @@ func (c *Controller) AttachCmd(name string) (*exec.Cmd, error) {
 
 // KillWindow stops and removes a tmux window
 func (c *Controller) KillWindow(name string) error {
-	sessionName := c.getSessionName()
-	windowName := c.sanitizeWindowName(name)
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return err
+	}
 
-	cmd := exec.Command("tmux", "kill-window", "-t", fmt.Sprintf("%s:%s", sessionName, windowName))
+	cmd := exec.Command("tmux", "kill-window", "-t", windowID)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to kill window: %w\nOutput: %s", err, output)
 	}
@@ -235,9 +286,10 @@ func (c *Controller) KillWindow(name string) error {
 // bracketed paste so multi-line payloads and words that look like tmux key
 // names ("Enter", "C-c", ...) arrive literally instead of being interpreted.
 func (c *Controller) SendMessage(name, text string) error {
-	sessionName := c.getSessionName()
-	windowName := c.sanitizeWindowName(name)
-	target := fmt.Sprintf("%s:%s", sessionName, windowName)
+	target, err := c.findWindowID(name)
+	if err != nil {
+		return err
+	}
 
 	load := exec.Command("tmux", "load-buffer", "-b", "opentree-msg", "-")
 	load.Stdin = strings.NewReader(text)
@@ -263,7 +315,14 @@ func (c *Controller) KillSession() error {
 		return nil // Session doesn't exist, nothing to do
 	}
 
-	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+	// Never kill the session this client is running inside (e.g. the TUI
+	// open in a shell window of the opentree session): that would SIGHUP
+	// the caller mid-operation. Leaving the session behind is harmless.
+	if c.detectEnv() == envInsideSameSession {
+		return nil
+	}
+
+	cmd := exec.Command("tmux", "kill-session", "-t", exactSession(sessionName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to kill session: %w\nOutput: %s", err, output)
 	}
@@ -273,10 +332,12 @@ func (c *Controller) KillSession() error {
 
 // CapturePane captures recent output from a window
 func (c *Controller) CapturePane(name string, lines int) (string, error) {
-	sessionName := c.getSessionName()
-	windowName := c.sanitizeWindowName(name)
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return "", err
+	}
 
-	cmd := exec.Command("tmux", "capture-pane", "-t", fmt.Sprintf("%s:%s", sessionName, windowName),
+	cmd := exec.Command("tmux", "capture-pane", "-t", windowID,
 		"-p", "-S", fmt.Sprintf("-%d", lines))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -286,12 +347,27 @@ func (c *Controller) CapturePane(name string, lines int) (string, error) {
 	return string(output), nil
 }
 
+// PaneCurrentCommand returns the name of the process currently running in a
+// window's active pane (e.g. "zsh", "opencode").
+func (c *Controller) PaneCurrentCommand(name string) (string, error) {
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return "", err
+	}
+	out, err := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_current_command}").Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get pane command: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // GetWindowActivity returns the timestamp of the last activity in a tmux window.
 func (c *Controller) GetWindowActivity(name string) (time.Time, error) {
-	sessionName := c.getSessionName()
-	windowName := c.sanitizeWindowName(name)
-	cmd := exec.Command("tmux", "display-message", "-t",
-		fmt.Sprintf("%s:%s", sessionName, windowName), "-p", "#{window_activity}")
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	cmd := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{window_activity}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to get window activity: %w", err)
@@ -306,14 +382,18 @@ func (c *Controller) GetWindowActivity(name string) (time.Time, error) {
 // getSessionName returns the tmux session name for this repository.
 // It includes the repository directory name so multiple repos can coexist.
 func (c *Controller) getSessionName() string {
+	// "." and ":" are special in tmux target syntax and invalid in session
+	// names; sanitize the configured prefix the same way repoName() is.
+	prefix := strings.ReplaceAll(c.sessionPrefix, ".", "-")
+	prefix = strings.ReplaceAll(prefix, ":", "-")
 	repoName := c.repoName()
 	if repoName == "" {
-		return c.sessionPrefix
+		return prefix
 	}
-	if c.sessionPrefix == "" {
+	if prefix == "" {
 		return repoName
 	}
-	return c.sessionPrefix + "-" + repoName
+	return prefix + "-" + repoName
 }
 
 // repoName derives a short, sanitized name from the current git repository root.
@@ -335,7 +415,7 @@ func (c *Controller) repoName() string {
 
 // sessionExists checks if a tmux session exists
 func (c *Controller) sessionExists(name string) bool {
-	cmd := exec.Command("tmux", "has-session", "-t", name)
+	cmd := exec.Command("tmux", "has-session", "-t", exactSession(name))
 	return cmd.Run() == nil
 }
 
@@ -363,15 +443,16 @@ func (c *Controller) parseWindows(output string) ([]Window, error) {
 			continue
 		}
 
-		parts := strings.Split(line, "|")
+		// id|active|name — name is last so names containing "|" stay intact.
+		parts := strings.SplitN(line, "|", 3)
 		if len(parts) != 3 {
 			continue
 		}
 
 		windows = append(windows, Window{
 			ID:     parts[0],
-			Name:   parts[1],
-			Active: parts[2] == "1",
+			Name:   parts[2],
+			Active: parts[1] == "1",
 		})
 	}
 

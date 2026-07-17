@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -414,5 +416,104 @@ func TestLoadWithSources_DefaultsWhenNeitherConfigExists(t *testing.T) {
 	}
 	if sources.WorktreeBaseDir != SourceDefault {
 		t.Errorf("sources.WorktreeBaseDir = %q, want %q", sources.WorktreeBaseDir, SourceDefault)
+	}
+}
+
+// ---- SetKeys ----
+
+// Regression: `config set` used to load the fully merged config (defaults +
+// global + repo) and Save all of it, freezing every inherited value into the
+// target file so later global changes silently stopped applying.
+func TestSetKeys_OnlyWritesGivenKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opentree.toml")
+	if err := os.WriteFile(path, []byte("[agent]\ncommand = 'claude'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetKeys(path, map[string]any{"worktree.default_base": "develop"}); err != nil {
+		t.Fatalf("SetKeys: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "default_base = 'develop'") {
+		t.Errorf("file missing the set key:\n%s", content)
+	}
+	if !strings.Contains(content, "command = 'claude'") {
+		t.Errorf("file lost a pre-existing key:\n%s", content)
+	}
+	// Keys the file never set must not appear (no frozen defaults).
+	for _, frozen := range []string{"base_dir", "session_prefix", "auto_push", "args"} {
+		if strings.Contains(content, frozen) {
+			t.Errorf("file gained unrelated key %q (merged config frozen in):\n%s", frozen, content)
+		}
+	}
+}
+
+func TestSetKeys_CreatesMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "opentree.toml")
+	if err := SetKeys(path, map[string]any{"agent.command": "claude", "agent.args": []string{"-x"}}); err != nil {
+		t.Fatalf("SetKeys: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.Command != "claude" {
+		t.Errorf("agent.command = %q, want claude", cfg.Agent.Command)
+	}
+	if len(cfg.Agent.Args) != 1 || cfg.Agent.Args[0] != "-x" {
+		t.Errorf("agent.args = %v, want [-x]", cfg.Agent.Args)
+	}
+}
+
+// ---- FindConfigFile repo anchoring ----
+
+// Regression: FindConfigFile walked above the repository root, so a stray
+// ~/opentree.toml was adopted as (and overwritten as) the repo's config, and
+// a miss returned a cwd-relative path that scattered configs across subdirs.
+func TestFindConfigFile_StopsAtRepoRoot(t *testing.T) {
+	if err := exec.Command("git", "--version").Run(); err != nil {
+		t.Skip("git not available")
+	}
+	outer := t.TempDir()
+	repo := filepath.Join(outer, "repo")
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init", "-q")
+
+	// A config ABOVE the repo must be ignored.
+	if err := os.WriteFile(filepath.Join(outer, "opentree.toml"), []byte("[agent]\ncommand='evil'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(sub)
+	got := FindConfigFile()
+	realRepo, _ := filepath.EvalSymlinks(repo)
+	want := filepath.Join(realRepo, "opentree.toml")
+	if got != want {
+		t.Errorf("FindConfigFile() = %q, want repo-root anchored %q", got, want)
+	}
+
+	// A config at the repo root is found from a subdir.
+	if err := os.WriteFile(want, []byte("[agent]\ncommand='ok'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindConfigFile(); got != want {
+		t.Errorf("FindConfigFile() = %q, want %q", got, want)
 	}
 }

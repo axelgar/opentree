@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -134,6 +135,12 @@ func shellSingleQuote(s string) string {
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
+	// Fail before creating anything, not with a "✓ Launched" success message
+	// and a dead shell window.
+	if err := s.cfg.Agent.Validate(); err != nil {
+		return nil, err
+	}
+
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
@@ -157,6 +164,10 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 		WorktreeDir: worktreePath,
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
+		// Roll back: a worktree+window with no state entry is invisible to
+		// the TUI and to Prune, so it would leak forever.
+		_ = s.process.KillWindow(name)
+		_ = s.worktrees.Delete(name, true)
 		return nil, fmt.Errorf("failed to save workspace state: %w", err)
 	}
 
@@ -189,8 +200,9 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 	taskContent := github.IssueTaskContent(issue)
 	taskFile := filepath.Join(ws.WorktreeDir, "TASK.md")
 	if err := os.WriteFile(taskFile, []byte(taskContent), 0600); err != nil {
-		// Non-fatal: workspace was created successfully
-		fmt.Printf("Warning: could not write TASK.md: %v\n", err)
+		// Non-fatal: workspace was created successfully. Warn on stderr —
+		// stdout would be drawn over the TUI's rendered screen.
+		fmt.Fprintf(os.Stderr, "Warning: could not write TASK.md: %v\n", err)
 	}
 
 	// Update workspace with issue metadata
@@ -206,7 +218,12 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 // CreateFromRemoteBranch creates a workspace from an existing remote branch.
 // The branch is fetched from origin and checked out into a new worktree.
 func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, error) {
-	if err := s.worktrees.CreateFromRemote(branchName); err != nil {
+	if err := s.cfg.Agent.Validate(); err != nil {
+		return nil, err
+	}
+
+	createdBranch, err := s.worktrees.CreateFromRemote(branchName)
+	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree from remote: %w", err)
 	}
 
@@ -215,14 +232,17 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	agentCmd := s.cfg.Agent.Command
 	launchCmd := agentLaunchCommand(agentCmd, worktreePath)
 	if err := s.process.CreateWindow(branchName, worktreePath, launchCmd, s.cfg.Agent.Args...); err != nil {
-		_ = s.worktrees.Delete(branchName, true) // cleanup orphaned worktree
+		// Cleanup the orphaned worktree, but only delete the local branch if
+		// this call created it — a pre-existing branch may hold the user's
+		// local-only commits.
+		_ = s.worktrees.Delete(branchName, createdBranch)
 		return nil, fmt.Errorf("failed to create tmux window: %w", err)
 	}
 
 	ws := &state.Workspace{
 		Name:         branchName,
 		Branch:       branchName,
-		BaseBranch:   "",
+		BaseBranch:   s.cfg.Worktree.DefaultBase,
 		CreatedAt:    time.Now(),
 		Status:       "active",
 		Agent:        agentCmd,
@@ -230,21 +250,26 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 		BranchPushed: true,
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
+		_ = s.process.KillWindow(branchName)
+		_ = s.worktrees.Delete(branchName, createdBranch)
 		return nil, fmt.Errorf("failed to save workspace state: %w", err)
 	}
 
 	return ws, nil
 }
 
-// Delete removes a workspace: kills tmux window, removes worktree and branch, deletes state.
-// If this was the last workspace, the tmux session is also killed.
+// Delete removes a workspace: removes worktree and branch, kills the tmux
+// window, and deletes state. If this was the last workspace, the tmux
+// session is also killed.
 func (s *Service) Delete(name string) error {
-	// Kill tmux window (ignore error if window doesn't exist)
-	_ = s.process.KillWindow(name)
-
+	// Remove the worktree BEFORE killing the window: if removal fails
+	// (locked worktree, cwd inside it, ...) the agent session survives.
 	if err := s.worktrees.Delete(name, true); err != nil {
 		return fmt.Errorf("failed to delete worktree: %w", err)
 	}
+
+	// Kill tmux window (ignore error if window doesn't exist)
+	_ = s.process.KillWindow(name)
 
 	if err := s.state.DeleteWorkspace(name); err != nil {
 		return fmt.Errorf("failed to delete workspace state: %w", err)
@@ -258,15 +283,18 @@ func (s *Service) Delete(name string) error {
 	return nil
 }
 
-// DeleteMultiple removes multiple workspaces in sequence.
+// DeleteMultiple removes multiple workspaces in sequence. A failure on one
+// workspace doesn't abandon the rest; all errors are reported together.
 func (s *Service) DeleteMultiple(names []string) error {
+	var errs []error
 	for _, name := range names {
-		_ = s.process.KillWindow(name)
 		if err := s.worktrees.Delete(name, true); err != nil {
-			return fmt.Errorf("delete %s: %w", name, err)
+			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
+			continue
 		}
+		_ = s.process.KillWindow(name)
 		if err := s.state.DeleteWorkspace(name); err != nil {
-			return fmt.Errorf("delete state %s: %w", name, err)
+			errs = append(errs, fmt.Errorf("delete state %s: %w", name, err))
 		}
 	}
 
@@ -274,7 +302,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 		_ = s.process.KillSession()
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // HasChanges reports work that would be lost by deleting the workspace:
@@ -286,7 +314,7 @@ func (s *Service) HasChanges(name string) (string, error) {
 		return "", nil // no worktree on disk — nothing to lose
 	}
 
-	baseBranch := "main"
+	baseBranch := s.cfg.Worktree.DefaultBase
 	if ws, err := s.state.GetWorkspace(name); err == nil && ws.BaseBranch != "" {
 		baseBranch = ws.BaseBranch
 	}
@@ -326,12 +354,29 @@ func (s *Service) SendReviewsToAgent(name string) (int, error) {
 		return 0, nil
 	}
 
+	// Review bodies are attacker-controlled text (anyone can review a public
+	// PR). Pasting them into a pane sitting at a shell prompt — agent
+	// crashed or exited — would execute them as shell commands.
+	if cmdName, err := s.process.PaneCurrentCommand(name); err == nil && isShell(cmdName) {
+		return 0, fmt.Errorf("the agent is not running in workspace %q (its window is at a shell prompt) — start it before sending reviews", name)
+	}
+
 	prompt := github.FormatReviewsPrompt(comments)
 	if err := s.process.SendMessage(name, prompt); err != nil {
 		return 0, fmt.Errorf("failed to send reviews to agent: %w", err)
 	}
 
 	return len(comments), nil
+}
+
+// isShell reports whether a pane's current command is an interactive shell
+// rather than a running agent.
+func isShell(command string) bool {
+	switch command {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh":
+		return true
+	}
+	return false
 }
 
 // CreatePR creates a GitHub pull request for a workspace.

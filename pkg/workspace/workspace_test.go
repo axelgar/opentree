@@ -25,6 +25,7 @@ type mockProcessManager struct {
 	sendMessageCalls  []sendMessageCall
 	sendMessageErr    error
 	windows           []Window
+	paneCommand       string // returned by PaneCurrentCommand; "" simulates "no window"
 }
 
 func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ...string) error {
@@ -47,6 +48,12 @@ func (m *mockProcessManager) KillSession() error {
 	return nil
 }
 func (m *mockProcessManager) CapturePane(name string, lines int) (string, error) { return "", nil }
+func (m *mockProcessManager) PaneCurrentCommand(name string) (string, error) {
+	if m.paneCommand == "" {
+		return "", errors.New("no tmux window")
+	}
+	return m.paneCommand, nil
+}
 func (m *mockProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return time.Time{}, nil
 }
@@ -99,6 +106,7 @@ func TestSendReviewsToAgent_WorkspaceNotFound(t *testing.T) {
 	}
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	svc, err := newWithMockFull(repoDir, cfg, &mockProcessManager{}, &mockGitHubManager{})
 	if err != nil {
 		t.Fatalf("newWithMockFull: %v", err)
@@ -119,6 +127,7 @@ func TestSendReviewsToAgent_FetchError(t *testing.T) {
 	}
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	fetchErr := errors.New("gh: authentication required")
@@ -152,6 +161,7 @@ func TestSendReviewsToAgent_PartialFetchStillSendsComments(t *testing.T) {
 	}
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -187,6 +197,7 @@ func TestSendReviewsToAgent_NoComments(t *testing.T) {
 	}
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -219,6 +230,7 @@ func TestSendReviewsToAgent_SendsPromptToAgent(t *testing.T) {
 	}
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	reviews := []github.ReviewComment{
@@ -271,6 +283,7 @@ func TestSendReviewsToAgent_SendMessageError(t *testing.T) {
 	}
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	reviews := []github.ReviewComment{
@@ -303,6 +316,7 @@ func TestSendReviewsToAgent_SendMessageError(t *testing.T) {
 
 func TestWorktreePath(t *testing.T) {
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 	svc := &Service{repoRoot: "/repo", cfg: cfg}
 
@@ -325,6 +339,7 @@ func TestWorktreePath(t *testing.T) {
 
 func TestWorktreePath_CustomBaseDir(t *testing.T) {
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = "worktrees"
 	svc := &Service{repoRoot: "/home/user/project", cfg: cfg}
 
@@ -373,6 +388,7 @@ func TestCreateAndDelete(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -426,6 +442,7 @@ func TestDeleteMultiple(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -502,6 +519,7 @@ func TestCreateFromRemoteBranch(t *testing.T) {
 
 	localDir := initRepoWithRemote(t, "feat/remote-thing")
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -518,8 +536,10 @@ func TestCreateFromRemoteBranch(t *testing.T) {
 	if ws.Name != "feat/remote-thing" {
 		t.Errorf("ws.Name = %q, want %q", ws.Name, "feat/remote-thing")
 	}
-	if ws.BaseBranch != "" {
-		t.Errorf("ws.BaseBranch = %q, want empty string", ws.BaseBranch)
+	// Remote workspaces record the configured default base so diffs and the
+	// delete-time lost-work check have a real base to compare against.
+	if ws.BaseBranch != cfg.Worktree.DefaultBase {
+		t.Errorf("ws.BaseBranch = %q, want %q", ws.BaseBranch, cfg.Worktree.DefaultBase)
 	}
 	if !ws.BranchPushed {
 		t.Error("ws.BranchPushed should be true for a remote branch workspace")
@@ -542,6 +562,7 @@ func TestHasChanges_NoWorkspace(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 
 	svc, err := New(repoDir, cfg)
 	if err != nil {
@@ -616,6 +637,7 @@ func TestCreatePR_NoAutoPushWhenDisabled(t *testing.T) {
 
 	localDir := initRepoWithRemote(t, "feat/seed")
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 	off := false
 	cfg.GitHub.AutoPush = &off
@@ -652,6 +674,7 @@ func TestWindowStatuses(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -700,6 +723,7 @@ func TestPrune_RemovesStaleEntries(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -769,6 +793,7 @@ func TestHasChanges_ReportsUntrackedFiles(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
@@ -804,6 +829,7 @@ func TestHasChanges_ReportsUntrackedFiles(t *testing.T) {
 
 func TestNewService_NilFields(t *testing.T) {
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	svc := NewService("/repo", cfg, nil, nil, nil, nil)
 	if svc.repoRoot != "/repo" {
 		t.Errorf("repoRoot = %q, want %q", svc.repoRoot, "/repo")
@@ -815,6 +841,7 @@ func TestNewService_NilFields(t *testing.T) {
 
 func TestSanitizeBranchNameInPath(t *testing.T) {
 	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 	svc := &Service{repoRoot: "/repo", cfg: cfg}
 
@@ -840,5 +867,77 @@ func TestAgentLaunchCommand(t *testing.T) {
 	}
 	if q := shellSingleQuote(`a'b`); q != `'a'\''b'` {
 		t.Errorf("shellSingleQuote(a'b) = %q, want 'a'\\''b'", q)
+	}
+}
+
+// Regression: review bodies are attacker-controlled; if the agent exited and
+// the pane sits at a shell prompt, pasting them + Enter executes them.
+func TestSendReviewsToAgent_RefusesShellPane(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{paneCommand: "zsh"}
+	ghMock := &mockGitHubManager{
+		fetchReviewsResult: []github.ReviewComment{{Author: "mallory", Body: "rm -rf ~", State: "CHANGES_REQUESTED"}},
+	}
+	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+	ws, err := svc.Create("my-branch", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, sendErr := svc.SendReviewsToAgent(ws.Name)
+	if sendErr == nil {
+		t.Fatal("expected refusal when pane shows a shell prompt")
+	}
+	if len(mock.sendMessageCalls) != 0 {
+		t.Error("review text must not be pasted into a shell pane")
+	}
+
+	// With the agent actually running, sending proceeds.
+	mock.paneCommand = "opencode"
+	count, err := svc.SendReviewsToAgent(ws.Name)
+	if err != nil {
+		t.Fatalf("SendReviewsToAgent with running agent: %v", err)
+	}
+	if count != 1 || len(mock.sendMessageCalls) != 1 {
+		t.Errorf("count = %d, sends = %d; want 1 and 1", count, len(mock.sendMessageCalls))
+	}
+}
+
+// Regression: Create with a nonexistent agent binary used to print
+// "✓ Launched ..." and leave a dead shell window behind.
+func TestCreate_RejectsMissingAgentBinary(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Agent.Command = "definitely-not-a-real-binary-xyz"
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMockFull(repoDir, cfg, mock, &mockGitHubManager{})
+	if err != nil {
+		t.Fatalf("newWithMockFull: %v", err)
+	}
+
+	_, err = svc.Create("my-branch", "main")
+	if err == nil {
+		t.Fatal("expected error for missing agent binary")
+	}
+	if len(mock.createWindowCalls) != 0 {
+		t.Error("no window should be created when the agent binary is missing")
+	}
+	if _, statErr := os.Stat(filepath.Join(repoDir, ".opentree", "my-branch")); statErr == nil {
+		t.Error("no worktree should be created when the agent binary is missing")
 	}
 }

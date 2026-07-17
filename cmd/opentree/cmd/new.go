@@ -38,6 +38,9 @@ var NewCmd = &cobra.Command{
 		}
 
 		if fromRemote {
+			if base, _ := cmd.Flags().GetString("base"); base != "" {
+				return fmt.Errorf("--base cannot be combined with --remote: the remote branch's own history determines its base")
+			}
 			ws, err := svc.CreateFromRemoteBranch(branchName)
 			if err != nil {
 				return err

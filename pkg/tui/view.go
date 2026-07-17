@@ -372,10 +372,7 @@ func (m Model) View() string {
 		if m.cursor < len(visible) {
 			ws := visible[m.cursor]
 			if len(ws.FileChanges) > 0 {
-				previewWidth := m.width - 8
-				if previewWidth < 20 {
-					previewWidth = 60
-				}
+				previewWidth := m.panelWidth()
 				content := m.renderFileChanges(ws.FileChanges, previewWidth)
 				s.WriteString(fileChangesBoxStyle.Width(previewWidth).Render(content))
 				s.WriteString("\n")
@@ -385,10 +382,7 @@ func (m Model) View() string {
 		// Agent output preview for selected workspace
 		if m.agentPreview != "" && m.cursor < len(visible) {
 			wsName := visible[m.cursor].Name
-			previewWidth := m.width - 8
-			if previewWidth < minPreviewWidth {
-				previewWidth = defaultPreviewWidth
-			}
+			previewWidth := m.panelWidth()
 			content := previewTitleStyle.Render("Agent Output: "+wsName) + "\n" +
 				previewLineStyle.Render(m.agentPreview)
 			s.WriteString(previewBoxStyle.Width(previewWidth).Render(content))
@@ -462,6 +456,26 @@ func (m Model) statusBar() string {
 }
 
 // visibleWorkspaces returns the sorted and filtered workspace list.
+// panelWidth returns the width for full-width panels. Before the first
+// WindowSizeMsg (width 0) it falls back to the default; on genuinely narrow
+// terminals it clamps to the minimum instead of overflowing every line.
+func (m Model) panelWidth() int {
+	if m.width <= 0 {
+		return defaultPreviewWidth
+	}
+	return max(minPreviewWidth, m.width-8)
+}
+
+// currentWorkspaceName returns the name of the workspace under the cursor,
+// or "" when the visible list is empty.
+func (m Model) currentWorkspaceName() string {
+	visible := m.visibleWorkspaces()
+	if len(visible) == 0 || m.cursor >= len(visible) {
+		return ""
+	}
+	return visible[m.cursor].Name
+}
+
 func (m Model) visibleWorkspaces() []WorkspaceItem {
 	sorted := m.sortedWorkspaces()
 	if m.filterQuery == "" {
@@ -478,17 +492,26 @@ func (m Model) visibleWorkspaces() []WorkspaceItem {
 }
 
 // sortedWorkspaces returns a copy of m.workspaces sorted by m.sortMode.
+// Every mode breaks ties by name: the base list comes from map iteration
+// (random per refresh), so without a total order tied rows would reshuffle
+// on every refresh underneath the cursor.
 func (m Model) sortedWorkspaces() []WorkspaceItem {
 	ws := make([]WorkspaceItem, len(m.workspaces))
 	copy(ws, m.workspaces)
 	switch m.sortMode {
 	case sortByAge:
 		sort.Slice(ws, func(i, j int) bool {
-			return ws[i].CreatedAt.After(ws[j].CreatedAt)
+			if !ws[i].CreatedAt.Equal(ws[j].CreatedAt) {
+				return ws[i].CreatedAt.After(ws[j].CreatedAt)
+			}
+			return ws[i].Name < ws[j].Name
 		})
 	case sortByActivity:
 		sort.Slice(ws, func(i, j int) bool {
-			return ws[i].LastActivity.After(ws[j].LastActivity)
+			if !ws[i].LastActivity.Equal(ws[j].LastActivity) {
+				return ws[i].LastActivity.After(ws[j].LastActivity)
+			}
+			return ws[i].Name < ws[j].Name
 		})
 	case sortByPR:
 		prOrder := func(s string) int {
@@ -502,7 +525,10 @@ func (m Model) sortedWorkspaces() []WorkspaceItem {
 			}
 		}
 		sort.Slice(ws, func(i, j int) bool {
-			return prOrder(ws[i].PRStatus) < prOrder(ws[j].PRStatus)
+			if a, b := prOrder(ws[i].PRStatus), prOrder(ws[j].PRStatus); a != b {
+				return a < b
+			}
+			return ws[i].Name < ws[j].Name
 		})
 	default: // sortByName
 		sort.Slice(ws, func(i, j int) bool {

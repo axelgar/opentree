@@ -26,7 +26,6 @@ import (
 func newTestModel(workspaces ...WorkspaceItem) Model {
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"
-	ti.CharLimit = 50
 	ti.Width = 30
 	return Model{
 		cfg:        config.Default(),
@@ -108,7 +107,7 @@ func TestReviewsSentMsg_Feedback(t *testing.T) {
 		t.Error("expected auto-clear command for the notice")
 	}
 
-	m, _ = applyUpdate(m, clearNoticeMsg{})
+	m, _ = applyUpdate(m, clearNoticeMsg{seq: m.noticeSeq})
 	if m.notice != "" {
 		t.Errorf("notice = %q after clearNoticeMsg, want empty", m.notice)
 	}
@@ -394,10 +393,22 @@ func TestCapturePreviewCmd_ReturnsNonNilCmdWhenWindowExists(t *testing.T) {
 
 func TestAgentPreview_MessageUpdatesModel(t *testing.T) {
 	m := newTestModel(testWS("ws"))
-	m, _ = applyUpdate(m, capturePreviewMsg{lines: "doing something..."})
+	m, _ = applyUpdate(m, capturePreviewMsg{wsName: "ws", lines: "doing something..."})
 
 	if m.agentPreview != "doing something..." {
 		t.Errorf("agentPreview = %q, want %q", m.agentPreview, "doing something...")
+	}
+}
+
+// Regression: a capture that finished after the cursor moved to another
+// workspace used to render the old workspace's output under the new header.
+func TestAgentPreview_StaleCaptureDropped(t *testing.T) {
+	m := newTestModel(testWS("ws"))
+	m.agentPreview = "current output"
+	m, _ = applyUpdate(m, capturePreviewMsg{wsName: "other-ws", lines: "stale output"})
+
+	if m.agentPreview != "current output" {
+		t.Errorf("agentPreview = %q, want stale capture dropped", m.agentPreview)
 	}
 }
 
@@ -852,9 +863,16 @@ func TestErrorMessage_DisplayedAndCleared(t *testing.T) {
 		t.Errorf("View() does not show error message\ngot: %s", view)
 	}
 
-	m, _ = applyUpdate(m, clearErrorMsg{})
+	m, _ = applyUpdate(m, clearErrorMsg{seq: m.errSeq})
 	if m.err != nil {
 		t.Errorf("expected m.err=nil after clearErrorMsg, got %v", m.err)
+	}
+
+	// Regression: a stale timer (older seq) must not clear a newer banner.
+	m, _ = applyUpdate(m, errMsg{err: fmt.Errorf("newer error")})
+	m, _ = applyUpdate(m, clearErrorMsg{seq: m.errSeq - 1})
+	if m.err == nil {
+		t.Error("stale clearErrorMsg wiped a newer error banner")
 	}
 }
 
@@ -1549,5 +1567,120 @@ func TestAgentSelection_ViewShowsOverlay(t *testing.T) {
 	}
 	if !strings.Contains(view, "▶") {
 		t.Errorf("View() does not show selection indicator\ngot: %s", view)
+	}
+}
+
+// ---- Async identity regressions ----
+
+// Regression: prContentGeneratedMsg carried no workspace identity, so a slow
+// generation for workspace A could open the PR dialog with A's content while
+// prWsName pointed at workspace B — creating B's PR with A's title/body.
+func TestPRContentGenerated_StaleWorkspaceIgnored(t *testing.T) {
+	m := newTestModel(testWS("a"), testWS("b"))
+	m.prGenerating = true
+	m.prWsName = "b"
+
+	m, _ = applyUpdate(m, prContentGeneratedMsg{wsName: "a", title: "A title", body: "A body"})
+
+	if m.prCreating {
+		t.Error("stale prContentGeneratedMsg for another workspace must not open the PR dialog")
+	}
+	if !m.prGenerating {
+		t.Error("still waiting for workspace b's generation")
+	}
+}
+
+func TestPRContentGenerated_MatchingWorkspaceOpensDialog(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.prGenerating = true
+	m.prWsName = "a"
+
+	m, _ = applyUpdate(m, prContentGeneratedMsg{wsName: "a", title: "T", body: "B"})
+
+	if !m.prCreating || m.prGenerating {
+		t.Error("matching prContentGeneratedMsg should open the PR dialog")
+	}
+	if m.input.Value() != "T" {
+		t.Errorf("input = %q, want generated title", m.input.Value())
+	}
+}
+
+// Regression: keys weren't blocked while the "Generating PR…" screen was up,
+// so j/x/enter acted on the invisible list behind it.
+func TestPRGenerating_BlocksListKeys(t *testing.T) {
+	m := newTestModel(testWS("a"), testWS("b"))
+	m.prGenerating = true
+	m.prWsName = "a"
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if m.deleting {
+		t.Error("delete confirmation opened while PR generation screen was up")
+	}
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.prGenerating {
+		t.Error("esc should cancel PR generation")
+	}
+}
+
+// Regression: the cursor was a bare index, so a refresh that reordered rows
+// pointed destructive keys at whichever workspace moved under the cursor.
+func TestLoadedWorkspaces_CursorFollowsWorkspaceName(t *testing.T) {
+	m := newTestModel(testWS("alpha"), testWS("beta"), testWS("gamma"))
+	m.cursor = 1 // beta (sortByName: alpha, beta, gamma)
+
+	reordered := []WorkspaceItem{testWS("beta"), testWS("gamma"), testWS("alpha")}
+	m, _ = applyUpdate(m, loadedWorkspacesMsg{workspaces: reordered})
+
+	if got := m.currentWorkspaceName(); got != "beta" {
+		t.Errorf("cursor followed to %q, want to stay on beta", got)
+	}
+}
+
+// Regression: deletedWorkspaceMsg cleared ALL in-flight delete tracking and
+// the whole selection, so overlapping deletes lost their guard and a batch
+// confirmed after an unrelated delete finished deleted nothing, silently.
+func TestDeletedWorkspace_OnlyClearsFinishedNames(t *testing.T) {
+	m := newTestModel(testWS("a"), testWS("b"), testWS("c"))
+	m.markDeleting("a")
+	m.markDeleting("b")
+	m.selected = map[string]bool{"c": true}
+
+	m, _ = applyUpdate(m, deletedWorkspaceMsg{names: []string{"a"}})
+
+	if !m.isWorkspaceInFlight("b") {
+		t.Error("workspace b's in-flight delete tracking was lost")
+	}
+	if m.isWorkspaceInFlight("a") {
+		t.Error("workspace a should no longer be in flight")
+	}
+	if !m.selected["c"] {
+		t.Error("selection of c was wiped by an unrelated delete completing")
+	}
+	if !m.workspaceDeleting {
+		t.Error("spinner flag should stay on while b is still deleting")
+	}
+
+	m, _ = applyUpdate(m, deletedWorkspaceMsg{names: []string{"b"}})
+	if m.workspaceDeleting {
+		t.Error("spinner flag should clear once all deletes finish")
+	}
+}
+
+// Regression: sort modes had no tie-break, so ties reshuffled randomly on
+// every refresh (base order comes from map iteration).
+func TestSortedWorkspaces_DeterministicOnTies(t *testing.T) {
+	a, b, c := testWS("a"), testWS("b"), testWS("c")
+	m := newTestModel(b, c, a)
+	m.sortMode = sortByPR // all tie (no PRs)
+
+	first := m.sortedWorkspaces()
+	m.workspaces = []WorkspaceItem{c, a, b} // simulate a reshuffled reload
+	second := m.sortedWorkspaces()
+
+	for i := range first {
+		if first[i].Name != second[i].Name {
+			t.Fatalf("tied sort order changed across reloads: %v vs %v", first[i].Name, second[i].Name)
+		}
 	}
 }

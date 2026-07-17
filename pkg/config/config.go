@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
 // Config represents the opentree configuration
@@ -103,25 +106,49 @@ func GlobalConfigPath() string {
 	return filepath.Join(xdgConfig, "opentree", "opentree.toml")
 }
 
-// FindConfigFile walks up from the current directory looking for opentree.toml,
-// mirroring how git finds .git. Returns "opentree.toml" if nothing is found.
+// FindConfigFile walks up from the current directory looking for
+// opentree.toml, stopping at the repository root: an unrelated opentree.toml
+// above the repo (e.g. in $HOME) must never be adopted — or overwritten — as
+// this repo's config. When nothing is found it returns the repo-root path
+// where the file should be created, so writes land in the same place no
+// matter which subdirectory the command runs from. Outside a git repository
+// it falls back to "opentree.toml" in the current directory.
 func FindConfigFile() string {
+	root, rootErr := gitutil.RepoRoot()
 	dir, err := os.Getwd()
 	if err != nil {
+		if rootErr == nil {
+			return filepath.Join(root, "opentree.toml")
+		}
 		return "opentree.toml"
+	}
+	if rootErr != nil {
+		candidate := filepath.Join(dir, "opentree.toml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		return "opentree.toml"
+	}
+	// Resolve symlinks so the walk can recognize the repo root (RepoRoot
+	// returns a symlink-resolved path).
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
 	}
 	for {
 		candidate := filepath.Join(dir, "opentree.toml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
+		if dir == root {
+			break
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			break
+			break // cwd was not under the repo root
 		}
 		dir = parent
 	}
-	return "opentree.toml"
+	return filepath.Join(root, "opentree.toml")
 }
 
 // loadRaw reads a TOML file into a Config without applying defaults.
@@ -285,18 +312,77 @@ func Save(cfg *Config, path string) error {
 		path = "opentree.toml"
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
 	data, err := toml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return writeFileAtomic(path, data)
+}
+
+// SetKeys updates only the given dotted keys (e.g. "agent.command") in the
+// TOML file at path, preserving exactly what the file already contains.
+// Unlike Save with a merged Config, this never freezes defaults or another
+// source's values into the file — a later change to the global config still
+// applies to any key the repo file doesn't set itself.
+func SetKeys(path string, values map[string]any) error {
+	raw := map[string]any{}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if err := toml.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("failed to parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	for key, value := range values {
+		section, field, ok := strings.Cut(key, ".")
+		if !ok {
+			return fmt.Errorf("invalid config key %q", key)
+		}
+		table, _ := raw[section].(map[string]any)
+		if table == nil {
+			table = map[string]any{}
+		}
+		table[field] = value
+		raw[section] = table
+	}
+
+	out, err := toml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, out)
+}
+
+// writeFileAtomic writes data via a temp file + rename so a crash mid-write
+// can't leave a truncated config behind.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmpPath, 0600)
+	}
+	if err == nil {
+		err = os.Rename(tmpPath, path)
+	}
+	if err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // SaveGlobal writes the configuration to the global config file.

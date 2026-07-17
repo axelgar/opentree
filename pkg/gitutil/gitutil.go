@@ -1,8 +1,10 @@
 package gitutil
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -26,18 +28,43 @@ func ListRemoteBranches(repoRoot string, limit int) ([]string, error) {
 	var branches []string
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		// Skip anything that isn't origin/<branch> — notably the
+		// origin/HEAD symref, whose short name is literally "origin" and
+		// used to show up in the branch picker as a bogus entry.
+		branch, ok := strings.CutPrefix(line, "origin/")
+		if !ok || branch == "" || branch == "HEAD" {
 			continue
 		}
-		// Strip "origin/" prefix
-		branch := strings.TrimPrefix(line, "origin/")
 		branches = append(branches, branch)
 	}
 	return branches, nil
 }
 
-// RepoRoot returns the root directory of the current git repository.
+// RepoRoot returns the root directory of the main git repository, even when
+// run from inside a linked worktree — where `--show-toplevel` would return
+// the worktree's own root, making opentree nest worktrees and read the wrong
+// state file.
 func RepoRoot() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", fmt.Errorf("git is not installed (or not on PATH)")
+		}
+		return "", fmt.Errorf("not in a git repository")
+	}
+	commonDir, err := filepath.Abs(strings.TrimSpace(string(out)))
+	if err == nil && filepath.Base(commonDir) == ".git" {
+		root := filepath.Dir(commonDir)
+		// Resolve symlinks (e.g. /var → /private/var on macOS) so the root
+		// compares equal no matter where it was computed from.
+		if real, rerr := filepath.EvalSymlinks(root); rerr == nil {
+			root = real
+		}
+		return root, nil
+	}
+
+	// Fallback for layouts where the common dir isn't <root>/.git
+	// (e.g. submodules): the current worktree's top level.
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {

@@ -32,9 +32,23 @@ func New(repoRoot, baseDir string) *Manager {
 	}
 }
 
+// reservedDirName reports whether a sanitized workspace directory name would
+// collide with opentree's own files, which live in the same base directory.
+// A worktree at .opentree/state.json bricks every subsequent command.
+func reservedDirName(dirName string) bool {
+	switch dirName {
+	case "state.json", "state.lock", "state.json.tmp":
+		return true
+	}
+	return false
+}
+
 // Create creates a new git worktree for the given branch
 func (m *Manager) Create(branchName, baseBranch string) error {
 	dirName := gitutil.SanitizeBranchName(branchName)
+	if reservedDirName(dirName) {
+		return fmt.Errorf("workspace name %q is reserved for opentree's state files", branchName)
+	}
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	// Check if worktree already exists
@@ -60,26 +74,32 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 
 // CreateFromRemote creates a new git worktree for a branch that already exists on the remote.
 // It fetches the branch from origin and checks it out into a new worktree directory.
-func (m *Manager) CreateFromRemote(branchName string) error {
+// The returned createdBranch reports whether a new local branch was created (as
+// opposed to checking out a pre-existing one) so cleanup paths know whether
+// deleting the branch would destroy the user's own work.
+func (m *Manager) CreateFromRemote(branchName string) (createdBranch bool, err error) {
 	dirName := gitutil.SanitizeBranchName(branchName)
+	if reservedDirName(dirName) {
+		return false, fmt.Errorf("workspace name %q is reserved for opentree's state files", branchName)
+	}
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
-		return fmt.Errorf("worktree already exists: %s", worktreePath)
+		return false, fmt.Errorf("worktree already exists: %s", worktreePath)
 	}
 
 	// Create base directory if it doesn't exist
 	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
 	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
-		return fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
+		return false, fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
 	}
 
 	// Fetch the remote branch
 	fetchCmd := exec.Command("git", "fetch", "origin", branchName)
 	fetchCmd.Dir = m.repoRoot
 	if output, err := fetchCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to fetch remote branch %q: %w\nOutput: %s", branchName, err, output)
+		return false, fmt.Errorf("failed to fetch remote branch %q: %w\nOutput: %s", branchName, err, output)
 	}
 
 	// Try to create worktree tracking the remote branch (creates local branch)
@@ -90,11 +110,12 @@ func (m *Manager) CreateFromRemote(branchName string) error {
 		cmd2 := exec.Command("git", "worktree", "add", "--", worktreePath, branchName)
 		cmd2.Dir = m.repoRoot
 		if output2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			return fmt.Errorf("failed to create git worktree: %w\nOutput: %s\nFallback output: %s", err, output, output2)
+			return false, fmt.Errorf("failed to create git worktree: %w\nOutput: %s\nFallback output: %s", err, output, output2)
 		}
+		return false, nil
 	}
 
-	return nil
+	return true, nil
 }
 
 // List returns all opentree-managed worktrees
@@ -113,6 +134,17 @@ func (m *Manager) List() ([]Worktree, error) {
 func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+
+	// Distinct branch names can sanitize to the same directory ("feat/x" and
+	// "feat-x" both map to feat-x), so make sure the directory we are about
+	// to remove actually holds the requested branch's worktree.
+	if wts, err := m.List(); err == nil {
+		for _, wt := range wts {
+			if wt.Path == worktreePath && wt.Branch != "" && wt.Branch != branchName {
+				return fmt.Errorf("worktree at %s has branch %q checked out, not %q — refusing to delete", worktreePath, wt.Branch, branchName)
+			}
+		}
+	}
 
 	// Remove worktree (--force handles untracked files)
 	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
@@ -138,7 +170,10 @@ func (m *Manager) Push(branchName string) error {
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "push", "-u", "origin", "HEAD")
+	// Push the branch by name, not HEAD: if the agent switched branches
+	// inside the worktree, HEAD would push the wrong branch while the PR is
+	// created against branchName.
+	cmd := exec.Command("git", "push", "-u", "origin", "refs/heads/"+branchName)
 	cmd.Dir = worktreePath
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to push branch: %w\nOutput: %s", err, output)
@@ -180,7 +215,7 @@ func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) 
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to get diff: %w", err)
+		return "", fmt.Errorf("failed to get diff: %w\nOutput: %s", err, output)
 	}
 
 	return string(output), nil
@@ -207,7 +242,7 @@ func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, err
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to get diff: %w", err)
+		return "", fmt.Errorf("failed to get diff: %w\nOutput: %s", err, output)
 	}
 
 	return string(output), nil
@@ -253,7 +288,8 @@ func (m *Manager) parseWorktrees(output string) ([]Worktree, error) {
 	var worktrees []Worktree
 	var current *Worktree
 
-	opentreePrefix := filepath.Join(m.repoRoot, m.baseDir)
+	// Trailing separator so ".opentree" doesn't also match ".opentree-old/x".
+	opentreePrefix := filepath.Join(m.repoRoot, m.baseDir) + string(filepath.Separator)
 
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
@@ -283,6 +319,27 @@ func (m *Manager) parseWorktrees(output string) ([]Worktree, error) {
 	}
 
 	return worktrees, nil
+}
+
+// numstatFileName resolves git's rename syntax in a numstat path field —
+// "old => new" or "dir/{old => new}/rest" — to the new file name.
+func numstatFileName(field string) string {
+	arrow := strings.Index(field, " => ")
+	if arrow < 0 {
+		return field
+	}
+	if open := strings.Index(field, "{"); open >= 0 && open < arrow {
+		if end := strings.Index(field[arrow:], "}"); end >= 0 {
+			end += arrow
+			resolved := field[:open] + field[arrow+4:end] + field[end+1:]
+			// An empty old/new part leaves a doubled or leading slash
+			// ("dir//f", "/f"); git paths are repo-relative, so both are safe
+			// to collapse.
+			resolved = strings.ReplaceAll(resolved, "//", "/")
+			return strings.TrimPrefix(resolved, "/")
+		}
+	}
+	return field[arrow+4:]
 }
 
 // Worktree represents a git worktree
@@ -316,7 +373,7 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat strin
 	statCmd.Dir = worktreePath
 	statOut, statErr := statCmd.CombinedOutput()
 	if statErr != nil {
-		err = fmt.Errorf("failed to get diff stat: %w", statErr)
+		err = fmt.Errorf("failed to get diff stat: %w\nOutput: %s", statErr, statOut)
 		return
 	}
 	stat = string(statOut)
@@ -326,7 +383,7 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat strin
 	numCmd.Dir = worktreePath
 	numOut, numErr := numCmd.CombinedOutput()
 	if numErr != nil {
-		err = fmt.Errorf("failed to get diff numstat: %w", numErr)
+		err = fmt.Errorf("failed to get diff numstat: %w\nOutput: %s", numErr, numOut)
 		return
 	}
 	files = parseNumstat(string(numOut))
@@ -366,7 +423,7 @@ func (m *Manager) DiffUncommitted(branchName string) (string, error) {
 	cmd.Dir = worktreePath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to get uncommitted diff: %w", err)
+		return "", fmt.Errorf("failed to get uncommitted diff: %w\nOutput: %s", err, output)
 	}
 
 	return string(output), nil
@@ -381,7 +438,7 @@ func (m *Manager) UntrackedFiles(branchName string) ([]string, error) {
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list untracked files: %w", err)
+		return nil, fmt.Errorf("failed to list untracked files: %w\nOutput: %s", err, out)
 	}
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -398,7 +455,7 @@ func uncommittedFiles(worktreePath string) (map[string]bool, error) {
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list uncommitted files: %w", err)
+		return nil, fmt.Errorf("failed to list uncommitted files: %w\nOutput: %s", err, out)
 	}
 	result := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -432,7 +489,7 @@ func parseNumstat(output string) []FileChange {
 			}
 		}
 		files = append(files, FileChange{
-			FileName: parts[2],
+			FileName: numstatFileName(parts[2]),
 			Added:    added,
 			Removed:  removed,
 		})

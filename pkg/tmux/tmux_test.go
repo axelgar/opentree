@@ -127,14 +127,14 @@ func TestParseWindows(t *testing.T) {
 	}{
 		{
 			name:  "single window",
-			input: "@0|main|1",
+			input: "@0|1|main",
 			want: []Window{
 				{ID: "@0", Name: "main", Active: true},
 			},
 		},
 		{
 			name:  "multiple windows",
-			input: "@0|main|0\n@1|feat-auth|1\n@2|fix-bug|0",
+			input: "@0|0|main\n@1|1|feat-auth\n@2|0|fix-bug",
 			want: []Window{
 				{ID: "@0", Name: "main", Active: false},
 				{ID: "@1", Name: "feat-auth", Active: true},
@@ -148,7 +148,7 @@ func TestParseWindows(t *testing.T) {
 		},
 		{
 			name:  "input with empty lines",
-			input: "@0|main|1\n\n@1|feat|0",
+			input: "@0|1|main\n\n@1|0|feat",
 			want: []Window{
 				{ID: "@0", Name: "main", Active: true},
 				{ID: "@1", Name: "feat", Active: false},
@@ -156,10 +156,24 @@ func TestParseWindows(t *testing.T) {
 		},
 		{
 			name:  "malformed line (skipped)",
-			input: "@0|main|1\ninvalid\n@1|feat|0",
+			input: "@0|1|main\ninvalid\n@1|0|feat",
 			want: []Window{
 				{ID: "@0", Name: "main", Active: true},
 				{ID: "@1", Name: "feat", Active: false},
+			},
+		},
+		{
+			name:  "window name containing pipes",
+			input: "@0|1|fix|bug|now",
+			want: []Window{
+				{ID: "@0", Name: "fix|bug|now", Active: true},
+			},
+		},
+		{
+			name:  "window name containing dots",
+			input: "@0|0|release-1.2",
+			want: []Window{
+				{ID: "@0", Name: "release-1.2", Active: false},
 			},
 		},
 	}
@@ -571,6 +585,79 @@ func TestDetectEnv(t *testing.T) {
 		// valid
 	default:
 		t.Errorf("detectEnv() returned unexpected value: %d", env)
+	}
+}
+
+// Regression: branch names with dots ("release-1.2") used to be unusable —
+// tmux parsed "sess:release-1.2" as window "release-1" pane "2" — and window
+// name prefixes ("fix" vs "fix-it") targeted the wrong window.
+func TestWindowTargeting_DotsAndPrefixes(t *testing.T) {
+	if !isTmuxAvailable() {
+		t.Skip("tmux not available, skipping integration test")
+	}
+
+	ctrl := New("test-opentree-target")
+	sessionName := ctrl.getSessionName()
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	if err := ctrl.CreateWindow("release-1.2", "/tmp", "sleep", "1000"); err != nil {
+		t.Fatalf("CreateWindow(release-1.2) failed: %v", err)
+	}
+	if err := ctrl.CreateWindow("fix-it", "/tmp", "sleep", "1000"); err != nil {
+		t.Fatalf("CreateWindow(fix-it) failed: %v", err)
+	}
+
+	if _, err := ctrl.CapturePane("release-1.2", 5); err != nil {
+		t.Errorf("CapturePane(release-1.2) failed: %v", err)
+	}
+	if err := ctrl.SelectWindow("release-1.2"); err != nil {
+		t.Errorf("SelectWindow(release-1.2) failed: %v", err)
+	}
+
+	// "fix" must NOT prefix-match the "fix-it" window.
+	if err := ctrl.KillWindow("fix"); err == nil {
+		t.Error("KillWindow(fix) should fail when only fix-it exists")
+	}
+	windows, err := ctrl.ListWindows()
+	if err != nil {
+		t.Fatalf("ListWindows() failed: %v", err)
+	}
+	found := false
+	for _, w := range windows {
+		if w.Name == "fix-it" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("fix-it window was killed by KillWindow(fix)")
+	}
+
+	if err := ctrl.KillWindow("release-1.2"); err != nil {
+		t.Errorf("KillWindow(release-1.2) failed: %v", err)
+	}
+}
+
+// Regression: session targets used to prefix-match, so operations on
+// "prefix" would hit a session named "prefix-something" from another repo.
+func TestSessionExactMatch(t *testing.T) {
+	if !isTmuxAvailable() {
+		t.Skip("tmux not available, skipping integration test")
+	}
+
+	longer := "test-opentree-exact-extra"
+	exec.Command("tmux", "kill-session", "-t", "="+longer).Run()
+	if err := exec.Command("tmux", "new-session", "-d", "-s", longer).Run(); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", "="+longer).Run()
+
+	ctrl := New("ignored")
+	if ctrl.sessionExists("test-opentree-exact") {
+		t.Error("sessionExists() prefix-matched a longer session name")
+	}
+	if !ctrl.sessionExists(longer) {
+		t.Error("sessionExists() = false for existing session")
 	}
 }
 

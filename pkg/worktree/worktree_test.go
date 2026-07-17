@@ -241,15 +241,47 @@ func TestCreateFromRemote_Success(t *testing.T) {
 	}
 
 	localDir := initRepoWithRemote(t, "feat/remote-thing")
+	// Drop the local branch the helper left behind so this exercises the
+	// real remote-only path (worktree add --track -b).
+	delCmd := exec.Command("git", "branch", "-D", "feat/remote-thing")
+	delCmd.Dir = localDir
+	if out, err := delCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to delete local branch: %v\n%s", err, out)
+	}
 	m := New(localDir, ".opentree")
 
-	if err := m.CreateFromRemote("feat/remote-thing"); err != nil {
+	createdBranch, err := m.CreateFromRemote("feat/remote-thing")
+	if err != nil {
 		t.Fatalf("CreateFromRemote() failed: %v", err)
+	}
+	if !createdBranch {
+		t.Error("CreateFromRemote() should report a newly created local branch")
 	}
 
 	expectedDir := filepath.Join(localDir, ".opentree", "feat-remote-thing")
 	if _, err := os.Stat(expectedDir); err != nil {
 		t.Errorf("worktree directory not created at %q: %v", expectedDir, err)
+	}
+}
+
+// Regression: when the local branch already exists, CreateFromRemote checks
+// it out instead of creating it — and must report createdBranch=false so
+// cleanup paths don't `branch -D` a branch holding the user's local commits.
+func TestCreateFromRemote_PreexistingLocalBranch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	// initRepoWithRemote leaves the local branch in the clone, which is
+	// exactly the pre-existing-branch case.
+	localDir := initRepoWithRemote(t, "feat/existing")
+	m := New(localDir, ".opentree")
+	createdBranch, err := m.CreateFromRemote("feat/existing")
+	if err != nil {
+		t.Fatalf("CreateFromRemote() failed: %v", err)
+	}
+	if createdBranch {
+		t.Error("CreateFromRemote() must report createdBranch=false for a pre-existing local branch")
 	}
 }
 
@@ -261,10 +293,10 @@ func TestCreateFromRemote_AlreadyExists(t *testing.T) {
 	localDir := initRepoWithRemote(t, "feat/dup-remote")
 	m := New(localDir, ".opentree")
 
-	if err := m.CreateFromRemote("feat/dup-remote"); err != nil {
+	if _, err := m.CreateFromRemote("feat/dup-remote"); err != nil {
 		t.Fatalf("CreateFromRemote() first call failed: %v", err)
 	}
-	err := m.CreateFromRemote("feat/dup-remote")
+	_, err := m.CreateFromRemote("feat/dup-remote")
 	if err == nil {
 		t.Fatal("CreateFromRemote() second call expected error, got nil")
 	}
@@ -281,7 +313,7 @@ func TestCreateFromRemote_NonExistentBranch(t *testing.T) {
 	localDir := initRepoWithRemote(t, "real-branch")
 	m := New(localDir, ".opentree")
 
-	err := m.CreateFromRemote("no-such-branch")
+	_, err := m.CreateFromRemote("no-such-branch")
 	if err == nil {
 		t.Fatal("CreateFromRemote() expected error for non-existent branch, got nil")
 	}
@@ -681,5 +713,40 @@ func TestDiffStats_MarksUncommittedFiles(t *testing.T) {
 		t.Error("DiffStats should include wip.txt (staged but uncommitted)")
 	} else if !wip.Uncommitted {
 		t.Error("wip.txt should be marked as Uncommitted")
+	}
+}
+
+// Regression: numstat rename lines ("old => new", "dir/{old => new}") used to
+// be stored verbatim as the file name, so renamed files displayed wrong and
+// never matched the uncommitted-files set.
+func TestNumstatFileName_Renames(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"plain.txt", "plain.txt"},
+		{"a.txt => b.txt", "b.txt"},
+		{"dir/{old.txt => new.txt}", "dir/new.txt"},
+		{"pkg/{a => b}/file.go", "pkg/b/file.go"},
+		{"{ => sub}/file.go", "sub/file.go"},
+		{"{sub => }/file.go", "file.go"},
+	}
+	for _, tt := range tests {
+		if got := numstatFileName(tt.in); got != tt.want {
+			t.Errorf("numstatFileName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// Regression: names that sanitize to opentree's own state files could brick
+// the repo (a worktree at .opentree/state.json fails every later load).
+func TestCreate_ReservedNamesRejected(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initGitRepo(t)
+	m := New(localDir, ".opentree")
+
+	for _, name := range []string{"state.json", "state.lock", "state:json"} {
+		if err := m.Create(name, "main"); err == nil {
+			t.Errorf("Create(%q) should be rejected", name)
+		}
 	}
 }

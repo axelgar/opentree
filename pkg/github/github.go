@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -11,6 +12,22 @@ import (
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
+
+// ghRun executes gh with stdout and stderr kept separate, so stderr chatter
+// (e.g. a globally exported GH_DEBUG) can never corrupt parsed output or a
+// returned PR URL. err is the raw process error; callers decide how to
+// combine it with stderr.
+func ghRun(dir string, args ...string) (stdout, stderr []byte, err error) {
+	cmd := exec.Command("gh", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.Bytes(), errBuf.Bytes(), err
+}
 
 // ReviewComment represents a single review comment on a PR.
 // General reviews have an empty Path and zero Line.
@@ -23,8 +40,9 @@ type ReviewComment struct {
 	Line   int    // line number for inline comments; 0 for general reviews
 }
 
-// prURLRe matches GitHub PR URLs and captures owner, repo, and number.
-var prURLRe = regexp.MustCompile(`github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
+// prURLRe matches GitHub PR URLs (github.com or GitHub Enterprise hosts)
+// and captures owner, repo, and number.
+var prURLRe = regexp.MustCompile(`https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)`)
 
 // parsePRURL extracts owner, repo, and PR number from a GitHub PR URL.
 func parsePRURL(prURL string) (owner, repo string, number int, err error) {
@@ -50,10 +68,9 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 	}
 
 	// Fetch top-level reviews and PR URL in one call.
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,reviews")
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url,reviews")
 	if err != nil {
-		if pErr := prViewError(output, err); pErr != nil {
+		if pErr := prViewError(stderr, err); pErr != nil {
 			return nil, pErr
 		}
 		return nil, nil // branch has no PR
@@ -134,15 +151,14 @@ query($owner: String!, $repo: String!, $number: Int!) {
 // fetchUnresolvedThreadComments returns inline comments from unresolved review
 // threads using the GitHub GraphQL API.
 func (pm *PRManager) fetchUnresolvedThreadComments(owner, repo string, prNumber int) ([]ReviewComment, error) {
-	cmd := exec.Command("gh", "api", "graphql",
+	out, stderr, err := ghRun("", "api", "graphql",
 		"-f", fmt.Sprintf("query=%s", graphqlUnresolvedThreadsQuery),
 		"-f", fmt.Sprintf("owner=%s", owner),
 		"-f", fmt.Sprintf("repo=%s", repo),
 		"-F", fmt.Sprintf("number=%d", prNumber),
 	)
-	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("graphql query failed: %w", err)
+		return nil, fmt.Errorf("graphql query failed: %w\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 
 	var result struct {
@@ -244,10 +260,9 @@ func (pm *PRManager) GetIssue(number int) (*Issue, error) {
 		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
 
-	cmd := exec.Command("gh", "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun("", "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch issue #%d: %w\nOutput: %s", number, err, output)
+		return nil, fmt.Errorf("failed to fetch issue #%d: %w\nOutput: %s", number, err, stderr)
 	}
 
 	var raw struct {
@@ -341,17 +356,17 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 		args = append(args, "--title", gitutil.BranchToTitle(branch))
 	}
 
-	if body != "" {
-		args = append(args, "--body", body)
-	}
+	// Always pass --body: without it, non-interactive gh (stdin is not a
+	// terminal here) fails with "must provide --title and --body".
+	args = append(args, "--body", body)
 
-	cmd = exec.Command("gh", args...)
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun("", args...)
 	if err != nil {
-		return "", fmt.Errorf("failed to create PR: %w\nOutput: %s", err, output)
+		return "", fmt.Errorf("failed to create PR: %w\nOutput: %s", err, stderr)
 	}
 
-	// Extract PR URL from output
+	// The PR URL is printed on stdout; stderr (progress, debug chatter) is
+	// deliberately excluded so it can't pollute the stored URL.
 	prURL := strings.TrimSpace(string(output))
 	return prURL, nil
 }
@@ -373,10 +388,9 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 		return "", nil // Silently fail if gh not installed
 	}
 
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url", "--jq", ".url")
 	if err != nil {
-		return "", prViewError(output, err)
+		return "", prViewError(stderr, err)
 	}
 
 	return strings.TrimSpace(string(output)), nil
@@ -389,10 +403,9 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 		return "", "", nil
 	}
 
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
 	if err != nil {
-		return "", "", prViewError(output, err)
+		return "", "", prViewError(stderr, err)
 	}
 
 	parts := strings.SplitN(strings.TrimSpace(string(output)), "\t", 2)
@@ -403,43 +416,60 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 	return parts[0], strings.ToLower(parts[1]), nil
 }
 
+// rollupCheck is one entry of statusCheckRollup. GitHub check runs carry
+// status/conclusion; legacy commit statuses (Jenkins, CircleCI, any Status
+// API integration) are StatusContext objects carrying only state.
+type rollupCheck struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
+// deriveCIStatus folds a status rollup into "success", "failure", "pending",
+// or "" (no checks). Anything unrecognized counts as pending, never success:
+// a false green on CI is worse than a lingering yellow.
+func deriveCIStatus(checks []rollupCheck) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	status := "success"
+	for _, check := range checks {
+		switch strings.ToUpper(check.Conclusion) {
+		case "FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "STARTUP_FAILURE":
+			return "failure"
+		case "SUCCESS", "NEUTRAL", "SKIPPED":
+			continue
+		}
+		switch strings.ToUpper(check.State) {
+		case "FAILURE", "ERROR":
+			return "failure"
+		case "SUCCESS":
+			continue
+		}
+		// Not conclusively finished: in-progress/queued/waiting check runs,
+		// pending commit statuses, ACTION_REQUIRED, and unknown values.
+		status = "pending"
+	}
+	return status
+}
+
 // GetPRCIStatus returns the combined CI check status for the PR on the given branch.
 // Returns "success", "failure", "pending", or "" if no checks exist.
 func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
 	if !pm.IsInstalled() {
 		return "", nil
 	}
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "statusCheckRollup")
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "statusCheckRollup")
 	if err != nil {
-		return "", prViewError(output, err)
+		return "", prViewError(stderr, err)
 	}
 	var result struct {
-		StatusCheckRollup []struct {
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"statusCheckRollup"`
+		StatusCheckRollup []rollupCheck `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
 		return "", fmt.Errorf("failed to parse CI status response: %w", err)
 	}
-	if len(result.StatusCheckRollup) == 0 {
-		return "", nil
-	}
-	for _, check := range result.StatusCheckRollup {
-		c := strings.ToUpper(check.Conclusion)
-		if c == "FAILURE" || c == "CANCELLED" || c == "TIMED_OUT" {
-			return "failure", nil
-		}
-	}
-	for _, check := range result.StatusCheckRollup {
-		s := strings.ToUpper(check.Status)
-		c := strings.ToUpper(check.Conclusion)
-		if s == "IN_PROGRESS" || s == "QUEUED" || s == "PENDING" || (c == "" && s == "IN_PROGRESS") {
-			return "pending", nil
-		}
-	}
-	return "success", nil
+	return deriveCIStatus(result.StatusCheckRollup), nil
 }
 
 // BranchStatus holds the combined branch push and PR status for a workspace.
@@ -480,23 +510,16 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 	if !pm.IsInstalled() {
 		return status, nil
 	}
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
-	if repoDir != "" {
-		cmd.Dir = repoDir
-	}
-	output, err := cmd.CombinedOutput()
+	output, stderr, err := ghRun(repoDir, "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
 	if err != nil {
 		// Partial ls-remote status is still returned alongside any real error.
-		return status, prViewError(output, err)
+		return status, prViewError(stderr, err)
 	}
 	var raw struct {
-		URL               string `json:"url"`
-		State             string `json:"state"`
-		Mergeable         string `json:"mergeable"`
-		StatusCheckRollup []struct {
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"statusCheckRollup"`
+		URL               string        `json:"url"`
+		State             string        `json:"state"`
+		Mergeable         string        `json:"mergeable"`
+		StatusCheckRollup []rollupCheck `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(output, &raw); err != nil {
 		return status, fmt.Errorf("failed to parse PR status response: %w", err)
@@ -504,25 +527,7 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 	status.PRURL = raw.URL
 	status.PRState = strings.ToLower(raw.State)
 	status.MergeConflicts = strings.ToUpper(raw.Mergeable) == "CONFLICTING"
-
-	// Derive CI status (same logic as GetPRCIStatus).
-	for _, check := range raw.StatusCheckRollup {
-		c := strings.ToUpper(check.Conclusion)
-		if c == "FAILURE" || c == "CANCELLED" || c == "TIMED_OUT" {
-			status.CIStatus = "failure"
-			return status, nil
-		}
-	}
-	for _, check := range raw.StatusCheckRollup {
-		s := strings.ToUpper(check.Status)
-		if s == "IN_PROGRESS" || s == "QUEUED" || s == "PENDING" {
-			status.CIStatus = "pending"
-			return status, nil
-		}
-	}
-	if len(raw.StatusCheckRollup) > 0 {
-		status.CIStatus = "success"
-	}
+	status.CIStatus = deriveCIStatus(raw.StatusCheckRollup)
 
 	return status, nil
 }

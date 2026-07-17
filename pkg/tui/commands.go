@@ -14,7 +14,21 @@ import (
 	"github.com/axelgar/opentree/pkg/workspace"
 )
 
+// baseOr returns base, falling back to the configured default base branch
+// for workspaces persisted before the base was recorded.
+func (m Model) baseOr(base string) string {
+	if base != "" {
+		return base
+	}
+	return m.cfg.Worktree.DefaultBase
+}
+
 func (m Model) loadWorkspacesCmd() tea.Msg {
+	// Re-read state from disk so workspaces created or deleted by another
+	// process (CLI in a second terminal) show up on the periodic refresh.
+	// On failure, fall back to the in-memory snapshot; any mutation will
+	// surface the same error with context.
+	_ = m.stateStore.Load()
 	saved := m.stateStore.ListWorkspaces()
 
 	windows, _ := m.svc.Process().ListWindows()
@@ -32,7 +46,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		go func(i int, ws *state.Workspace) {
 			defer wg.Done()
 
-			diff, fileChanges, err := m.worktreeMgr.DiffStats(ws.Branch, ws.BaseBranch)
+			diff, fileChanges, err := m.worktreeMgr.DiffStats(ws.Branch, m.baseOr(ws.BaseBranch))
 			diffStat := "No changes"
 			if err != nil {
 				diffStat = "diff unavailable"
@@ -100,7 +114,9 @@ func (m Model) createWorkspaceFromRemoteCmd(branchName string) tea.Cmd {
 
 func (m Model) loadRemoteBranchesCmd() tea.Cmd {
 	return func() tea.Msg {
-		branches, err := gitutil.ListRemoteBranches(m.repoRoot, 10)
+		// 50 keeps an exactly-typed branch likely to be in the loaded set
+		// (the list is recency-sorted; the local for-each-ref call is cheap).
+		branches, err := gitutil.ListRemoteBranches(m.repoRoot, 50)
 		return remoteBranchesLoadedMsg{branches: branches, err: err}
 	}
 }
@@ -140,7 +156,7 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 		if err := m.svc.Delete(name); err != nil {
 			return errMsg{err}
 		}
-		return deletedWorkspaceMsg{}
+		return deletedWorkspaceMsg{names: []string{name}}
 	}
 }
 
@@ -149,7 +165,7 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 		if err := m.svc.DeleteMultiple(names); err != nil {
 			return errMsg{err}
 		}
-		return deletedWorkspaceMsg{}
+		return deletedWorkspaceMsg{names: names}
 	}
 }
 
@@ -166,9 +182,10 @@ func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 }
 
 func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
+	base := m.baseOr(ws.BaseBranch)
 	return func() tea.Msg {
-		title, body := generatePRContent(ws.Branch, ws.BaseBranch, ws.WorktreeDir, ws.IssueNumber, ws.IssueTitle)
-		return prContentGeneratedMsg{title: title, body: body}
+		title, body := generatePRContent(ws.Branch, base, ws.WorktreeDir, ws.IssueNumber, ws.IssueTitle)
+		return prContentGeneratedMsg{wsName: ws.Name, title: title, body: body}
 	}
 }
 
@@ -237,15 +254,15 @@ func (m Model) capturePreviewCmd() tea.Cmd {
 	}
 	ws := visible[m.cursor]
 	if ws.WindowID == "" {
-		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
+		return func() tea.Msg { return capturePreviewMsg{wsName: ws.Name, lines: ""} }
 	}
 	wsName := ws.Name
 	return func() tea.Msg {
 		output, err := m.svc.Process().CapturePane(wsName, 5)
 		if err != nil {
-			return capturePreviewMsg{lines: ""}
+			return capturePreviewMsg{wsName: wsName, lines: ""}
 		}
-		return capturePreviewMsg{lines: cleanPreview(output)}
+		return capturePreviewMsg{wsName: wsName, lines: cleanPreview(output)}
 	}
 }
 
@@ -260,8 +277,9 @@ func (m Model) sendReviewsCmd(wsName string) tea.Cmd {
 }
 
 func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
+	base := m.baseOr(ws.BaseBranch)
 	return func() tea.Msg {
-		content, err := m.worktreeMgr.DiffCombined(ws.Branch, ws.BaseBranch)
+		content, err := m.worktreeMgr.DiffCombined(ws.Branch, base)
 		if err != nil {
 			return errMsg{err}
 		}

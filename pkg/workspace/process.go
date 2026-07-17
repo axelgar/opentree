@@ -40,6 +40,10 @@ type ProcessManager interface {
 	// CapturePane captures recent output lines from a window.
 	CapturePane(name string, lines int) (string, error)
 
+	// PaneCurrentCommand returns the name of the process currently running
+	// in a window's active pane (e.g. "zsh", "opencode").
+	PaneCurrentCommand(name string) (string, error)
+
 	// GetWindowActivity returns the timestamp of the last activity in a window.
 	GetWindowActivity(name string) (time.Time, error)
 

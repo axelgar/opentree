@@ -36,6 +36,9 @@ var DiffCmd = &cobra.Command{
 				baseBranch = ws.BaseBranch
 			}
 		}
+		if baseBranch == "" {
+			baseBranch = cfg.Worktree.DefaultBase
+		}
 
 		wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
 

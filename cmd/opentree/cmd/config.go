@@ -124,38 +124,51 @@ var configSetCmd = &cobra.Command{
 			return fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 		}
 
+		parsed, err := parseConfigValue(key, value)
+		if err != nil {
+			return err
+		}
+
+		// Write only the one key into the raw target file: saving a merged
+		// Config would freeze every default and global value into it.
 		if configSetGlobal {
-			cfg, err := config.LoadGlobal()
-			if err != nil {
-				return fmt.Errorf("failed to load global config: %w", err)
+			path := config.GlobalConfigPath()
+			if path == "" {
+				return fmt.Errorf("could not determine global config path: home directory not found")
 			}
-			if err := setConfigValue(cfg, key, value); err != nil {
-				return err
-			}
-			if err := config.SaveGlobal(cfg); err != nil {
+			if err := config.SetKeys(path, map[string]any{key: parsed}); err != nil {
 				return fmt.Errorf("failed to save global config: %w", err)
 			}
 			fmt.Printf("%s = %s  (global)\n", key, value)
 			return nil
 		}
 
-		cfgPath := config.FindConfigFile()
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
-
-		if err := setConfigValue(cfg, key, value); err != nil {
-			return err
-		}
-
-		if err := config.Save(cfg, cfgPath); err != nil {
+		if err := config.SetKeys(config.FindConfigFile(), map[string]any{key: parsed}); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
 
 		fmt.Printf("%s = %s\n", key, value)
 		return nil
 	},
+}
+
+// parseConfigValue converts a CLI string value into the TOML type for key.
+func parseConfigValue(key, value string) (any, error) {
+	switch key {
+	case "agent.args":
+		if value == "" {
+			return []string{}, nil
+		}
+		return strings.Split(value, ","), nil
+	case "github.auto_push":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid value for github.auto_push: must be true or false")
+		}
+		return b, nil
+	default:
+		return value, nil
+	}
 }
 
 func getConfigValue(cfg *config.Config, key string) (string, error) {
@@ -175,34 +188,6 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 	}
-}
-
-func setConfigValue(cfg *config.Config, key, value string) error {
-	switch key {
-	case "agent.command":
-		cfg.Agent.Command = value
-	case "agent.args":
-		if value == "" {
-			cfg.Agent.Args = []string{}
-		} else {
-			cfg.Agent.Args = strings.Split(value, ",")
-		}
-	case "worktree.base_dir":
-		cfg.Worktree.BaseDir = value
-	case "worktree.default_base":
-		cfg.Worktree.DefaultBase = value
-	case "tmux.session_prefix":
-		cfg.Tmux.SessionPrefix = value
-	case "github.auto_push":
-		b, err := strconv.ParseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for github.auto_push: must be true or false")
-		}
-		cfg.GitHub.AutoPush = &b
-	default:
-		return fmt.Errorf("unknown config key %q", key)
-	}
-	return nil
 }
 
 func configKeyCompletions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

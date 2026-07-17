@@ -407,3 +407,57 @@ func TestGetFullPRStatus_NoPRForBranch(t *testing.T) {
 		t.Logf("GetFullPRStatus() = (%q, %q) — may indicate an unexpected PR exists", url, state)
 	}
 }
+
+// Regression: legacy commit statuses (StatusContext with only a `state`
+// field), WAITING check runs, and ACTION_REQUIRED conclusions all used to
+// decode to empty strings and fall through to a false "success".
+func TestDeriveCIStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks []rollupCheck
+		want   string
+	}{
+		{"no checks", nil, ""},
+		{"all check runs pass", []rollupCheck{{Status: "COMPLETED", Conclusion: "SUCCESS"}}, "success"},
+		{"check run failed", []rollupCheck{{Status: "COMPLETED", Conclusion: "FAILURE"}}, "failure"},
+		{"check run in progress", []rollupCheck{{Status: "IN_PROGRESS"}}, "pending"},
+		{"check run waiting for approval", []rollupCheck{{Status: "WAITING"}}, "pending"},
+		{"action required", []rollupCheck{{Status: "COMPLETED", Conclusion: "ACTION_REQUIRED"}}, "pending"},
+		{"legacy status failing", []rollupCheck{{State: "FAILURE"}}, "failure"},
+		{"legacy status error", []rollupCheck{{State: "ERROR"}}, "failure"},
+		{"legacy status pending", []rollupCheck{{State: "PENDING"}}, "pending"},
+		{"legacy status success", []rollupCheck{{State: "SUCCESS"}}, "success"},
+		{"mixed: green run + failing legacy status", []rollupCheck{
+			{Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{State: "FAILURE"},
+		}, "failure"},
+		{"mixed: green run + pending legacy status", []rollupCheck{
+			{Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{State: "PENDING"},
+		}, "pending"},
+		{"pending then failure still reports failure", []rollupCheck{
+			{Status: "IN_PROGRESS"},
+			{Status: "COMPLETED", Conclusion: "TIMED_OUT"},
+		}, "failure"},
+		{"skipped and neutral count as success", []rollupCheck{
+			{Status: "COMPLETED", Conclusion: "SKIPPED"},
+			{Status: "COMPLETED", Conclusion: "NEUTRAL"},
+		}, "success"},
+		{"unknown shape is pending, never success", []rollupCheck{{}}, "pending"},
+	}
+	for _, tt := range tests {
+		if got := deriveCIStatus(tt.checks); got != tt.want {
+			t.Errorf("%s: deriveCIStatus() = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestParsePRURL_EnterpriseHost(t *testing.T) {
+	owner, repo, number, err := parsePRURL("https://github.mycorp.com/acme/tool/pull/7")
+	if err != nil {
+		t.Fatalf("parsePRURL() error: %v", err)
+	}
+	if owner != "acme" || repo != "tool" || number != 7 {
+		t.Errorf("parsePRURL() = %s/%s#%d, want acme/tool#7", owner, repo, number)
+	}
+}

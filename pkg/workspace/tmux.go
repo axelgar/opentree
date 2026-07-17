@@ -57,6 +57,10 @@ func (t *TmuxProcessManager) CapturePane(name string, lines int) (string, error)
 	return t.ctrl.CapturePane(name, lines)
 }
 
+func (t *TmuxProcessManager) PaneCurrentCommand(name string) (string, error) {
+	return t.ctrl.PaneCurrentCommand(name)
+}
+
 func (t *TmuxProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return t.ctrl.GetWindowActivity(name)
 }

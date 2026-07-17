@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -424,5 +425,69 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+// Regression: a zero-byte state.json (crashed writer, stray touch) used to
+// fail JSON parsing and brick every opentree command.
+func TestNew_EmptyStateFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".opentree", "state.json"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() with empty state file: %v", err)
+	}
+	if got := len(store.ListWorkspaces()); got != 0 {
+		t.Errorf("ListWorkspaces() = %d entries, want 0", got)
+	}
+}
+
+// Regression: a JSON null workspace entry (hand edit, merge-conflict
+// resolution) used to panic on the first dereference.
+func TestNew_NullWorkspaceEntrySkipped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"workspaces": {"broken": null, "ok": {"name": "ok", "branch": "ok"}}}`
+	if err := os.WriteFile(filepath.Join(dir, ".opentree", "state.json"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	list := store.ListWorkspaces() // used to panic here
+	if len(list) != 1 || list[0].Name != "ok" {
+		t.Errorf("ListWorkspaces() = %+v, want just the ok workspace", list)
+	}
+	if _, err := store.GetWorkspace("broken"); err == nil {
+		t.Error("GetWorkspace(broken) should report not-found, not panic")
+	}
+}
+
+// A corrupt state file should fail with a recovery hint, not a bare JSON error.
+func TestNew_CorruptStateFileHasRecoveryHint(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".opentree", "state.json"), []byte("{not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("expected error for corrupt state file")
+	}
+	if !strings.Contains(err.Error(), "delete it to reset") {
+		t.Errorf("error = %q, want a recovery hint", err)
 	}
 }

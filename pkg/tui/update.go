@@ -23,6 +23,25 @@ func (m Model) isWorkspaceInFlight(name string) bool {
 	return m.workspaceDeletingName == name || m.workspaceDeletingNames[name]
 }
 
+// markDeleting adds names to the in-flight delete set (without clobbering
+// deletes already in flight) and refreshes the spinner label.
+func (m *Model) markDeleting(names ...string) {
+	if m.workspaceDeletingNames == nil {
+		m.workspaceDeletingNames = make(map[string]bool)
+	}
+	for _, name := range names {
+		m.workspaceDeletingNames[name] = true
+	}
+	m.workspaceDeleting = true
+	if len(m.workspaceDeletingNames) == 1 {
+		for name := range m.workspaceDeletingNames {
+			m.workspaceDeletingName = name
+		}
+	} else {
+		m.workspaceDeletingName = fmt.Sprintf("%d workspaces", len(m.workspaceDeletingNames))
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -37,6 +56,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// ctrl+c always quits, even inside dialogs and text inputs where
+		// other keys are captured as text.
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
 		// Error log overlay swallows all keys
 		if m.showErrLog {
 			m.showErrLog = false
@@ -63,9 +88,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.cfg.Agent.Args = []string{}
 				}
-				cfgPath := config.FindConfigFile()
-				_ = config.Save(m.cfg, cfgPath)
 				m.agentSelecting = false
+				// Persist only the agent keys (not the merged config), and
+				// surface failures instead of silently losing the selection.
+				if err := config.SetKeys(config.FindConfigFile(), map[string]any{
+					"agent.command": m.cfg.Agent.Command,
+					"agent.args":    m.cfg.Agent.Args,
+				}); err != nil {
+					return m, m.transientErrCmd(fmt.Sprintf("failed to save agent selection: %v", err))
+				}
 			case "esc", "q":
 				m.agentSelecting = false
 			}
@@ -100,6 +131,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// PR content generation in progress: swallow keys so they don't act
+		// on the list hidden behind the "Generating…" screen (esc cancels).
+		if m.prGenerating {
+			if msg.String() == "esc" {
+				m.prGenerating = false
+				m.prWsName = ""
+				m.prBranch = ""
+				m.prBase = ""
+			}
+			return m, nil
+		}
+
 		// Delete confirmation mode
 		if m.deleting {
 			switch msg.String() {
@@ -108,8 +151,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					target := m.deleteTarget
 					m.deleting = false
 					m.deleteTarget = ""
-					m.workspaceDeleting = true
-					m.workspaceDeletingName = target
+					m.markDeleting(target)
 					return m, tea.Batch(m.deleteWorkspaceCmd(target), spinnerTickCmd())
 				}
 				// batch delete
@@ -119,13 +161,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.deleting = false
 				m.deleteTarget = ""
-				m.workspaceDeletingNames = make(map[string]bool)
-				for _, name := range targets {
-					m.workspaceDeletingNames[name] = true
-				}
+				m.markDeleting(targets...)
 				m.selected = make(map[string]bool)
-				m.workspaceDeleting = true
-				m.workspaceDeletingName = fmt.Sprintf("%d workspaces", len(targets))
 				return m, tea.Batch(m.batchDeleteWorkspaceCmd(targets), spinnerTickCmd())
 			case "n", "esc":
 				m.deleting = false
@@ -215,10 +252,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "enter":
 					var branchName string
+					typed := m.input.Value()
 					if m.branchSuggestionCursor < len(m.filteredBranches) {
 						branchName = m.filteredBranches[m.branchSuggestionCursor]
 					} else {
-						branchName = m.input.Value()
+						branchName = typed
+					}
+					// An exactly-typed branch name beats the highlighted
+					// suggestion: typing "dev" and pressing enter must not
+					// silently create "develop".
+					for _, b := range m.remoteBranches {
+						if b == typed {
+							branchName = typed
+							break
+						}
 					}
 					if branchName == "" {
 						return m, nil
@@ -254,9 +301,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := gitutil.ValidateBranchName(val); err != nil {
 						m.err = err
 						m.appendErrLog(err.Error())
-						return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-							return clearErrorMsg{}
-						})
+						return m, m.scheduleErrClear()
 					}
 					m.newBranchName = val
 					m.createStep = 1
@@ -286,6 +331,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			return m, m.capturePreviewCmd()
 		case key.Matches(msg, m.keys.Quit):
+			// Quitting mid create/delete would orphan a half-built workspace
+			// (worktree and window exist, state entry not yet written).
+			if m.workspaceCreating || m.workspaceDeleting {
+				return m, m.transientErrCmd("an operation is in progress — ctrl+c to force quit")
+			}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
@@ -432,21 +482,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case remoteBranchesLoadedMsg:
+		// A stale load (user already esc'd out of remote-branch mode) must
+		// not reset whatever dialog is open now.
+		if !m.remoteBranchMode {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.resetCreateMode()
 			m.err = fmt.Errorf("failed to load remote branches: %w", msg.err)
 			m.appendErrLog(m.err.Error())
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearErrorMsg{}
-			})
+			return m, m.scheduleErrClear()
 		}
 		m.remoteBranches = msg.branches
 		m.filteredBranches = filterBranches(msg.branches, m.input.Value())
 		m.branchSuggestionCursor = 0
 
 	case loadedWorkspacesMsg:
+		m.refreshing = false
+		// Keep the cursor on the same workspace by name: refreshes can
+		// reorder rows (activity changes, deletions), and a stale index
+		// would point destructive keys at whatever moved under the cursor.
+		prev := m.currentWorkspaceName()
 		m.workspaces = msg.workspaces
 		visible := m.visibleWorkspaces()
+		if prev != "" {
+			for i, ws := range visible {
+				if ws.Name == prev {
+					m.cursor = i
+					break
+				}
+			}
+		}
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
 		}
@@ -456,7 +522,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workspaceCreating = false
 		m.workspaceCreatingName = ""
 		if msg.wsName != "" {
-			if m.stateStore != nil {
+			// A refresh that read state after AddWorkspace may already have
+			// added the row; appending again would show it twice.
+			exists := false
+			for _, item := range m.workspaces {
+				if item.Name == msg.wsName {
+					exists = true
+					break
+				}
+			}
+			if !exists && m.stateStore != nil {
 				if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
 					item := WorkspaceItem{
 						Workspace: ws,
@@ -470,20 +545,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case deletedWorkspaceMsg:
-		m.workspaceDeleting = false
-		m.workspaceDeletingName = ""
-		m.workspaceDeletingNames = make(map[string]bool)
-		m.selected = make(map[string]bool)
+		// Clear only the finished deletes: another delete may still be in
+		// flight, and a batch-confirm dialog may be open over m.selected.
+		for _, name := range msg.names {
+			delete(m.workspaceDeletingNames, name)
+			delete(m.selected, name)
+		}
+		if len(m.workspaceDeletingNames) == 0 {
+			m.workspaceDeleting = false
+			m.workspaceDeletingName = ""
+		}
 		return m, m.loadWorkspacesCmd
 
 	case capturePreviewMsg:
-		m.agentPreview = msg.lines
+		// Drop captures for a workspace the cursor has since left.
+		if msg.wsName == m.currentWorkspaceName() {
+			m.agentPreview = msg.lines
+		}
 
 	case refreshTickMsg:
-		return m, tea.Batch(
-			m.loadWorkspacesCmd,
-			tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
-		)
+		next := tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} })
+		// Don't stack another load while one is still running (huge repo,
+		// cold disk): each load spawns git subprocesses per workspace.
+		if m.refreshing {
+			return m, next
+		}
+		m.refreshing = true
+		return m, tea.Batch(m.loadWorkspacesCmd, next)
 
 	case previewTickMsg:
 		return m, tea.Batch(
@@ -511,6 +599,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadWorkspacesCmd, m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed))
 
 	case prContentGeneratedMsg:
+		// Only accept the generation we are waiting for; a stale result
+		// (user cancelled, or pressed 'p' on another workspace) must not
+		// open a dialog with the wrong workspace's content.
+		if !m.prGenerating || msg.wsName != m.prWsName {
+			return m, nil
+		}
 		m.prGenerating = false
 		m.prCreating = true
 		m.prStep = 0
@@ -524,6 +618,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{
 			tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		}
+		// If the previous round of gh/git calls hasn't finished (slow or
+		// hanging network), don't pile another round on top of it.
+		if m.statusChecksInFlight > 0 {
+			return m, cmds[0]
+		}
 		for _, ws := range m.workspaces {
 			// Skip workspaces that are fully done (merged PR and remote branch gone).
 			if ws.PRStatus == "merged" && ws.RemoteDeleted {
@@ -531,6 +630,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, m.checkBranchStatusCmd(ws.Name, ws.Branch, ws.WorktreeDir, ws.BranchPushed))
 		}
+		m.statusChecksInFlight = len(cmds) - 1 // minus the re-armed tick
 		return m, tea.Batch(cmds...)
 
 	case prStatusCheckedMsg:
@@ -555,6 +655,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ciStatus[msg.wsName] = msg.ciStatus
 
 	case branchStatusCheckedMsg:
+		m.statusChecksInFlight = max(0, m.statusChecksInFlight-1)
 		ws, err := m.stateStore.GetWorkspace(msg.wsName)
 		if err == nil {
 			if !msg.status.RemoteCheckFailed {
@@ -594,6 +695,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case statusCheckErrMsg:
+		m.statusChecksInFlight = max(0, m.statusChecksInFlight-1)
 		// Background status polls fail as a group (auth expired, offline, ...);
 		// log without the transient banner so a 30s tick can't flash N errors.
 		m.appendErrLog(fmt.Sprintf("PR status check: %v", msg.err))
@@ -602,45 +704,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.appendErrLog(msg.err.Error())
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearErrorMsg{}
-			})
+			return m, m.scheduleErrClear()
 		}
 		return m, m.loadWorkspacesCmd
 
 	case errMsg:
 		m.workspaceCreating = false
 		m.workspaceDeleting = false
+		m.workspaceDeletingName = ""
 		m.workspaceDeletingNames = make(map[string]bool)
-		m.creating = false
+		m.resetCreateMode()
 		m.filtering = false
+		m.prGenerating = false
 		m.prCreating = false
 		m.err = msg.err
 		m.appendErrLog(msg.err.Error())
-		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-			return clearErrorMsg{}
-		})
+		return m, m.scheduleErrClear()
 
 	case diffLoadedMsg:
+		// Don't pop the diff overlay over an open dialog (delete confirm,
+		// create, PR): its keys would land in the hidden dialog.
+		if m.deleting || m.creating || m.prCreating || m.agentSelecting {
+			return m, nil
+		}
 		m.diffViewing = true
 		m.diffContent = msg.content
 		m.diffScrollOffset = 0
 		m.diffWsName = msg.wsName
 
 	case clearErrorMsg:
-		m.err = nil
+		if msg.seq == m.errSeq {
+			m.err = nil
+		}
 
 	case reviewsSentMsg:
 		if msg.count == 0 {
 			return m, m.transientErrCmd(fmt.Sprintf("no review comments found for %q", msg.wsName))
 		}
 		m.notice = fmt.Sprintf("sent %d review comment(s) to %s", msg.count, msg.wsName)
+		m.noticeSeq++
+		seq := m.noticeSeq
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-			return clearNoticeMsg{}
+			return clearNoticeMsg{seq: seq}
 		})
 
 	case clearNoticeMsg:
-		m.notice = ""
+		if msg.seq == m.noticeSeq {
+			m.notice = ""
+		}
 	}
 
 	return m, cmd
@@ -674,12 +785,20 @@ func (m *Model) resetCreateMode() {
 	m.input.Placeholder = "New branch name"
 }
 
+// scheduleErrClear arms the 3s auto-clear for the current error banner.
+// The sequence number ensures an older banner's timer can't wipe a newer one.
+func (m *Model) scheduleErrClear() tea.Cmd {
+	m.errSeq++
+	seq := m.errSeq
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return clearErrorMsg{seq: seq}
+	})
+}
+
 func (m *Model) transientErrCmd(msg string) tea.Cmd {
 	m.err = fmt.Errorf("%s", msg)
 	m.appendErrLog(msg)
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-		return clearErrorMsg{}
-	})
+	return m.scheduleErrClear()
 }
 
 func (m *Model) appendErrLog(msg string) {
