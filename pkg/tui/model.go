@@ -240,7 +240,9 @@ func Run() error {
 		return err
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	// WithMouseCellMotion routes scroll/click to the app so the terminal stops
+	// scrolling its own scrollback behind the alt-screen (revealing shell history).
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
