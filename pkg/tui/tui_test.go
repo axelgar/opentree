@@ -1532,6 +1532,9 @@ func TestAgentSelection_EscCancels(t *testing.T) {
 }
 
 func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
+	// Selecting an agent persists it via config.FindConfigFile(); chdir to a
+	// temp dir so the write can't reformat this repo's own opentree.toml.
+	t.Chdir(t.TempDir())
 	m := newTestModel(testWS("ws"))
 	m.agentSelecting = true
 	m.agentCursor = 1 // Claude Code

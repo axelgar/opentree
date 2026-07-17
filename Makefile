@@ -23,7 +23,8 @@ vulncheck:
 	go tool govulncheck ./...
 
 deadcode:
-	go tool deadcode ./cmd/opentree
+	@out=$$(go tool deadcode ./cmd/opentree); \
+	if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
 
 test:
 	go test ./...
