@@ -134,7 +134,7 @@ func TestLoad_MalformedTOML_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestSave_And_Load_RoundTrip(t *testing.T) {
+func TestSetKeys_And_Load_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "opentree.toml")
 
@@ -155,13 +155,20 @@ func TestSave_And_Load_RoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := Save(original, path); err != nil {
-		t.Fatalf("Save() failed: %v", err)
+	if err := SetKeys(path, map[string]any{
+		"agent.command":         original.Agent.Command,
+		"agent.args":            original.Agent.Args,
+		"worktree.base_dir":     original.Worktree.BaseDir,
+		"worktree.default_base": original.Worktree.DefaultBase,
+		"tmux.session_prefix":   original.Tmux.SessionPrefix,
+		"github.auto_push":      *original.GitHub.AutoPush,
+	}); err != nil {
+		t.Fatalf("SetKeys() failed: %v", err)
 	}
 
 	loaded, err := Load(path)
 	if err != nil {
-		t.Fatalf("Load() after Save() failed: %v", err)
+		t.Fatalf("Load() after SetKeys() failed: %v", err)
 	}
 
 	if loaded.Agent.Command != original.Agent.Command {
@@ -206,19 +213,6 @@ func TestAgentConfig_Validate_ValidBinary(t *testing.T) {
 	}
 }
 
-func TestSave_CreatesParentDirectory(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "dir", "opentree.toml")
-
-	if err := Save(Default(), path); err != nil {
-		t.Fatalf("Save() to nested path failed: %v", err)
-	}
-
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("Config file not created at %q: %v", path, err)
-	}
-}
-
 func TestGlobalConfigPath_UsesXDG(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -253,31 +247,28 @@ func TestLoadGlobal_NonExistent_ReturnsDefaults(t *testing.T) {
 	}
 }
 
-func TestSaveGlobal_And_LoadGlobal_RoundTrip(t *testing.T) {
+func TestLoadGlobal_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	original := &Config{
-		Agent:    AgentConfig{Command: "my-agent", Args: []string{"-v"}},
-		Worktree: WorktreeConfig{BaseDir: ".trees", DefaultBase: "develop"},
-		Tmux:     TmuxConfig{SessionPrefix: "proj"},
-		GitHub:   GitHubConfig{AutoPush: boolPtr(true)},
-	}
-
-	if err := SaveGlobal(original); err != nil {
-		t.Fatalf("SaveGlobal() failed: %v", err)
+	// SetKeys is the production path that writes the global config file.
+	if err := SetKeys(GlobalConfigPath(), map[string]any{
+		"agent.command":         "my-agent",
+		"worktree.default_base": "develop",
+	}); err != nil {
+		t.Fatalf("SetKeys(global): %v", err)
 	}
 
 	loaded, err := LoadGlobal()
 	if err != nil {
-		t.Fatalf("LoadGlobal() after SaveGlobal() failed: %v", err)
+		t.Fatalf("LoadGlobal() failed: %v", err)
 	}
 
-	if loaded.Agent.Command != original.Agent.Command {
-		t.Errorf("Agent.Command = %q, want %q", loaded.Agent.Command, original.Agent.Command)
+	if loaded.Agent.Command != "my-agent" {
+		t.Errorf("Agent.Command = %q, want %q", loaded.Agent.Command, "my-agent")
 	}
-	if loaded.Worktree.DefaultBase != original.Worktree.DefaultBase {
-		t.Errorf("Worktree.DefaultBase = %q, want %q", loaded.Worktree.DefaultBase, original.Worktree.DefaultBase)
+	if loaded.Worktree.DefaultBase != "develop" {
+		t.Errorf("Worktree.DefaultBase = %q, want %q", loaded.Worktree.DefaultBase, "develop")
 	}
 }
 

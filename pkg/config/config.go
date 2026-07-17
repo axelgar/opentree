@@ -306,20 +306,6 @@ func LoadGlobal() (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the configuration to a file
-func Save(cfg *Config, path string) error {
-	if path == "" {
-		path = "opentree.toml"
-	}
-
-	data, err := toml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-
-	return writeFileAtomic(path, data)
-}
-
 // SetKeys updates only the given dotted keys (e.g. "agent.command") in the
 // TOML file at path, preserving exactly what the file already contains.
 // Unlike Save with a merged Config, this never freezes defaults or another
@@ -383,13 +369,4 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return nil
-}
-
-// SaveGlobal writes the configuration to the global config file.
-func SaveGlobal(cfg *Config) error {
-	path := GlobalConfigPath()
-	if path == "" {
-		return fmt.Errorf("could not determine global config path: home directory not found")
-	}
-	return Save(cfg, path)
 }

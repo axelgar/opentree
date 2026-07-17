@@ -585,7 +585,8 @@ func TestCreatePR_AutoPushesBranch(t *testing.T) {
 	}
 
 	localDir := initRepoWithRemote(t, "feat/seed")
-	cfg := config.Default() // AutoPush defaults to true
+	cfg := config.Default()    // AutoPush defaults to true
+	cfg.Agent.Command = "echo" // Create validates the agent binary exists
 	cfg.Worktree.BaseDir = ".opentree"
 
 	ghMock := &mockGitHubManager{createPRResult: "https://github.com/acme/repo/pull/7"}
