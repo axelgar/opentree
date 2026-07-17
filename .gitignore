@@ -31,3 +31,7 @@ vendor/
 
 # opentree workspaces (when testing in this repo)
 .opentree/
+
+# Python (docs/logo generators)
+__pycache__/
+*.pyc

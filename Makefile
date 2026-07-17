@@ -1,7 +1,7 @@
 BINARY := opentree
 INSTALL_DIR := /usr/local/bin
 
-.PHONY: build install uninstall fmt lint vulncheck deadcode test check install-hooks
+.PHONY: build install uninstall fmt lint vulncheck deadcode test check install-hooks demo
 
 build:
 	go build -o $(BINARY) ./cmd/opentree
@@ -32,3 +32,9 @@ check: fmt lint vulncheck deadcode test
 
 install-hooks:
 	git config core.hooksPath .githooks
+
+# Regenerate docs/demo.gif: seed a throwaway repo, then record the TUI with VHS.
+# Requires: vhs (brew install vhs). See docs/demo/.
+demo:
+	bash docs/demo/seed-demo.sh
+	vhs docs/demo/demo.tape
