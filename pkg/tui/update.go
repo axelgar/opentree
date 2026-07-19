@@ -701,12 +701,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendErrLog(fmt.Sprintf("PR status check: %v", msg.err))
 
 	case attachFinishedMsg:
+		// ExecProcess's RestoreTerminal re-enters the alt screen but drops mouse
+		// mode, which is what keeps the terminal's own scrollback suppressed. Turn
+		// it back on so returning from a worktree still feels fullscreen.
 		if msg.err != nil {
 			m.err = msg.err
 			m.appendErrLog(msg.err.Error())
-			return m, m.scheduleErrClear()
+			return m, tea.Batch(tea.EnableMouseCellMotion, m.scheduleErrClear())
 		}
-		return m, m.loadWorkspacesCmd
+		return m, tea.Batch(tea.EnableMouseCellMotion, m.loadWorkspacesCmd)
 
 	case errMsg:
 		m.workspaceCreating = false
