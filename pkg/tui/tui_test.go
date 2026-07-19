@@ -1204,8 +1204,8 @@ func TestView_AgentStatusBadge_Waiting_ResumedByPaneActivity(t *testing.T) {
 // agent asked, nothing has happened since) must not trigger the resume rescue.
 func TestView_AgentStatusBadge_Waiting_PaneActivityBeforeStatus(t *testing.T) {
 	ws := testWS("still-waiting-branch")
-	ws.LastActivity = time.Now().Add(-time.Minute) // last pane output was before...
-	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()}     // ...the status write
+	ws.LastActivity = time.Now().Add(-time.Minute)                          // last pane output was before...
+	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()} // ...the status write
 	m := newTestModel(ws)
 	view := m.View()
 	if !strings.Contains(view, "waiting") {
