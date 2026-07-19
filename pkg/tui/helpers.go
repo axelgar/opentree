@@ -69,7 +69,8 @@ const (
 // liveness collapses the agent's last status event and its age into the coarse
 // working-vs-stale state shown as a badge. The returned time is the reference
 // instant for the "· Xh ago" age on the stale states (zero when unused). A live
-// tmux pane keeps a long in-progress turn from reading as stalled.
+// tmux pane keeps a long in-progress turn from reading as stalled, and also
+// rescues a needs_input that the agent has clearly resumed working past.
 func (ws WorkspaceItem) liveness() (agentLiveness, time.Time) {
 	if ws.AgentStatus == nil {
 		return livenessNone, time.Time{}
@@ -84,6 +85,15 @@ func (ws WorkspaceItem) liveness() (agentLiveness, time.Time) {
 		}
 		return livenessStalled, mtime
 	case "needs_input":
+		// Pane output after the status write means something happened since
+		// the agent last claimed to be waiting (e.g. a permission prompt was
+		// approved) — no hook flips the file back to in_progress for that, so
+		// treat it as working. ponytail: a stray unrelated pane bump (resize,
+		// scroll) can misread as working, bounded by staleAfter same as the
+		// in_progress rescue above, and self-corrects on the next hook write.
+		if paneFresh && ws.LastActivity.After(mtime) {
+			return livenessWorking, time.Time{}
+		}
 		if statusFresh {
 			return livenessWaiting, time.Time{}
 		}

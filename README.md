@@ -254,6 +254,13 @@ hour ago doesn't look the same as one that just landed:
 
 The status bar tallies the ones that want you: `N waiting` and, if any, `N stalled`.
 
+Pane activity also rescues a stuck badge in both directions: a long-running
+`in_progress` with a quiet status file but a still-active pane stays
+`working…` instead of reading `stalled`, and a `needs_input` with pane output
+*after* the status write (e.g. you approved a permission prompt, which isn't
+a new top-level message) reads `working…` again instead of staying wedged on
+`waiting`.
+
 **One-step setup.** Let opentree install the hooks for you:
 
 ```bash
@@ -268,9 +275,12 @@ launches, so the hooks write to the right worktree and stay inert (a no-op) in
 any session opentree didn't start. That means you install once, globally, and it
 just works across all your worktrees.
 
-`opentree agents setup <agent>` maps a new prompt → `in_progress` and a
-permission prompt / notification / turn-end → `needs_input`. The bundled hooks
-report `status` only; the optional `message` is for hand-written or custom hooks.
+`opentree agents setup <agent>` maps a new prompt and a completed tool call →
+`in_progress`, and a permission prompt / notification / turn-end →
+`needs_input`. The tool-completion hook is what flips the badge back to
+`working…` after you approve a permission prompt mid-turn, since that isn't a
+new prompt itself. The bundled hooks report `status` only; the optional
+`message` is for hand-written or custom hooks.
 
 **GitHub Copilot** and **Pi** can't be fully automated (Copilot has no
 "waiting for input" event; Pi's notify config holds a single script) — running

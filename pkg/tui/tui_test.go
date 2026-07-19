@@ -1182,6 +1182,37 @@ func TestView_AgentStatusBadge_Working_StalePaneFresh(t *testing.T) {
 	}
 }
 
+// A needs_input status is stuck on disk (no hook flips it back to
+// in_progress on resume, e.g. after a permission prompt is approved), but the
+// pane has produced output since — that's evidence the agent resumed, so it
+// reads "working" instead of staying wedged on "waiting" or decaying to "idle".
+func TestView_AgentStatusBadge_Waiting_ResumedByPaneActivity(t *testing.T) {
+	ws := testWS("resumed-branch")
+	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now().Add(-time.Minute)}
+	ws.LastActivity = time.Now() // pane active after the status write → resumed
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "working") {
+		t.Errorf("pane activity after a needs_input write should read 'working'\ngot: %s", view)
+	}
+	if strings.Contains(view, "waiting") || strings.Contains(view, "idle") {
+		t.Errorf("should not read as 'waiting' or 'idle' once resumed\ngot: %s", view)
+	}
+}
+
+// Pane activity from before the needs_input write (the normal case — the
+// agent asked, nothing has happened since) must not trigger the resume rescue.
+func TestView_AgentStatusBadge_Waiting_PaneActivityBeforeStatus(t *testing.T) {
+	ws := testWS("still-waiting-branch")
+	ws.LastActivity = time.Now().Add(-time.Minute) // last pane output was before...
+	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()}     // ...the status write
+	m := newTestModel(ws)
+	view := m.View()
+	if !strings.Contains(view, "waiting") {
+		t.Errorf("stale pane activity predating the status write should still read 'waiting'\ngot: %s", view)
+	}
+}
+
 func TestView_StatusBar_WaitingCount(t *testing.T) {
 	ws1 := testWS("branch-a")
 	ws1.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()} // fresh → waiting

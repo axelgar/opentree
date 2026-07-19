@@ -89,10 +89,13 @@ func statusHookCommand(status string) string {
 	return fmt.Sprintf(`[ -n "$%s" ] && printf '{"status":"%s"}' > "$%s"`, statusFileEnv, status, statusFileEnv)
 }
 
-// Each agent maps two events to in_progress (a new prompt started) and one or
-// more to needs_input (a permission prompt, a notification, or the turn ending
-// so it's the user's move again). Turn-end → needs_input closes the gap where a
-// finished turn would otherwise still read "working..." until an idle timeout.
+// Each agent maps a new prompt and a completed tool call to in_progress, and
+// a permission prompt, a notification, or the turn ending to needs_input (the
+// user's move again). The tool-completion event closes the gap where
+// approving a permission prompt mid-turn — not a new prompt — would otherwise
+// leave the badge stuck on "waiting" even though the agent resumed. Turn-end →
+// needs_input closes the other gap, where a finished turn would otherwise
+// still read "working..." until an idle timeout.
 var (
 	working  = statusHookCommand("in_progress")
 	needsYou = statusHookCommand("needs_input")
@@ -109,6 +112,7 @@ func installClaudeHooks() error {
 	}
 	return installAndReport("Claude Code", path, []jsonHook{
 		{event: "UserPromptSubmit", command: working},
+		{event: "PostToolUse", command: working},
 		{event: "Notification", command: needsYou},
 		{event: "Stop", command: needsYou},
 	})
@@ -125,6 +129,7 @@ func installCodexHooks() error {
 	}
 	return installAndReport("Codex", path, []jsonHook{
 		{event: "UserPromptSubmit", command: working},
+		{event: "PostToolUse", command: working},
 		{event: "PermissionRequest", command: needsYou},
 		{event: "Stop", command: needsYou},
 	})
@@ -141,6 +146,7 @@ func installGeminiHooks() error {
 	}
 	return installAndReport("Gemini CLI", path, []jsonHook{
 		{event: "BeforeAgent", command: working},
+		{event: "AfterTool", command: working},
 		{event: "Notification", command: needsYou},
 		{event: "AfterAgent", command: needsYou},
 	})
