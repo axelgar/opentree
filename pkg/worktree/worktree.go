@@ -137,25 +137,43 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 
 	// Distinct branch names can sanitize to the same directory ("feat/x" and
 	// "feat-x" both map to feat-x), so make sure the directory we are about
-	// to remove actually holds the requested branch's worktree.
+	// to remove actually holds the requested branch's worktree. The same pass
+	// records whether git still registers this path as a worktree at all.
+	registered := false
 	if wts, err := m.List(); err == nil {
 		for _, wt := range wts {
-			if wt.Path == worktreePath && wt.Branch != "" && wt.Branch != branchName {
+			if wt.Path != worktreePath {
+				continue
+			}
+			registered = true
+			if wt.Branch != "" && wt.Branch != branchName {
 				return fmt.Errorf("worktree at %s has branch %q checked out, not %q — refusing to delete", worktreePath, wt.Branch, branchName)
 			}
 		}
 	}
 
-	// Remove worktree (--force handles untracked files)
-	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
-	cmd.Dir = m.repoRoot
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to remove worktree: %w\nOutput: %s", err, output)
+	if registered {
+		// Remove worktree (--force handles untracked files)
+		cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+		cmd.Dir = m.repoRoot
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to remove worktree: %w\nOutput: %s", err, output)
+		}
+	} else {
+		// Git no longer tracks this path as a worktree, but the directory may
+		// linger from a partial/orphaned removal. `git worktree remove` would
+		// fail with "is not a working tree", so remove the leftover directory
+		// directly and prune any dangling metadata; then branch/state cleanup
+		// can proceed as usual. os.RemoveAll is a no-op if it's already gone.
+		if err := os.RemoveAll(worktreePath); err != nil {
+			return fmt.Errorf("failed to remove leftover worktree directory: %w", err)
+		}
+		_ = m.Prune()
 	}
 
 	// Delete branch if requested
 	if deleteBranch {
-		cmd = exec.Command("git", "branch", "-D", "--", branchName)
+		cmd := exec.Command("git", "branch", "-D", "--", branchName)
 		cmd.Dir = m.repoRoot
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to delete branch: %w\nOutput: %s", err, output)

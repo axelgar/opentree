@@ -633,6 +633,53 @@ func TestDelete_WithDeleteBranch(t *testing.T) {
 	}
 }
 
+// Regression: once git loses a worktree's registration (a partial/orphaned
+// removal) while the directory still lingers on disk, `git worktree remove`
+// fails with "is not a working tree" and Delete used to abort — leaving the
+// branch and state entry uncleanable. Delete must instead remove the leftover
+// directory and branch.
+func TestDelete_OrphanedWorktreeDirectory(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+
+	m := New(repoDir, ".opentree")
+
+	// A branch that exists locally, mirroring a squash-merged PR branch that
+	// opentree deletes with -D.
+	if out, err := exec.Command("git", "-C", repoDir, "branch", "feat/orphaned", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("git branch failed: %v\n%s", err, out)
+	}
+
+	// The worktree directory lingers on disk with leftover build artifacts but
+	// is NOT a registered git worktree (no .git pointer file), so
+	// `git worktree remove` would fail here.
+	worktreePath := filepath.Join(repoDir, ".opentree", "feat-orphaned")
+	if err := os.MkdirAll(filepath.Join(worktreePath, ".next"), 0755); err != nil {
+		t.Fatalf("failed to create leftover worktree dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".opentree-status.json"), []byte(`{"status":"needs_input"}`), 0644); err != nil {
+		t.Fatalf("failed to write leftover status file: %v", err)
+	}
+
+	if err := m.Delete("feat/orphaned", true); err != nil {
+		t.Fatalf("Delete() on orphaned worktree failed: %v", err)
+	}
+
+	// Leftover directory must be gone.
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Errorf("leftover worktree directory still exists after Delete()")
+	}
+
+	// Branch must be gone (force-deleted).
+	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "feat/orphaned").Output()
+	if strings.Contains(string(out), "feat/orphaned") {
+		t.Errorf("branch feat/orphaned should be deleted after Delete(deleteBranch=true)")
+	}
+}
+
 // ---- DiffStats ----
 
 func TestDiffStats_NoChanges(t *testing.T) {
