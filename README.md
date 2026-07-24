@@ -25,7 +25,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 ## Requirements
 
 - **Git** (2.5+) - for worktree support
-- **tmux** (2.0+) - for session orchestration
+- **tmux** (3.0+) - for session orchestration
 - **OpenCode** (optional) - default coding agent ([install](https://github.com/anomalyco/opencode))
 - **GitHub CLI** (`gh`) (optional) - for PR creation and issue fetching ([install](https://cli.github.com/))
 
@@ -139,7 +139,7 @@ opentree issue 42              # Workspace from issue #42
 opentree issue 42 --base dev   # Branch off 'dev'
 ```
 
-Fetches the issue from GitHub, auto-generates a branch name (e.g. `issue-42-add-dark-mode`), and writes a `TASK.md` file with the issue title, labels, and description into the worktree so the AI agent can start working immediately. Requires the `gh` CLI.
+Fetches the issue from GitHub and auto-generates a branch name (e.g. `issue-42-add-dark-mode`). Requires the `gh` CLI.
 
 #### List Workspaces
 
@@ -309,9 +309,7 @@ e.g. a Claude Code hook in `~/.claude/settings.json`:
 
 3. **State Persistence**: Workspace metadata (branch, created time, agent, issue number) stored in `.opentree/state.json`.
 
-4. **Agent Integration**: When creating a workspace, opentree launches your configured agent (default: OpenCode) inside the tmux window, ready to code.
-
-5. **Issue Context**: When using `opentree issue`, a `TASK.md` file is written to the worktree containing the issue details, giving the AI agent immediate context.
+4. **Agent Integration**: When creating a workspace, opentree launches your configured agent inside the tmux window, ready to code. With no agent configured, it uses the first supported agent found on your PATH.
 
 ## Workflow Example
 
@@ -355,6 +353,10 @@ Install tmux:
 - **macOS**: `brew install tmux`
 - **Ubuntu/Debian**: `sudo apt install tmux`
 - **Arch**: `sudo pacman -S tmux`
+
+### "opentree requires tmux >= 3.0"
+
+opentree sets the agent's environment via `tmux new-window -e`, which needs tmux 3.0 or newer. Upgrade tmux with your package manager (e.g. `brew upgrade tmux`).
 
 ### "Error: opencode not found"
 

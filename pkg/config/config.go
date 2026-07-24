@@ -32,7 +32,7 @@ func (a AgentConfig) Validate() error {
 		return fmt.Errorf("agent command is empty")
 	}
 	if _, err := exec.LookPath(a.Command); err != nil {
-		return fmt.Errorf("agent command %q not found on PATH: %w", a.Command, err)
+		return fmt.Errorf("agent command %q not found on PATH — install it or set [agent] command in opentree.toml (known agents: %s)", a.Command, knownAgentCommands())
 	}
 	return nil
 }
@@ -276,6 +276,19 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 	mergeInto(resolved, repoCfg)
 
 	sources := computeSources(resolved, globalCfg, repoCfg)
+
+	// No config file touched the [agent] section: use the first installed
+	// agent so the first run works with whatever the user already has. If a
+	// file set args — even without a command — detection stays off so user
+	// args are never paired with a binary they didn't choose; the hardcoded
+	// default stands and Validate reports it if it isn't installed.
+	if sources.AgentCommand == SourceDefault && sources.AgentArgs == SourceDefault {
+		if a := FirstInstalledAgent(); a != nil {
+			resolved.Agent.Command = a.Command
+			resolved.Agent.Args = a.Args
+		}
+	}
+
 	return resolved, sources, nil
 }
 

@@ -467,6 +467,40 @@ func (m *Manager) UntrackedFiles(branchName string) ([]string, error) {
 	return files, nil
 }
 
+// EnsureExcluded appends filename to the repo's local git exclude list
+// (.git/info/exclude) so agents running `git add -A` can't commit it and it
+// stays out of diffs. Idempotent, best-effort: failures are silently ignored.
+func (m *Manager) EnsureExcluded(filename string) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = m.repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(m.repoRoot, gitDir)
+	}
+	excludePath := filepath.Join(gitDir, "info", "exclude")
+	data, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == filename {
+			return
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
+		return
+	}
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		data = append(data, '\n')
+	}
+	data = append(data, []byte(filename+"\n")...)
+	_ = os.WriteFile(excludePath, data, 0600)
+}
+
 // uncommittedFiles returns a set of file names that have uncommitted changes in a worktree.
 func uncommittedFiles(worktreePath string) (map[string]bool, error) {
 	cmd := exec.Command("git", "diff", "--name-only", "HEAD")

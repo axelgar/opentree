@@ -406,6 +406,34 @@ func TestDelete_RemovesWorktree(t *testing.T) {
 	}
 }
 
+func TestEnsureExcluded(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	excludePath := filepath.Join(repoDir, ".git", "info", "exclude")
+	// Pre-seed without a trailing newline to cover the newline-repair branch.
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(excludePath, []byte("seed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(repoDir, ".opentree")
+	m.EnsureExcluded(".opentree-status.json")
+	m.EnsureExcluded(".opentree-status.json") // idempotent: no duplicate line
+
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude: %v", err)
+	}
+	if want := "seed\n.opentree-status.json\n"; string(data) != want {
+		t.Errorf("exclude content = %q, want %q", data, want)
+	}
+}
+
 // ---- parseNumstat (pure, no git required) ----
 
 func TestParseNumstat_Empty(t *testing.T) {

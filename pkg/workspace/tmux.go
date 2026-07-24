@@ -17,8 +17,8 @@ func NewTmuxProcessManager(ctrl *tmux.Controller) *TmuxProcessManager {
 	return &TmuxProcessManager{ctrl: ctrl}
 }
 
-func (t *TmuxProcessManager) CreateWindow(name, workdir, command string, args ...string) error {
-	return t.ctrl.CreateWindow(name, workdir, command, args...)
+func (t *TmuxProcessManager) CreateWindow(name, workdir, command string, env []string, args ...string) error {
+	return t.ctrl.CreateWindow(name, workdir, command, env, args...)
 }
 
 func (t *TmuxProcessManager) ListWindows() ([]Window, error) {

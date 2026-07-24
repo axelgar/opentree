@@ -20,6 +20,8 @@ import (
 // and returns configurable results.
 type mockProcessManager struct {
 	createWindowCalls []string
+	createWindowEnvs  [][]string
+	createWindowErr   error
 	killWindowCalls   []string
 	killSessionCalled bool
 	sendMessageCalls  []sendMessageCall
@@ -28,9 +30,10 @@ type mockProcessManager struct {
 	paneCommand       string // returned by PaneCurrentCommand; "" simulates "no window"
 }
 
-func (m *mockProcessManager) CreateWindow(name, workdir, command string, args ...string) error {
+func (m *mockProcessManager) CreateWindow(name, workdir, command string, env []string, args ...string) error {
 	m.createWindowCalls = append(m.createWindowCalls, name)
-	return nil
+	m.createWindowEnvs = append(m.createWindowEnvs, env)
+	return m.createWindowErr
 }
 
 func (m *mockProcessManager) ListWindows() ([]Window, error) { return m.windows, nil }
@@ -412,6 +415,22 @@ func TestCreateAndDelete(t *testing.T) {
 		t.Errorf("expected CreateWindow called with test-branch, got %v", mock.createWindowCalls)
 	}
 
+	// The status-file env var travels via the window environment, not the
+	// typed command line.
+	wantEnv := "OPENTREE_STATUS_FILE=" + filepath.Join(svc.WorktreePath("test-branch"), StatusFileName)
+	if len(mock.createWindowEnvs) != 1 || len(mock.createWindowEnvs[0]) != 1 || mock.createWindowEnvs[0][0] != wantEnv {
+		t.Errorf("CreateWindow env = %v, want [%q]", mock.createWindowEnvs, wantEnv)
+	}
+
+	// The status file must be git-excluded so agents can't commit it.
+	exclude, err := os.ReadFile(filepath.Join(repoDir, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatalf("read .git/info/exclude: %v", err)
+	}
+	if !strings.Contains(string(exclude), StatusFileName) {
+		t.Errorf(".git/info/exclude does not contain %q:\n%s", StatusFileName, exclude)
+	}
+
 	worktreePath := svc.WorktreePath("test-branch")
 	if !dirExists(worktreePath) {
 		t.Error("worktree directory should exist after Create")
@@ -510,6 +529,39 @@ func initRepoWithRemote(t *testing.T, branchName string) string {
 	runIn(localDir, "git", "push", "origin", branchName)
 	runIn(localDir, "git", "checkout", "main")
 	return localDir
+}
+
+func TestCreate_CleansUpWorktreeOnWindowFailure(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Agent.Command = "echo"
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{createWindowErr: errors.New("boom")}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	_, err = svc.Create("doomed", "main")
+	if err == nil || !strings.Contains(err.Error(), "failed to create tmux window") {
+		t.Fatalf("Create error = %v, want tmux window failure", err)
+	}
+
+	if _, err := os.Stat(svc.WorktreePath("doomed")); !os.IsNotExist(err) {
+		t.Error("worktree directory should be removed after window failure")
+	}
+	out, err := exec.Command("git", "-C", repoDir, "branch", "--list", "doomed").Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("branch should be deleted after window failure, got %q", out)
+	}
 }
 
 func TestCreateFromRemoteBranch(t *testing.T) {
@@ -860,14 +912,11 @@ func dirExists(path string) bool {
 	return err == nil
 }
 
-func TestAgentLaunchCommand(t *testing.T) {
-	got := agentLaunchCommand("claude", "/tmp/wt")
-	want := `export OPENTREE_STATUS_FILE='/tmp/wt/.opentree-status.json'; claude`
-	if got != want {
-		t.Errorf("agentLaunchCommand:\n got %q\nwant %q", got, want)
-	}
-	if q := shellSingleQuote(`a'b`); q != `'a'\''b'` {
-		t.Errorf("shellSingleQuote(a'b) = %q, want 'a'\\''b'", q)
+func TestAgentEnv(t *testing.T) {
+	got := agentEnv("/tmp/wt")
+	want := []string{"OPENTREE_STATUS_FILE=/tmp/wt/.opentree-status.json"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("agentEnv = %q, want %q", got, want)
 	}
 }
 

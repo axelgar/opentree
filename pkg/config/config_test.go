@@ -35,6 +35,7 @@ func TestDefault(t *testing.T) {
 
 func TestLoad_NonExistentFile_ReturnsDefaults(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir()) // no agents installed → detection is a no-op
 	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent.toml"))
 	if err != nil {
 		t.Fatalf("Load() with non-existent file failed: %v", err)
@@ -304,6 +305,100 @@ command = "global-agent"
 	}
 }
 
+// fakeAgentBinary drops an executable stub named cmd into dir.
+func fakeAgentBinary(t *testing.T, dir, cmd string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, cmd), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadWithSources_DetectsInstalledAgent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDir := t.TempDir()
+	fakeAgentBinary(t, binDir, "codex")
+	t.Setenv("PATH", binDir)
+
+	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if cfg.Agent.Command != "codex" {
+		t.Errorf("Agent.Command = %q, want detected %q", cfg.Agent.Command, "codex")
+	}
+	if sources.AgentCommand != SourceDefault {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceDefault)
+	}
+}
+
+// Detection must carry the agent's default args (gh needs "copilot") and must
+// never override an agent set in a config file.
+func TestLoadWithSources_DetectionArgsAndConfigPrecedence(t *testing.T) {
+	binDir := t.TempDir()
+	fakeAgentBinary(t, binDir, "gh")
+	t.Setenv("PATH", binDir)
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg, _, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if cfg.Agent.Command != "gh" || len(cfg.Agent.Args) != 1 || cfg.Agent.Args[0] != "copilot" {
+		t.Errorf("detected agent = %q %v, want \"gh\" [copilot]", cfg.Agent.Command, cfg.Agent.Args)
+	}
+
+	repoDir := t.TempDir()
+	repoPath := filepath.Join(repoDir, "opentree.toml")
+	if err := os.WriteFile(repoPath, []byte("[agent]\ncommand = \"my-agent\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, sources, err := LoadWithSources(repoPath)
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if cfg.Agent.Command != "my-agent" {
+		t.Errorf("Agent.Command = %q, want configured %q", cfg.Agent.Command, "my-agent")
+	}
+	if sources.AgentCommand != SourceRepo {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceRepo)
+	}
+}
+
+// A config file that sets args without a command must disable detection:
+// user-authored args must never be paired with a binary the user didn't choose.
+func TestLoadWithSources_ArgsOnlyConfigSkipsDetection(t *testing.T) {
+	binDir := t.TempDir()
+	fakeAgentBinary(t, binDir, "codex")
+	t.Setenv("PATH", binDir)
+
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte("[agent]\nargs = [\"--yolo\"]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if want := Default().Agent.Command; cfg.Agent.Command != want {
+		t.Errorf("Agent.Command = %q, want default %q (not detected codex)", cfg.Agent.Command, want)
+	}
+	if len(cfg.Agent.Args) != 1 || cfg.Agent.Args[0] != "--yolo" {
+		t.Errorf("Agent.Args = %v, want [--yolo]", cfg.Agent.Args)
+	}
+	if sources.AgentCommand != SourceDefault {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceDefault)
+	}
+	if sources.AgentArgs != SourceGlobal {
+		t.Errorf("sources.AgentArgs = %q, want %q", sources.AgentArgs, SourceGlobal)
+	}
+}
+
 func TestLoadWithSources_RepoOverridesGlobal(t *testing.T) {
 	xdgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
@@ -392,6 +487,7 @@ auto_push = false
 func TestLoadWithSources_DefaultsWhenNeitherConfigExists(t *testing.T) {
 	xdgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	t.Setenv("PATH", t.TempDir()) // no agents installed → detection is a no-op
 
 	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
 	if err != nil {

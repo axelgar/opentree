@@ -119,18 +119,27 @@ func (s *Service) WorktreePath(name string) string {
 // StatusFileName is the conventional file agents write to signal completion.
 const StatusFileName = ".opentree-status.json"
 
-// agentLaunchCommand prefixes the agent command with an export of
-// OPENTREE_STATUS_FILE so status hooks (see `opentree agents setup`) know where
-// to write and stay inert outside opentree. Args are appended by CreateWindow.
-func agentLaunchCommand(agentCmd, worktreePath string) string {
-	statusFile := filepath.Join(worktreePath, StatusFileName)
-	return fmt.Sprintf("export OPENTREE_STATUS_FILE=%s; %s", shellSingleQuote(statusFile), agentCmd)
+// agentEnv builds the environment for an agent window: OPENTREE_STATUS_FILE
+// tells status hooks (see `opentree agents setup`) where to write; they stay
+// inert outside opentree. Set via the window environment (not typed into the
+// shell) so the visible launch line stays clean.
+func agentEnv(worktreePath string) []string {
+	return []string{"OPENTREE_STATUS_FILE=" + filepath.Join(worktreePath, StatusFileName)}
 }
 
-// shellSingleQuote wraps s in single quotes, escaping embedded single quotes,
-// for safe inclusion in a POSIX shell command line.
-func shellSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+// launchAgentWindow git-excludes the agent status file, then starts the
+// configured agent in a new window for name's worktree. On failure the
+// just-created worktree is rolled back; deleteBranch controls whether its
+// branch is deleted too (a pre-existing branch may hold the user's own
+// local-only commits).
+func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, error) {
+	worktreePath := s.WorktreePath(name)
+	s.worktrees.EnsureExcluded(StatusFileName)
+	if err := s.process.CreateWindow(name, worktreePath, s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args...); err != nil {
+		_ = s.worktrees.Delete(name, deleteBranch)
+		return "", fmt.Errorf("failed to create tmux window: %w", err)
+	}
+	return worktreePath, nil
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
@@ -145,13 +154,9 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
 
-	worktreePath := s.WorktreePath(name)
-
-	agentCmd := s.cfg.Agent.Command
-	launchCmd := agentLaunchCommand(agentCmd, worktreePath)
-	if err := s.process.CreateWindow(name, worktreePath, launchCmd, s.cfg.Agent.Args...); err != nil {
-		_ = s.worktrees.Delete(name, true) // cleanup orphaned worktree
-		return nil, fmt.Errorf("failed to create tmux window: %w", err)
+	worktreePath, err := s.launchAgentWindow(name, true)
+	if err != nil {
+		return nil, err
 	}
 
 	ws := &state.Workspace{
@@ -160,7 +165,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 		BaseBranch:  baseBranch,
 		CreatedAt:   time.Now(),
 		Status:      "active",
-		Agent:       agentCmd,
+		Agent:       s.cfg.Agent.Command,
 		WorktreeDir: worktreePath,
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
@@ -174,8 +179,9 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	return ws, nil
 }
 
-// CreateFromIssue fetches a GitHub issue and creates a workspace with issue context.
-// A TASK.md file is written into the worktree with the issue details.
+// CreateFromIssue fetches a GitHub issue and creates a workspace whose branch
+// name and metadata come from the issue. The user hands the agent the issue
+// context themselves.
 func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Workspace, error) {
 	if !s.github.IsInstalled() {
 		return nil, fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
@@ -194,15 +200,6 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 	ws, err := s.Create(branchName, baseBranch)
 	if err != nil {
 		return nil, err
-	}
-
-	// Write TASK.md with issue context for the AI agent
-	taskContent := github.IssueTaskContent(issue)
-	taskFile := filepath.Join(ws.WorktreeDir, "TASK.md")
-	if err := os.WriteFile(taskFile, []byte(taskContent), 0600); err != nil {
-		// Non-fatal: workspace was created successfully. Warn on stderr —
-		// stdout would be drawn over the TUI's rendered screen.
-		fmt.Fprintf(os.Stderr, "Warning: could not write TASK.md: %v\n", err)
 	}
 
 	// Update workspace with issue metadata
@@ -227,16 +224,9 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 		return nil, fmt.Errorf("failed to create worktree from remote: %w", err)
 	}
 
-	worktreePath := s.WorktreePath(branchName)
-
-	agentCmd := s.cfg.Agent.Command
-	launchCmd := agentLaunchCommand(agentCmd, worktreePath)
-	if err := s.process.CreateWindow(branchName, worktreePath, launchCmd, s.cfg.Agent.Args...); err != nil {
-		// Cleanup the orphaned worktree, but only delete the local branch if
-		// this call created it — a pre-existing branch may hold the user's
-		// local-only commits.
-		_ = s.worktrees.Delete(branchName, createdBranch)
-		return nil, fmt.Errorf("failed to create tmux window: %w", err)
+	worktreePath, err := s.launchAgentWindow(branchName, createdBranch)
+	if err != nil {
+		return nil, err
 	}
 
 	ws := &state.Workspace{
@@ -245,7 +235,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 		BaseBranch:   s.cfg.Worktree.DefaultBase,
 		CreatedAt:    time.Now(),
 		Status:       "active",
-		Agent:        agentCmd,
+		Agent:        s.cfg.Agent.Command,
 		WorktreeDir:  worktreePath,
 		BranchPushed: true,
 	}

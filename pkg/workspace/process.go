@@ -15,8 +15,9 @@ type Window struct {
 // ProcessManager abstracts process/window management so the workspace service
 // is not coupled to a specific backend (tmux, terminal tabs, etc.).
 type ProcessManager interface {
-	// CreateWindow creates a new window running command in workdir.
-	CreateWindow(name, workdir, command string, args ...string) error
+	// CreateWindow creates a new window running command in workdir, with
+	// env (KEY=value pairs) set in the window's environment.
+	CreateWindow(name, workdir, command string, env []string, args ...string) error
 
 	// ListWindows returns all windows in the current session.
 	ListWindows() ([]Window, error)

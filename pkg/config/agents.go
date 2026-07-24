@@ -44,6 +44,27 @@ func FindAgent(name string) *PredefinedAgent {
 	return nil
 }
 
+// FirstInstalledAgent returns the first predefined agent whose binary is on
+// PATH, in registry order (opencode is the preferred pick). Nil if none is.
+func FirstInstalledAgent() *PredefinedAgent {
+	for i := range PredefinedAgents {
+		if PredefinedAgents[i].IsInstalled() {
+			return &PredefinedAgents[i]
+		}
+	}
+	return nil
+}
+
+// knownAgentCommands returns the registry's commands as a comma-separated
+// list for error messages.
+func knownAgentCommands() string {
+	cmds := make([]string, len(PredefinedAgents))
+	for i, a := range PredefinedAgents {
+		cmds[i] = a.Command
+	}
+	return strings.Join(cmds, ", ")
+}
+
 // AgentNames returns display names of all predefined agents.
 func AgentNames() []string {
 	names := make([]string, len(PredefinedAgents))

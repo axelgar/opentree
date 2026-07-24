@@ -20,6 +20,8 @@ type Controller struct {
 	sessionPrefix  string
 	repoNameOnce   sync.Once
 	cachedRepoName string
+	versionOnce    sync.Once
+	versionErr     error
 }
 
 // New creates a new tmux controller
@@ -29,8 +31,16 @@ func New(sessionPrefix string) *Controller {
 	}
 }
 
-// CreateWindow creates a new tmux window and runs a command in it
-func (c *Controller) CreateWindow(name, workdir, command string, args ...string) error {
+// CreateWindow creates a new tmux window and runs a command in it. env holds
+// KEY=value pairs set in the window's environment (tmux new-window -e, ≥3.0)
+// rather than typed into the shell, keeping the visible command line clean.
+func (c *Controller) CreateWindow(name, workdir, command string, env []string, args ...string) error {
+	// Fail with a clear message before creating a session: on tmux <3.0 the
+	// new-window -e flag below would die with an opaque usage error.
+	if err := c.checkVersion(); err != nil {
+		return err
+	}
+
 	sessionName := c.getSessionName()
 
 	// Ensure tmux session exists
@@ -44,8 +54,12 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 	// target exactly this window (names would prefix-match and "." or digits
 	// in a name are parsed specially by tmux target syntax).
 	windowName := c.sanitizeWindowName(name)
-	cmd := exec.Command("tmux", "new-window", "-t", exactSession(sessionName)+":",
-		"-n", windowName, "-c", workdir, "-P", "-F", "#{window_id}")
+	newWindowArgs := []string{"new-window", "-t", exactSession(sessionName) + ":",
+		"-n", windowName, "-c", workdir, "-P", "-F", "#{window_id}"}
+	for _, e := range env {
+		newWindowArgs = append(newWindowArgs, "-e", e)
+	}
+	cmd := exec.Command("tmux", newWindowArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
@@ -78,6 +92,40 @@ func (c *Controller) CreateWindow(name, workdir, command string, args ...string)
 	}
 
 	return nil
+}
+
+// checkVersion fails when the installed tmux predates 3.0, which CreateWindow
+// requires for new-window -e. Cached per Controller. A missing/broken tmux
+// binary passes: the command that actually needs tmux reports that error.
+func (c *Controller) checkVersion() error {
+	c.versionOnce.Do(func() {
+		out, err := exec.Command("tmux", "-V").Output()
+		if err != nil {
+			return
+		}
+		if v := strings.TrimSpace(string(out)); versionBelow3(v) {
+			c.versionErr = fmt.Errorf("opentree requires tmux >= 3.0 (found %s)", strings.TrimPrefix(v, "tmux "))
+		}
+	})
+	return c.versionErr
+}
+
+// versionBelow3 reports whether `tmux -V` output identifies a tmux older than
+// 3.0. Only the major version matters (the floor is 3.0), and unparseable
+// versions ("tmux master", unnumbered builds) are assumed modern so unusual
+// builds are never blocked.
+func versionBelow3(v string) bool {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "tmux ")
+	start := strings.IndexFunc(v, func(r rune) bool { return r >= '0' && r <= '9' })
+	if start < 0 {
+		return false
+	}
+	end := start
+	for end < len(v) && v[end] >= '0' && v[end] <= '9' {
+		end++
+	}
+	major, err := strconv.Atoi(v[start:end])
+	return err == nil && major < 3
 }
 
 // exactSession prefixes a session name with "=" so tmux matches it exactly

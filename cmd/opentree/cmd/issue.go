@@ -14,13 +14,10 @@ import (
 var IssueCmd = &cobra.Command{
 	Use:   "issue <number>",
 	Short: "Create a workspace from a GitHub issue",
-	Long: `Fetches a GitHub issue and creates a workspace pre-loaded with its context.
+	Long: `Fetches a GitHub issue and creates a workspace for it.
 
 The branch name is auto-generated from the issue number and title
-(e.g. issue #42 "Add dark mode" → issue-42-add-dark-mode).
-
-A TASK.md file containing the issue title, labels, and description is written
-into the new worktree so the AI agent can start working immediately.`,
+(e.g. issue #42 "Add dark mode" → issue-42-add-dark-mode).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		issueNum, err := strconv.Atoi(args[0])
@@ -52,7 +49,6 @@ into the new worktree so the AI agent can start working immediately.`,
 		fmt.Printf("Issue #%d: %s\n", ws.IssueNumber, ws.IssueTitle)
 		fmt.Printf("Branch:   %s\n\n", ws.Branch)
 		fmt.Printf("✓ Created workspace '%s'\n", ws.Name)
-		fmt.Printf("✓ Wrote issue context to TASK.md\n")
 		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
 		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
 		return nil

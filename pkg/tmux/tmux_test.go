@@ -118,6 +118,31 @@ func TestSanitizeWindowName(t *testing.T) {
 	}
 }
 
+func TestVersionBelow3(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"tmux 3.6a", false},
+		{"tmux 3.0", false},
+		{"tmux 3.0a", false},
+		{"tmux 3.4", false}, // OpenBSD style
+		{"tmux 2.9a", true},
+		{"tmux 1.8", true},
+		{"tmux next-3.7", false},
+		{"tmux master", false},
+		{"tmux", false},
+		{"", false},
+		{"tmux 10.0", false}, // multi-digit major
+	}
+
+	for _, tt := range tests {
+		if got := versionBelow3(tt.input); got != tt.want {
+			t.Errorf("versionBelow3(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestParseWindows(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -264,7 +289,7 @@ func TestCreateWindow(t *testing.T) {
 	command := "echo"
 	args := []string{"test"}
 
-	err := ctrl.CreateWindow(windowName, workdir, command, args...)
+	err := ctrl.CreateWindow(windowName, workdir, command, nil, args...)
 	if err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
@@ -314,7 +339,7 @@ func TestListWindows(t *testing.T) {
 		t.Errorf("Expected 0 windows with no session, got %d", len(windows))
 	}
 
-	err = ctrl.CreateWindow("test-win", "/tmp", "sleep", "1000")
+	err = ctrl.CreateWindow("test-win", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
@@ -341,12 +366,12 @@ func TestKillWindow(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
 	windowName := "test-to-kill"
-	err := ctrl.CreateWindow(windowName, "/tmp", "sleep", "1000")
+	err := ctrl.CreateWindow(windowName, "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
 
-	err = ctrl.CreateWindow("keep-alive", "/tmp", "sleep", "1000")
+	err = ctrl.CreateWindow("keep-alive", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow() for keep-alive failed: %v", err)
 	}
@@ -381,7 +406,7 @@ func TestCapturePane(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
 	windowName := "test-capture"
-	err := ctrl.CreateWindow(windowName, "/tmp", "echo", "test-output")
+	err := ctrl.CreateWindow(windowName, "/tmp", "echo", nil, "test-output")
 	if err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
@@ -407,7 +432,7 @@ func TestSendMessage_MultilineArrivesIntact(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
 	windowName := "test-sendmsg"
-	if err := ctrl.CreateWindow(windowName, "/tmp", "cat"); err != nil {
+	if err := ctrl.CreateWindow(windowName, "/tmp", "cat", nil); err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
@@ -440,7 +465,7 @@ func TestCreateWindow_QuotesArgs(t *testing.T) {
 	sessionName := ctrl.getSessionName()
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	if err := ctrl.CreateWindow("test-quotes", "/tmp", "printf", "%s\n", "two words"); err != nil {
+	if err := ctrl.CreateWindow("test-quotes", "/tmp", "printf", nil, "%s\n", "two words"); err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
@@ -467,12 +492,12 @@ func TestSelectWindow(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	err := ctrl.CreateWindow("win-a", "/tmp", "sleep", "1000")
+	err := ctrl.CreateWindow("win-a", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow(win-a) failed: %v", err)
 	}
 
-	err = ctrl.CreateWindow("win-b", "/tmp", "sleep", "1000")
+	err = ctrl.CreateWindow("win-b", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow(win-b) failed: %v", err)
 	}
@@ -505,7 +530,7 @@ func TestSelectWindowNonExistent(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	err := ctrl.CreateWindow("real-win", "/tmp", "sleep", "1000")
+	err := ctrl.CreateWindow("real-win", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
@@ -527,7 +552,7 @@ func TestAttachCmd(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	err := ctrl.CreateWindow("attach-win", "/tmp", "sleep", "1000")
+	err := ctrl.CreateWindow("attach-win", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow() failed: %v", err)
 	}
@@ -601,10 +626,10 @@ func TestWindowTargeting_DotsAndPrefixes(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	if err := ctrl.CreateWindow("release-1.2", "/tmp", "sleep", "1000"); err != nil {
+	if err := ctrl.CreateWindow("release-1.2", "/tmp", "sleep", nil, "1000"); err != nil {
 		t.Fatalf("CreateWindow(release-1.2) failed: %v", err)
 	}
-	if err := ctrl.CreateWindow("fix-it", "/tmp", "sleep", "1000"); err != nil {
+	if err := ctrl.CreateWindow("fix-it", "/tmp", "sleep", nil, "1000"); err != nil {
 		t.Fatalf("CreateWindow(fix-it) failed: %v", err)
 	}
 
