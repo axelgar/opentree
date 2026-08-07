@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,6 +15,12 @@ import (
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 )
+
+// agentFlag names the agent to run, bypassing config lookup. The launcher
+// always sets it: it has already decided which agent this workspace uses, and
+// re-deciding here would consult the worktree's own checked-out opentree.toml,
+// which can name a different agent than the one that opened the window.
+var agentFlag string
 
 var ChatCmd = &cobra.Command{
 	Use:               "chat <branch-name>",
@@ -28,12 +35,12 @@ var ChatCmd = &cobra.Command{
 	},
 }
 
-func runChat(ctx context.Context, name, version string) error {
-	cfg, err := config.Load("")
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
+func init() {
+	ChatCmd.Flags().StringVar(&agentFlag, "agent", "",
+		"agent to run (defaults to the repository's configured agent)")
+}
 
+func runChat(ctx context.Context, name, version string) error {
 	repoRoot, err := gitutil.RepoRoot()
 	if err != nil {
 		return fmt.Errorf("failed to find repo root: %w", err)
@@ -49,10 +56,9 @@ func runChat(ctx context.Context, name, version string) error {
 		return fmt.Errorf("failed to find workspace %q: %w", name, err)
 	}
 
-	agent := config.FindAgent(cfg.Agent.Command)
-	if agent == nil || agent.ACP == nil {
-		return fmt.Errorf("agent %q has no ACP mode; only %s does",
-			cfg.Agent.Command, acpCapableAgents())
+	agent, err := resolveACPAgent(repoRoot)
+	if err != nil {
+		return err
 	}
 
 	return chat.Run(ctx, chat.Options{
@@ -70,6 +76,27 @@ func runChat(ctx context.Context, name, version string) error {
 			return store.UpdateWorkspace(ws)
 		},
 	})
+}
+
+// resolveACPAgent picks the agent to run. The --agent flag wins; otherwise the
+// config is read from the repository root rather than the working directory,
+// because `opentree chat` runs inside a worktree whose own opentree.toml is a
+// checked-out file and may disagree with the repository's.
+func resolveACPAgent(repoRoot string) (*config.PredefinedAgent, error) {
+	name := agentFlag
+	if name == "" {
+		cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
+		if err != nil {
+			return nil, fmt.Errorf("failed to load config: %w", err)
+		}
+		name = cfg.Agent.Command
+	}
+
+	agent := config.FindAgent(name)
+	if agent == nil || agent.ACP == nil {
+		return nil, fmt.Errorf("agent %q has no ACP mode; only %s does", name, acpCapableAgents())
+	}
+	return agent, nil
 }
 
 func acpCapableAgents() string {

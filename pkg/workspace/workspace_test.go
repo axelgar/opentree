@@ -1037,9 +1037,10 @@ func TestCreate_ACPAgentLaunchesTheChatView(t *testing.T) {
 	if got := mock.createWindowCommands[0]; got == "opencode" {
 		t.Errorf("command = %q, want the opentree binary rather than the agent", got)
 	}
-	wantArgs := []string{"chat", "acp-branch"}
-	if len(mock.createWindowArgs[0]) != 2 ||
-		mock.createWindowArgs[0][0] != wantArgs[0] || mock.createWindowArgs[0][1] != wantArgs[1] {
+	// The agent is passed explicitly: the chat runs inside the worktree, whose
+	// own opentree.toml may name a different agent than the launcher read.
+	wantArgs := []string{"chat", "acp-branch", "--agent", "opencode"}
+	if strings.Join(mock.createWindowArgs[0], " ") != strings.Join(wantArgs, " ") {
 		t.Errorf("args = %v, want %v", mock.createWindowArgs[0], wantArgs)
 	}
 	// Status comes over the control socket now, so the hook env is dead weight.
@@ -1078,7 +1079,7 @@ func TestCreate_NonACPAgentKeepsThePlainLaunch(t *testing.T) {
 func TestChatCommand_UsesTheRunningBinary(t *testing.T) {
 	// Resolving from PATH would let a window launch a different opentree than
 	// the one that created it.
-	cmd, env, args := chatCommand("fix-auth")
+	cmd, env, args := chatCommand("fix-auth", "opencode")
 	if cmd == "opentree" {
 		t.Error("fell back to PATH; os.Executable should have resolved")
 	}
@@ -1088,7 +1089,8 @@ func TestChatCommand_UsesTheRunningBinary(t *testing.T) {
 	if env != nil {
 		t.Errorf("env = %v, want none", env)
 	}
-	if len(args) != 2 || args[0] != "chat" || args[1] != "fix-auth" {
-		t.Errorf("args = %v, want [chat fix-auth]", args)
+	want := []string{"chat", "fix-auth", "--agent", "opencode"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", args, want)
 	}
 }

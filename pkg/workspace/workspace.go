@@ -140,7 +140,7 @@ func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, err
 
 	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
 	if agent := config.FindAgent(s.cfg.Agent.Command); agent != nil && agent.ACP != nil {
-		command, env, args = chatCommand(name)
+		command, env, args = chatCommand(name, agent.Command)
 	} else {
 		s.worktrees.EnsureExcluded(StatusFileName)
 	}
@@ -152,16 +152,23 @@ func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, err
 	return worktreePath, nil
 }
 
-// chatCommand is how a tmux window runs opentree's own chat view. The binary is
-// resolved from the running process rather than PATH: opentree is frequently
-// run from a build directory, and a window that launches a different opentree
-// than the one that created it would be a confusing way to fail.
-func chatCommand(name string) (string, []string, []string) {
+// chatCommand is how a tmux window runs opentree's own chat view.
+//
+// The binary is resolved from the running process rather than PATH: opentree is
+// frequently run from a build directory, and a window that launches a different
+// opentree than the one that created it would be a confusing way to fail.
+//
+// The agent is passed explicitly for a subtler reason. The chat runs with its
+// working directory inside the worktree, where opentree.toml is a checked-out
+// file that can name a different agent than the repository's — a branch that
+// edits it, or simply an uncommitted change to the one the launcher read.
+// Deciding once here and telling the child is the only way the two agree.
+func chatCommand(name, agentCommand string) (string, []string, []string) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "opentree"
 	}
-	return exe, nil, []string{"chat", name}
+	return exe, nil, []string{"chat", name, "--agent", agentCommand}
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
