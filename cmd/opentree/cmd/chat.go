@@ -62,14 +62,13 @@ func runChat(ctx context.Context, name, version string) error {
 	}
 
 	return chat.Run(ctx, chat.Options{
-		Workspace: ws.Name,
-		Cwd:       ws.WorktreeDir,
-		Agent:     agent.Name,
-		Command:   agent.ResolveACPCommand(),
-		Args:      agent.ACPArgs(ws.WorktreeDir),
-		Install:   agent.ACPInstallCommand(),
-		InstallLabel: fmt.Sprintf("install %s%s", agent.ACPCommand(),
-			sizeSuffix(agent.ACP.InstallSize)),
+		Workspace:   ws.Name,
+		Cwd:         ws.WorktreeDir,
+		Agent:       agent.Name,
+		Command:     agent.Command,
+		Binary:      agent.ResolveACPCommand,
+		Args:        agent.ACPArgs(ws.WorktreeDir),
+		InstallHint: installHint(agent),
 		Version:     version,
 		AuthCommand: agent.ACP.AuthCommand,
 		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
@@ -104,12 +103,17 @@ func resolveACPAgent(repoRoot string) (*config.PredefinedAgent, error) {
 	return agent, nil
 }
 
-// sizeSuffix renders the download size when the registry states one.
-func sizeSuffix(size string) string {
-	if size == "" {
+// installHint points at where the adapter is installed from. Not a key to press
+// here: installing belongs with choosing an agent.
+func installHint(agent *config.PredefinedAgent) string {
+	if len(agent.ACPInstallCommand()) == 0 {
 		return ""
 	}
-	return " (" + size + ", needs node)"
+	size := ""
+	if agent.ACP.InstallSize != "" {
+		size = " (" + agent.ACP.InstallSize + ")"
+	}
+	return fmt.Sprintf("install it%s from opentree's agent list — press A, then i", size)
 }
 
 func acpCapableAgents() string {

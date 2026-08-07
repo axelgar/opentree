@@ -8,6 +8,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 func wsWithChat(name string, st *chat.Status) WorkspaceItem {
@@ -297,3 +298,103 @@ func TestAgentCommandSent_ShowsNoticeAndRefreshes(t *testing.T) {
 }
 
 var _ tea.Model = Model{}
+
+// ---------------------------------------------------------------------------
+// Adapter install from the agent picker
+// ---------------------------------------------------------------------------
+
+func TestAgentReadiness(t *testing.T) {
+	// opencode serves ACP itself, so being installed is the whole story.
+	opencode := *config.FindAgent("opencode")
+	status, _ := agentReadiness(opencode)
+	if opencode.IsInstalled() && status != "installed" {
+		t.Errorf("opencode status = %q, want installed", status)
+	}
+
+	// An agent with no ACP mode is judged the same way it always was.
+	if status, ready := agentReadiness(*config.FindAgent("pi")); ready || status != "not found" {
+		t.Errorf("pi = %q/%v, want not found", status, ready)
+	}
+}
+
+func TestAgentReadiness_AdapterMissingIsItsOwnState(t *testing.T) {
+	// The distinction the picker exists to show: the agent is there, the thing
+	// that speaks ACP for it is not. Reporting that as "installed" sends you
+	// into a chat that cannot start.
+	claude := *config.FindAgent("claude")
+	if !claude.IsInstalled() {
+		t.Skip("claude is not installed here")
+	}
+
+	status, ready := agentReadiness(claude)
+	if claude.ACPInstalled() {
+		if status != "installed" || !ready {
+			t.Errorf("with the adapter present = %q/%v, want installed", status, ready)
+		}
+		return
+	}
+	if status != "adapter missing" || ready {
+		t.Errorf("without the adapter = %q/%v, want \"adapter missing\"", status, ready)
+	}
+}
+
+func TestAgentPicker_InstallKey(t *testing.T) {
+	m := newTestModel()
+	m.agentSelecting = true
+
+	// Land on an agent that needs no adapter: the key should say so rather
+	// than silently doing nothing.
+	for i := range config.PredefinedAgents {
+		if config.PredefinedAgents[i].Command == "opencode" {
+			m.agentCursor = i
+		}
+	}
+	m, _ = applyUpdate(m, keyMsg("i"))
+	if m.err == nil {
+		t.Error("expected an explanation for an agent with no adapter")
+	}
+	if !m.agentSelecting {
+		t.Error("the picker should stay open when nothing was installed")
+	}
+}
+
+func TestAgentPicker_ShowsInstallHint(t *testing.T) {
+	m := newTestModel()
+	m.agentSelecting = true
+	if !strings.Contains(m.View(), "i install adapter") {
+		t.Errorf("the picker should advertise the install key\ngot: %s", m.View())
+	}
+}
+
+func TestAdapterInstalled_Reported(t *testing.T) {
+	m := newTestModel()
+	m, cmd := applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp"})
+	if !strings.Contains(m.notice, "claude-agent-acp") {
+		t.Errorf("notice = %q, want it to name what was installed", m.notice)
+	}
+	if cmd == nil {
+		t.Error("expected the notice to be scheduled for clearing")
+	}
+	// The cmd is a timer; running it here would block for its duration.
+}
+
+func TestAdapterInstall_FailureIsReported(t *testing.T) {
+	// Assert on the model, not by running the cmd: transientErrCmd sets the
+	// error synchronously and returns a tea.Tick that only clears it later —
+	// executing that blocks the test for the whole timer.
+	m := newTestModel()
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: errStr("npm ERR!")})
+
+	if m.err == nil {
+		t.Fatal("expected the install failure to surface")
+	}
+	for _, want := range []string{"claude-agent-acp", "npm ERR!"} {
+		if !strings.Contains(m.err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", m.err, want)
+		}
+	}
+}
+
+type errStr string
+
+func (e errStr) Error() string { return string(e) }

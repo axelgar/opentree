@@ -192,6 +192,11 @@ type diffLoadedMsg struct {
 	content string
 	wsName  string
 }
+type adapterInstalledMsg struct {
+	adapter string
+	err     error
+}
+
 type agentCommandSentMsg struct {
 	wsName string
 	action string

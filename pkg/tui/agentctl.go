@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 // This file is the workspace list's half of the chat control socket: reading
@@ -115,6 +117,29 @@ func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd
 		}
 		return agentCommandSentMsg{wsName: wsName, action: action}
 	}
+}
+
+// installAdapterCmd fetches an agent's ACP adapter, handing the terminal to the
+// package manager so its progress and any failure are the user's to read.
+func (m Model) installAdapterCmd(agent config.PredefinedAgent) tea.Cmd {
+	install := agent.ACPInstallCommand()
+	c := exec.Command(install[0], install[1:]...) // #nosec G204 -- from the agent registry, not user input
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return adapterInstalledMsg{adapter: agent.ACPCommand(), err: err}
+	})
+}
+
+// agentReadiness is the status shown beside an agent in the picker. An agent
+// reached through an adapter can be installed while the adapter is not, and the
+// picker is where you would want to learn that.
+func agentReadiness(agent config.PredefinedAgent) (string, bool) {
+	if !agent.IsInstalled() {
+		return "not found", false
+	}
+	if len(agent.ACPInstallCommand()) > 0 && !agent.ACPInstalled() {
+		return "adapter missing", false
+	}
+	return "installed", true
 }
 
 // openAnswerDialog arms the permission dialog for the selected workspace.

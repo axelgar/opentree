@@ -27,18 +27,24 @@ type Options struct {
 	Workspace string   // display name of the worktree
 	Cwd       string   // worktree directory the session is rooted in
 	Agent     string   // agent display name, e.g. "OpenCode"
-	Command   string   // agent binary
+	Command   string   // the agent's own binary — what to log in with, and what to name
 	Args      []string // ACP args, including the cwd flag and its value
 	Version   string   // opentree version, sent as clientInfo
+
+	// Binary returns the program that serves ACP, which is not always the
+	// agent's own: Claude Code is reached through an adapter. Resolved per
+	// launch rather than once, because installing the adapter moves it — a
+	// path resolved before the install is stale immediately after it.
+	Binary func() string
 
 	// AuthCommand logs the agent in interactively, run in this terminal when
 	// the agent reports it needs credentials.
 	AuthCommand []string
 
-	// Install fetches the agent's ACP adapter, for agents reached through one.
-	// Run in this terminal so the user sees the package manager's own output.
-	Install      []string
-	InstallLabel string
+	// InstallHint says where to get the agent's ACP adapter. The chat states
+	// the problem; installing belongs with choosing an agent, not inside a
+	// conversation that cannot start.
+	InstallHint string
 
 	// SocketPath is the control socket the workspace list connects to. Empty
 	// disables it.
@@ -50,6 +56,17 @@ type Options struct {
 	// SaveSession records a newly created session id so the next launch
 	// resumes instead of forgetting.
 	SaveSession func(string) error
+}
+
+// acpBinary is the program to spawn: the resolver when one is set, otherwise
+// the agent's own binary.
+func (o Options) acpBinary() string {
+	if o.Binary != nil {
+		if b := o.Binary(); b != "" {
+			return b
+		}
+	}
+	return o.Command
 }
 
 // launcher starts a fresh agent process and completes its handshake. Restart
@@ -92,7 +109,7 @@ func Run(ctx context.Context, opts Options) error {
 	var generation atomic.Int64
 	launch := func() (*acp.Client, *acp.InitializeResponse, int, error) {
 		gen := int(generation.Add(1))
-		client, err := acp.Spawn(ctx, opts.Command, opts.Args, opts.Cwd, handlers)
+		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Args, opts.Cwd, handlers)
 		if err != nil {
 			// Spawn already names the command; wrapping again produced
 			// "failed to start X: start X: exec: ...".
@@ -186,8 +203,6 @@ type promptDoneMsg struct {
 }
 
 type authDoneMsg struct{ err error }
-
-type installDoneMsg struct{ err error }
 
 // configChangedMsg is the agent's answer to a settings change. It carries the
 // whole set back, since changing one option can change another.

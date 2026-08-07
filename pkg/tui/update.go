@@ -98,6 +98,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}); err != nil {
 					return m, m.transientErrCmd(fmt.Sprintf("failed to save agent selection: %v", err))
 				}
+			case "i":
+				// Agents reached through an adapter need it installed, and
+				// choosing an agent is where you find that out.
+				agent := agents[m.agentCursor]
+				if len(agent.ACPInstallCommand()) == 0 {
+					return m, m.transientErrCmd(fmt.Sprintf("%s needs no adapter", agent.Name))
+				}
+				if agent.ACPInstalled() {
+					return m, m.transientErrCmd(fmt.Sprintf("%s is already installed", agent.ACPCommand()))
+				}
+				m.agentSelecting = false
+				return m, m.installAdapterCmd(agent)
 			case "esc", "q":
 				m.agentSelecting = false
 			}
@@ -792,6 +804,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq == m.errSeq {
 			m.err = nil
 		}
+
+	case adapterInstalledMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err))
+		}
+		m.notice = fmt.Sprintf("installed %s", msg.adapter)
+		m.noticeSeq++
+		seq := m.noticeSeq
+		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{seq: seq}
+		})
 
 	case agentCommandSentMsg:
 		m.notice = fmt.Sprintf("%s: %s", msg.wsName, msg.action)

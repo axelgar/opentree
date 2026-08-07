@@ -151,9 +151,8 @@ func (m Model) stoppedLines() []string {
 	}
 
 	var actions []string
-	if len(m.opts.Install) > 0 && m.adapterMissing() {
-		actions = append(actions, permKeyStyle.Render("[i]")+" "+
-			permLabelStyle.Render(m.opts.InstallLabel))
+	if m.opts.InstallHint != "" && m.adapterMissing() {
+		lines = append(lines, noticeStyle.Render(m.opts.InstallHint))
 	}
 	if m.authNeed && len(m.opts.AuthCommand) > 0 {
 		actions = append(actions, permKeyStyle.Render("[l]")+" "+

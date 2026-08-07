@@ -15,7 +15,6 @@ type keyMap struct {
 	Thoughts  key.Binding
 	Restart   key.Binding
 	Login     key.Binding
-	Install   key.Binding
 	Quit      key.Binding
 }
 
@@ -26,7 +25,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 // StoppedHelp is the reduced set offered when the agent has exited or needs
 // credentials, where sending a prompt is not an option.
 func (k keyMap) StoppedHelp() []key.Binding {
-	return []key.Binding{k.Install, k.Restart, k.Login, k.Quit}
+	return []key.Binding{k.Restart, k.Login, k.Quit}
 }
 
 var keys = keyMap{
@@ -81,10 +80,6 @@ var keys = keyMap{
 	Restart: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "restart agent"),
-	),
-	Install: key.NewBinding(
-		key.WithKeys("i"),
-		key.WithHelp("i", "install adapter"),
 	),
 	Login: key.NewBinding(
 		key.WithKeys("l"),

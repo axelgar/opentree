@@ -52,11 +52,13 @@ func (m Model) View() string {
 				name += " (active)"
 			}
 
-			status := "not found"
+			status, ready := agentReadiness(agent)
 			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
-			if agent.IsInstalled() {
-				status = "installed"
+			switch {
+			case ready:
 				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+			case status == "adapter missing":
+				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#E9C46A"))
 			}
 
 			cmdStr := agent.Command
@@ -64,13 +66,15 @@ func (m Model) View() string {
 				cmdStr += " " + strings.Join(agent.Args, " ")
 			}
 
-			line := fmt.Sprintf("%s%-18s %-14s %s  %s",
-				cursor, name, cmdStr, statusSt.Render(status), agent.Description)
+			// Pad before styling: the escape codes count toward %-16s otherwise
+			// and the column stops lining up.
+			line := fmt.Sprintf("%s%-18s %-14s %s %s",
+				cursor, name, cmdStr, statusSt.Render(fmt.Sprintf("%-15s", status)), agent.Description)
 			sb.WriteString(style.Render(line))
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
-		sb.WriteString(helpStyle.Render("↑/↓ navigate • Enter select • Esc cancel"))
+		sb.WriteString(helpStyle.Render("↑/↓ navigate • Enter select • i install adapter • Esc cancel"))
 		return appStyle.Render(sb.String())
 	}
 

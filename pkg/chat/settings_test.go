@@ -472,65 +472,78 @@ func newUnlaunchedModel() Model {
 	m.client = nil
 	m.dead = true
 	m.err = errString("failed to start claude-agent-acp: executable file not found in $PATH")
-	m.opts.Install = []string{"npm", "install", "-g", "--prefix", "/tmp/tools", "@acp/adapter"}
-	m.opts.InstallLabel = "install claude-agent-acp (303MB, needs node)"
+	m.opts.InstallHint = "install it (303MB) from opentree's agent list — press A, then i"
 	return m
 }
 
-func TestMissingAdapter_OffersToInstallIt(t *testing.T) {
+func TestMissingAdapter_SaysWhereToGetIt(t *testing.T) {
 	m := newUnlaunchedModel()
 	if !m.stopped() {
 		t.Fatal("a failed launch should leave the view stopped, not closed")
 	}
 	view := m.footer()
-	for _, want := range []string{"[i]", "303MB", "needs node", "[r]"} {
+	// The chat states the problem and points at the agent list; installing a
+	// 303MB dependency from inside a conversation that cannot start reads as
+	// the wrong place for it.
+	for _, want := range []string{"303MB", "agent list", "[r]"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("stopped panel missing %q\ngot:\n%s", want, view)
 		}
 	}
 }
 
-func TestMissingAdapter_InstallKeyRuns(t *testing.T) {
-	m := newUnlaunchedModel()
-	if _, cmd := applyUpdate(m, keyMsg("i")); cmd == nil {
-		t.Error("i should run the installer")
-	}
-}
-
-func TestRunningAgent_IsNotOfferedAnInstall(t *testing.T) {
-	// An agent that started and later died wants a restart, not a 303MB
-	// download it already has.
+func TestRunningAgent_IsNotToldToInstallAnything(t *testing.T) {
+	// An agent that started and later died wants a restart, not advice about a
+	// dependency it demonstrably has.
 	m := newUnlaunchedModel()
 	m.client = &acp.Client{} // it launched once
 	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
 
-	if strings.Contains(m.footer(), "[i]") {
-		t.Errorf("stopped panel should not offer an install\ngot:\n%s", m.footer())
-	}
-	if _, cmd := applyUpdate(m, keyMsg("i")); cmd != nil {
-		t.Error("i should do nothing once the adapter is known to exist")
+	if strings.Contains(m.footer(), "agent list") {
+		t.Errorf("stopped panel should not mention installing\ngot:\n%s", m.footer())
 	}
 }
 
-func TestInstallDone_RestartsTheAgent(t *testing.T) {
-	m := newUnlaunchedModel()
-	m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
-		return &acp.Client{}, nil, 2, nil
+func TestAcpBinary_ResolvedPerLaunch(t *testing.T) {
+	// Installing the adapter moves it, so a path resolved once at startup is
+	// stale the moment the install finishes — which is why pressing install and
+	// then restart kept failing until the process was restarted.
+	where := "claude-agent-acp"
+	o := Options{Command: "claude", Binary: func() string { return where }}
+	if got := o.acpBinary(); got != "claude-agent-acp" {
+		t.Errorf("acpBinary() = %q", got)
 	}
-	_, cmd := applyUpdate(m, installDoneMsg{})
-	if cmd == nil {
-		t.Fatal("a finished install should retry the launch that failed")
-	}
-	if _, ok := cmd().(clientReadyMsg); !ok {
-		t.Errorf("produced %T, want clientReadyMsg", cmd())
+	where = "/home/u/.opentree/tools/bin/claude-agent-acp"
+	if got := o.acpBinary(); got != where {
+		t.Errorf("after the install acpBinary() = %q, want the freshly resolved %q", got, where)
 	}
 }
 
-func TestInstallDone_FailureIsSurfaced(t *testing.T) {
+func TestAcpBinary_FallsBackToTheAgentItself(t *testing.T) {
+	// opencode serves ACP directly; there is no separate binary to resolve.
+	o := Options{Command: "opencode"}
+	if got := o.acpBinary(); got != "opencode" {
+		t.Errorf("acpBinary() = %q, want the agent's own binary", got)
+	}
+	o.Binary = func() string { return "" }
+	if got := o.acpBinary(); got != "opencode" {
+		t.Errorf("acpBinary() with an empty resolver = %q, want the fallback", got)
+	}
+}
+
+func TestAuthUsesTheAgentNotTheAdapter(t *testing.T) {
+	// `claude-agent-acp auth login` is not a thing; the login belongs to the
+	// agent's own binary.
 	m := newUnlaunchedModel()
-	m, _ = applyUpdate(m, installDoneMsg{err: errString("npm ERR! network timeout")})
-	if m.err == nil || !strings.Contains(m.err.Error(), "network timeout") {
-		t.Errorf("err = %v, want the package manager's own failure", m.err)
+	m.opts.Command = "claude"
+	m.opts.AuthCommand = []string{"auth", "login"}
+	m.authNeed = true
+
+	if !strings.Contains(m.footer(), "claude auth login") {
+		t.Errorf("stopped panel should offer the agent's own login\ngot:\n%s", m.footer())
+	}
+	if strings.Contains(m.footer(), "claude-agent-acp auth") {
+		t.Error("the adapter has no auth subcommand")
 	}
 }
 
