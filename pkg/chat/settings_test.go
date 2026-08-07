@@ -148,20 +148,25 @@ func TestSettings_TypingDoesNotReachTheInput(t *testing.T) {
 	}
 }
 
-func TestConfigChanged_UpdatesStateAndHeader(t *testing.T) {
+func TestConfigChanged_UpdatesTheFlagsAndLeavesTheLogAlone(t *testing.T) {
+	// Flipping a setting must not write to the conversation: the value is on
+	// screen permanently, and a line per flip buries the actual conversation.
 	m := newSettingsModel()
+	before := len(m.entries)
 	updated := []acp.ConfigOption{
 		{ID: "model", Name: "Model", Category: "model", CurrentValue: "gpt-5.4"},
 		{ID: "mode", Name: "Session Mode", Category: "mode", CurrentValue: "plan"},
 	}
 	m, _ = applyUpdate(m, configChangedMsg{configID: "model", value: "gpt-5.4", options: updated})
 
+	if len(m.entries) != before {
+		t.Errorf("entries grew to %d; a settings change should not be logged", len(m.entries))
+	}
 	if !strings.Contains(m.header(), "gpt-5.4") {
 		t.Errorf("header = %q, want the new model", m.header())
 	}
-	last := m.entries[len(m.entries)-1]
-	if !strings.Contains(last.text, "model → gpt-5.4") {
-		t.Errorf("last entry = %q, want the change recorded", last.text)
+	if !strings.Contains(m.statusLine(), "plan") {
+		t.Errorf("statusLine = %q, want the new mode shown as a flag", m.statusLine())
 	}
 }
 
@@ -177,14 +182,63 @@ func TestConfigChanged_ErrorIsSurfaced(t *testing.T) {
 	}
 }
 
-func TestSettingsSummary_OnlyModelAndMode(t *testing.T) {
-	// Effort is real but not worth permanent header space.
-	got := strings.Join(newSettingsModel().settingsSummary(), " ")
-	if !strings.Contains(got, "sonnet-4.6") || !strings.Contains(got, "build") {
-		t.Errorf("summary = %q, want model and mode", got)
+func TestSummaries_SplitModelFromTheLiveFlags(t *testing.T) {
+	m := newSettingsModel()
+
+	header := strings.Join(m.settingsSummary(), " ")
+	if header != "sonnet-4.6" {
+		t.Errorf("header summary = %q, want just the model", header)
 	}
-	if strings.Contains(got, "low") {
-		t.Errorf("summary = %q, should not include effort", got)
+
+	// Everything else the agent declares becomes a flag, without naming any of
+	// them here: mode and effort qualify because opencode declares them.
+	flags := strings.Join(m.flagsSummary(), " ")
+	for _, want := range []string{"build", "low"} {
+		if !strings.Contains(flags, want) {
+			t.Errorf("flags = %q, want it to contain %q", flags, want)
+		}
+	}
+	if strings.Contains(flags, "sonnet") {
+		t.Errorf("flags = %q, the model belongs in the header", flags)
+	}
+}
+
+func TestStatusLine_ShowsFlagsBesideTheHelp(t *testing.T) {
+	m := newSettingsModel()
+	line := m.statusLine()
+	for _, want := range []string{"enter", "build", "low"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("statusLine = %q, want it to contain %q", line, want)
+		}
+	}
+}
+
+func TestStatusLine_FlagsSurviveANarrowTerminal(t *testing.T) {
+	// The help gives way, not the flags.
+	m := newSettingsModel()
+	m.width = 30
+	line := m.statusLine()
+	if !strings.Contains(line, "build") || !strings.Contains(line, "low") {
+		t.Errorf("statusLine = %q, want the flags kept when space is tight", line)
+	}
+}
+
+func TestStatusLine_NoFlagsWithoutSettings(t *testing.T) {
+	m := newTestModel()
+	if strings.Contains(m.statusLine(), "·") {
+		t.Errorf("statusLine = %q, want no flag section for an agent with no settings", m.statusLine())
+	}
+}
+
+func TestStatusLine_ErrorKeepsTheFlags(t *testing.T) {
+	m := newSettingsModel()
+	m.err = errString("prompt failed")
+	line := m.statusLine()
+	if !strings.Contains(line, "prompt failed") {
+		t.Errorf("statusLine = %q, want the error", line)
+	}
+	if !strings.Contains(line, "build") {
+		t.Errorf("statusLine = %q, want the flags to survive an error", line)
 	}
 }
 

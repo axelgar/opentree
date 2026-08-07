@@ -82,6 +82,11 @@ var (
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262"))
+
+	// Live agent flags beside the input: bright enough to read at a glance
+	// without competing with the conversation.
+	flagStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F4A261"))
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

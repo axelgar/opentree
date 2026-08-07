@@ -111,12 +111,32 @@ func (m Model) completionView() string {
 }
 
 // statusLine carries the help text, or an error when the agent is still alive
-// but the last turn failed — a case the stopped panel does not cover.
+// but the last turn failed — a case the stopped panel does not cover. The
+// agent's live flags sit right-aligned against it.
 func (m Model) statusLine() string {
+	left := helpStyle.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 	if m.err != nil {
-		return errorStyle.Render("✕ " + m.errorText())
+		left = errorStyle.Render("✕ " + m.errorText())
 	}
-	return helpStyle.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
+
+	flags := m.flagsSummary()
+	if len(flags) == 0 {
+		return left
+	}
+	right := flagStyle.Render(strings.Join(flags, " · ")) +
+		helpStyle.Render("  shift+tab")
+
+	// The flags are the point of the line; the help gives way when the terminal
+	// is too narrow for both. MaxWidth rather than a rune slice: the help is
+	// already styled, and cutting runes lands mid escape sequence and takes the
+	// rest of the line with it.
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		room := max(m.width-lipgloss.Width(right)-3, 0)
+		left = lipgloss.NewStyle().MaxWidth(room).Render(left)
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // stoppedLines describes why the agent is unusable and what to do about it.

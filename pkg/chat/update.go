@@ -160,7 +160,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.options) > 0 {
 			m.configOptions = msg.options
 		}
-		m = m.appendNotice(msg.configID + " → " + msg.value)
+		// No log entry: the new value is on screen permanently, and a notice
+		// per flip would bury the conversation under its own settings. It would
+		// not survive a resume either, since the log replays from the agent.
 		return m.relayout(), nil
 
 	case socketCommandMsg:

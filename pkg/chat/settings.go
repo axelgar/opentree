@@ -286,20 +286,34 @@ func (m Model) cycleMode() (tea.Model, tea.Cmd) {
 	return m, m.setConfigCmd(configID, value)
 }
 
-// settingsSummary is the model and mode shown in the header. It reads the
-// agent's own current values, so it stays right after a change without the
-// header knowing what a "model" is.
+// settingsSummary is what the header shows: the model, which is a fact about
+// the session rather than a flag you flip.
 func (m Model) settingsSummary() []string {
+	return m.currentValues(true)
+}
+
+// flagsSummary is what sits beside the input: every other setting the agent
+// declares — mode, effort, whatever a future agent adds. These are the ones
+// that change how the next turn behaves, so they belong next to the box you
+// are about to type into, shown permanently rather than announced once and
+// scrolled away.
+func (m Model) flagsSummary() []string {
+	return m.currentValues(false)
+}
+
+// currentValues splits the declared settings by whether they name the model.
+// The mode leads the flags, being the one shift+tab cycles.
+func (m Model) currentValues(model bool) []string {
 	var out []string
 	for _, o := range m.configOptions {
-		// Effort and anything else the agent declares stays out of the header;
-		// the two worth a permanent glance are what you are talking to and what
-		// it is allowed to do.
-		if o.Category == "model" || o.Category == "mode" {
-			if o.CurrentValue != "" {
-				out = append(out, o.CurrentValue)
-			}
+		if (o.Category == "model") != model || o.CurrentValue == "" {
+			continue
 		}
+		if o.Category == "mode" {
+			out = append([]string{o.CurrentValue}, out...)
+			continue
+		}
+		out = append(out, o.CurrentValue)
 	}
 	return out
 }

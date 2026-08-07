@@ -19,7 +19,7 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Cancel, k.CycleMode, k.Settings, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Settings, k.Quit}
 }
 
 // StoppedHelp is the reduced set offered when the agent has exited or needs
