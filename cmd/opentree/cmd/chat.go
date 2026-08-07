@@ -63,6 +63,7 @@ func runChat(ctx context.Context, name, version string) error {
 		Args:        append(append([]string{}, agent.ACP.Args...), agent.ACP.CwdFlag, ws.WorktreeDir),
 		Version:     version,
 		AuthCommand: agent.ACP.AuthCommand,
+		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
 		SessionID:   ws.ACPSessionID,
 		SaveSession: func(id string) error {
 			ws.ACPSessionID = id

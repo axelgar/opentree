@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -28,6 +29,7 @@ type WorkspaceItem struct {
 	LastActivity     time.Time
 	FileChanges      []worktree.FileChange
 	AgentStatus      *AgentStatus
+	ChatStatus       *chat.Status
 }
 
 const (
@@ -125,6 +127,16 @@ type Model struct {
 	agentSelecting bool
 	agentCursor    int
 
+	// answering a chat agent's permission prompt without attaching
+	answering    bool
+	answerWs     string
+	answerPerm   *chat.Permission
+	answerCursor int
+
+	// sending a prompt to a chat agent without attaching
+	prompting bool
+	promptWs  string
+
 	// error log
 	errLog     []string
 	showErrLog bool
@@ -180,6 +192,11 @@ type diffLoadedMsg struct {
 	content string
 	wsName  string
 }
+type agentCommandSentMsg struct {
+	wsName string
+	action string
+}
+
 type capturePreviewMsg struct {
 	wsName string // workspace the capture belongs to, so stale ones are dropped
 	lines  string

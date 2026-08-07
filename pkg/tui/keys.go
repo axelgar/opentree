@@ -18,20 +18,24 @@ type keyMap struct {
 	Filter key.Binding
 	Sort   key.Binding
 	Agent  key.Binding
+	Answer key.Binding
+	Stop   key.Binding
+	Msg    key.Binding
 	ErrLog key.Binding
 	Quit   key.Binding
 	Help   key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Delete, k.Agent, k.Quit, k.Help}
+	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Answer, k.Delete, k.Quit, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
-		{k.Filter, k.Sort, k.Agent, k.ErrLog, k.Quit, k.Help},
+		{k.Answer, k.Stop, k.Msg, k.Filter, k.Sort, k.Agent},
+		{k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -95,6 +99,18 @@ var keys = keyMap{
 	Agent: key.NewBinding(
 		key.WithKeys("A"),
 		key.WithHelp("A", "switch agent"),
+	),
+	Answer: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "answer agent"),
+	),
+	Stop: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "interrupt agent"),
+	),
+	Msg: key.NewBinding(
+		key.WithKeys("m"),
+		key.WithHelp("m", "message agent"),
 	),
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),

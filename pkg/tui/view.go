@@ -74,6 +74,36 @@ func (m Model) View() string {
 		return appStyle.Render(sb.String())
 	}
 
+	// Agent permission dialog. The options are the ones the agent offered, so
+	// the list never presents a choice the agent will refuse.
+	if m.answering && m.answerPerm != nil {
+		var sb strings.Builder
+		sb.WriteString(titleStyle.Render("Agent permission: " + m.answerWs))
+		sb.WriteString("\n\n")
+		sb.WriteString(confirmLabelStyle.Render(m.answerPerm.Title))
+		sb.WriteString("\n\n")
+		for i, o := range m.answerPerm.Options {
+			cursor, style := "  ", itemStyle
+			if i == m.answerCursor {
+				cursor, style = "▶ ", selectedItemStyle
+			}
+			sb.WriteString(style.Render(fmt.Sprintf("%s[%d] %s", cursor, i+1, o.Name)))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render("↑/↓ navigate • 1-9 or Enter to answer • Esc cancel"))
+		return appStyle.Render(sb.String())
+	}
+
+	// Message-the-agent dialog
+	if m.prompting {
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
+			titleStyle.Render("Message agent: "+m.promptWs),
+			m.input.View(),
+			helpStyle.Render("Enter to send • Esc to cancel"),
+		))
+	}
+
 	// Diff view overlay
 	if m.diffViewing {
 		lines := strings.Split(m.diffContent, "\n")
@@ -325,16 +355,21 @@ func (m Model) View() string {
 				title += "  " + notPushedBadgeStyle.Render("not pushed")
 			}
 
-			// Agent liveness badge (working / waiting vs. stalled / idle)
-			switch live, since := ws.liveness(); live {
-			case livenessWorking:
-				title += "  " + agentWorkingStyle.Render("working…")
-			case livenessStalled:
-				title += "  " + agentStalledStyle.Render(badgeWithAge("stalled", since))
-			case livenessWaiting:
-				title += "  " + agentWaitingStyle.Render("waiting · your turn")
-			case livenessIdle:
-				title += "  " + agentIdleStyle.Render(badgeWithAge("idle", since))
+			// Agent badge. A chat process reports exactly what it is doing over
+			// its socket; everything else is inferred from the status file.
+			if badge := renderChatBadge(ws.ChatStatus); badge != "" {
+				title += "  " + badge
+			} else {
+				switch live, since := ws.liveness(); live {
+				case livenessWorking:
+					title += "  " + agentWorkingStyle.Render("working…")
+				case livenessStalled:
+					title += "  " + agentStalledStyle.Render(badgeWithAge("stalled", since))
+				case livenessWaiting:
+					title += "  " + agentWaitingStyle.Render("waiting · your turn")
+				case livenessIdle:
+					title += "  " + agentIdleStyle.Render(badgeWithAge("idle", since))
+				}
 			}
 
 			// Description line
@@ -346,6 +381,10 @@ func (m Model) View() string {
 
 			if ws.UncommittedCount > 0 {
 				descParts = append(descParts, uncommittedStyle.Render(fmt.Sprintf("~%d uncommitted", ws.UncommittedCount)))
+			}
+
+			if meta := chatMeta(ws.ChatStatus); meta != "" {
+				descParts = append(descParts, meta)
 			}
 
 			if !ws.LastActivity.IsZero() {

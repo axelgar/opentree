@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
@@ -323,6 +324,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Answering a chat agent's permission prompt
+		if m.answering {
+			return m.handleAnswerKey(msg)
+		}
+
+		// Sending a prompt to a chat agent without attaching
+		if m.prompting {
+			switch msg.String() {
+			case "enter":
+				text := strings.TrimSpace(m.input.Value())
+				wsName := m.promptWs
+				m.prompting, m.promptWs = false, ""
+				m.input.Reset()
+				if text == "" {
+					return m, nil
+				}
+				return m, m.sendAgentCommand(wsName, "sent", chat.Command{
+					Type: chat.CommandPrompt, Text: text,
+				})
+			case "esc":
+				m.prompting, m.promptWs = false, ""
+				m.input.Reset()
+				return m, nil
+			}
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
 		// Normal mode
 		visible := m.visibleWorkspaces()
 		switch {
@@ -468,6 +497,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case key.Matches(msg, m.keys.Answer):
+			if len(visible) == 0 {
+				return m, nil
+			}
+			return m.openAnswerDialog(visible[m.cursor]), nil
+
+		case key.Matches(msg, m.keys.Stop):
+			if len(visible) == 0 || !visible[m.cursor].chatWorking() {
+				return m, nil
+			}
+			return m, m.sendAgentCommand(visible[m.cursor].Name, "interrupted",
+				chat.Command{Type: chat.CommandInterrupt})
+
+		case key.Matches(msg, m.keys.Msg):
+			if len(visible) == 0 || visible[m.cursor].ChatStatus == nil {
+				return m, nil
+			}
+			m.prompting = true
+			m.promptWs = visible[m.cursor].Name
+			m.input.Reset()
+			m.input.Placeholder = "Message the agent"
+			m.input.Focus()
+			return m, textinput.Blink
+
 		case key.Matches(msg, m.keys.ErrLog):
 			m.showErrLog = !m.showErrLog
 		case key.Matches(msg, m.keys.Help):
@@ -739,6 +792,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq == m.errSeq {
 			m.err = nil
 		}
+
+	case agentCommandSentMsg:
+		m.notice = fmt.Sprintf("%s: %s", msg.wsName, msg.action)
+		m.noticeSeq++
+		seq := m.noticeSeq
+		// Refresh straight away so the badge reflects the answer rather than
+		// waiting out the poll interval.
+		return m, tea.Batch(m.loadWorkspacesCmd, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{seq: seq}
+		}))
 
 	case reviewsSentMsg:
 		if msg.count == 0 {

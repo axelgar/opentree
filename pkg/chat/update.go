@@ -12,7 +12,59 @@ import (
 	"github.com/axelgar/opentree/pkg/acp"
 )
 
+// Update handles one message and republishes the session's status. Publishing
+// here rather than at each call site is the whole point: every state change
+// funnels through this method, so the socket cannot drift out of date.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if nm, ok := next.(Model); ok && nm.publish != nil {
+		nm.publish(nm.status())
+	}
+	return next, cmd
+}
+
+// status is the view of this session the workspace list sees.
+func (m Model) status() Status {
+	st := Status{Workspace: m.opts.Workspace, State: StateIdle}
+	switch {
+	case m.dead || m.authNeed:
+		st.State = StateStopped
+	case m.perm != nil:
+		st.State = StateAwaiting
+		st.Permission = &Permission{
+			Title:   toolLabel(m.perm.req.ToolCall, m.opts.Cwd),
+			Options: m.perm.req.Options,
+		}
+	case m.turn:
+		st.State = StateWorking
+	case m.sessionID == "":
+		st.State = StateStarting
+	}
+
+	st.Tool = m.currentTool()
+	if m.usage != nil {
+		if m.usage.Cost != nil {
+			st.Cost = m.usage.Cost.Amount
+		}
+		if m.usage.Size > 0 {
+			st.ContextPct = m.usage.Used * 100 / m.usage.Size
+		}
+	}
+	return st
+}
+
+// currentTool is the call the agent is running, or the last one it ran — which
+// is what a glance at the list wants to know.
+func (m Model) currentTool() string {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].kind == entryTool {
+			return toolLabel(m.entries[i].tool, m.opts.Cwd)
+		}
+	}
+	return ""
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -95,6 +147,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case filesLoadedMsg:
 		m.files = msg.files
 		return m, nil
+
+	case socketCommandMsg:
+		// Also arrives down the handler channel, so the reader has to be handed
+		// back alongside whatever the command itself triggers.
+		next, cmd := m.applyRemoteCommand(Command(msg))
+		return next, tea.Batch(cmd, waitForMsg(m.msgs))
 
 	case authDoneMsg:
 		if msg.err != nil {
@@ -224,6 +282,40 @@ func (m Model) handleCompletionKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 		return true, m.relayout(), nil
 	}
 	return false, m, nil
+}
+
+// applyRemoteCommand runs an instruction from the workspace list. Each one is
+// only honoured in the state it makes sense in — the list's view of this
+// session is up to a refresh tick stale, so it can ask to allow a permission
+// that was already answered here.
+func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd) {
+	switch cmd.Type {
+	case CommandPermission:
+		if m.perm == nil {
+			return m, nil
+		}
+		m.perm.reply <- cmd.OptionID
+		m.perm = nil
+		return m.relayout(), nil
+
+	case CommandInterrupt:
+		if m.turn {
+			_ = m.client.Cancel(m.sessionID)
+		}
+		return m, nil
+
+	case CommandPrompt:
+		text := strings.TrimSpace(cmd.Text)
+		if text == "" || m.turn || m.sessionID == "" {
+			return m, nil
+		}
+		prompt := m.promptCmd(text)
+		m.entries = append(m.entries, entry{kind: entryUser, text: text})
+		m.turn = true
+		m.err = nil
+		return m.relayout(), tea.Batch(prompt, spinnerTick())
+	}
+	return m, nil
 }
 
 // stopped reports whether the agent is unusable until something is done about

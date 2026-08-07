@@ -35,6 +35,10 @@ type Options struct {
 	// the agent reports it needs credentials.
 	AuthCommand []string
 
+	// SocketPath is the control socket the workspace list connects to. Empty
+	// disables it.
+	SocketPath string
+
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
@@ -108,6 +112,15 @@ func Run(ctx context.Context, opts Options) error {
 	m.generation = gen
 	m.launch = launch
 
+	// Best-effort: a chat with no control socket still works, it is just
+	// invisible to the workspace list.
+	if opts.SocketPath != "" {
+		if srv, err := serve(opts.SocketPath, func(c Command) { send(socketCommandMsg(c)) }); err == nil {
+			defer func() { _ = srv.Close() }()
+			m.publish = srv.publish
+		}
+	}
+
 	final, err := p(m).Run()
 	close(quit)
 	if fm, ok := final.(Model); ok && fm.client != nil {
@@ -154,6 +167,9 @@ type authDoneMsg struct{ err error }
 
 type filesLoadedMsg struct{ files []string }
 
+// socketCommandMsg is an instruction from the workspace list.
+type socketCommandMsg Command
+
 type spinnerTickMsg struct{}
 
 type errMsg struct {
@@ -185,11 +201,12 @@ type entry struct {
 }
 
 type Model struct {
-	ctx    context.Context
-	client *acp.Client
-	launch launcher
-	msgs   <-chan tea.Msg
-	opts   Options
+	ctx     context.Context
+	client  *acp.Client
+	launch  launcher
+	msgs    <-chan tea.Msg
+	opts    Options
+	publish func(Status)
 
 	generation   int
 	agentVersion string

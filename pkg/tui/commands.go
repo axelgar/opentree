@@ -75,7 +75,12 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 			if ws.WorktreeDir != "" {
 				item.UncommittedCount = countUncommitted(ws.WorktreeDir)
-				item.AgentStatus = readAgentStatus(ws.WorktreeDir)
+				// An ACP chat reports over its socket; everything else still
+				// relies on the hook-written status file.
+				item.ChatStatus = readChatStatus(m.repoRoot, ws.Name)
+				if item.ChatStatus == nil {
+					item.AgentStatus = readAgentStatus(ws.WorktreeDir)
+				}
 			}
 
 			if exists {
