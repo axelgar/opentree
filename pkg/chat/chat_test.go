@@ -405,14 +405,14 @@ func TestSessionReady_SetsModelAndNote(t *testing.T) {
 	m := newTestModel()
 	m, _ = applyUpdate(m, sessionReadyMsg{
 		id:      "ses_new",
-		options: []acp.ConfigOption{{ID: "model", CurrentValue: "some/model"}},
+		options: []acp.ConfigOption{{ID: "model", Category: "model", CurrentValue: "some/model"}},
 		note:    "could not resume ses_old",
 	})
 	if m.sessionID != "ses_new" {
 		t.Errorf("sessionID = %q, want ses_new", m.sessionID)
 	}
-	if m.modelName != "some/model" {
-		t.Errorf("modelName = %q, want some/model", m.modelName)
+	if got := m.settingsSummary(); len(got) != 1 || got[0] != "some/model" {
+		t.Errorf("settingsSummary() = %v, want [some/model]", got)
 	}
 	if len(m.entries) != 1 || m.entries[0].kind != entryNotice {
 		t.Errorf("entries = %+v, want the resume failure recorded as a notice", m.entries)
@@ -431,7 +431,9 @@ func TestCancel_OnlyWhileTurnInFlight(t *testing.T) {
 
 func TestView_ShowsHeaderAndHelp(t *testing.T) {
 	m := newTestModel()
-	m.modelName = "github-copilot/claude-sonnet-4.6"
+	m.configOptions = []acp.ConfigOption{
+		{ID: "model", Name: "Model", Category: "model", CurrentValue: "github-copilot/claude-sonnet-4.6"},
+	}
 	m = m.relayout()
 	view := m.View()
 

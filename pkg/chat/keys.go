@@ -10,6 +10,7 @@ type keyMap struct {
 	PageDown key.Binding
 	ScrollUp key.Binding
 	ScrollDn key.Binding
+	Settings key.Binding
 	Thoughts key.Binding
 	Restart  key.Binding
 	Login    key.Binding
@@ -17,7 +18,7 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Thoughts, k.ScrollUp, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Settings, k.Thoughts, k.Quit}
 }
 
 // StoppedHelp is the reduced set offered when the agent has exited or needs
@@ -57,6 +58,12 @@ var keys = keyMap{
 	ScrollDn: key.NewBinding(
 		key.WithKeys("shift+down"),
 		key.WithHelp("shift+↓", "scroll down"),
+	),
+	// ctrl+g is free: the textarea binds neither it nor ctrl+o below, while
+	// ctrl+m is Enter and ctrl+p is line-previous.
+	Settings: key.NewBinding(
+		key.WithKeys("ctrl+g"),
+		key.WithHelp("ctrl+g", "settings"),
 	),
 	// Not ctrl+t: that is the textarea's transpose-character binding.
 	Thoughts: key.NewBinding(

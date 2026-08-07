@@ -94,7 +94,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionReadyMsg:
 		m.sessionID = msg.id
-		m.modelName = currentValue(msg.options, "model")
+		m.configOptions = msg.options
 		if msg.note != "" {
 			m = m.appendNotice(msg.note)
 		}
@@ -152,6 +152,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.files = msg.files
 		return m, nil
 
+	case configChangedMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("could not set %s: %w", msg.configID, msg.err)
+			return m.relayout(), nil
+		}
+		if len(msg.options) > 0 {
+			m.configOptions = msg.options
+		}
+		m = m.appendNotice(msg.configID + " → " + msg.value)
+		return m.relayout(), nil
+
 	case socketCommandMsg:
 		// Also arrives down the handler channel, so the reader has to be handed
 		// back alongside whatever the command itself triggers.
@@ -192,6 +203,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleStoppedKey(msg)
 	}
 
+	if m.settings.open {
+		return m.handleSettingsKey(msg)
+	}
+
 	// The palette owns navigation and acceptance while it is open, so arrows
 	// and tab do not fall through to scrolling or the textarea.
 	if m.completion.active() {
@@ -203,6 +218,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
+
+	case key.Matches(msg, m.keys.Settings):
+		return m.openSettings()
 
 	case key.Matches(msg, m.keys.Thoughts):
 		m.hideThoughts = !m.hideThoughts
@@ -537,13 +555,4 @@ func turnSummary(resp *acp.PromptResponse) string {
 		parts = append(parts, fmt.Sprintf("%d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens))
 	}
 	return strings.Join(parts, " · ")
-}
-
-func currentValue(options []acp.ConfigOption, id string) string {
-	for _, o := range options {
-		if o.ID == id {
-			return o.CurrentValue
-		}
-	}
-	return ""
 }

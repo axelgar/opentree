@@ -209,6 +209,17 @@ func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) (*LoadS
 	return &resp, nil
 }
 
+// SetConfigOption changes an agent-declared control — model, reasoning effort,
+// session mode — and returns the resulting set.
+func (c *Client) SetConfigOption(ctx context.Context, sessionID, configID, value string) ([]ConfigOption, error) {
+	var resp SetConfigOptionResponse
+	req := SetConfigOptionRequest{SessionID: sessionID, ConfigID: configID, Value: value}
+	if err := c.call(ctx, methodSetConfigOption, req, &resp); err != nil {
+		return nil, err
+	}
+	return resp.ConfigOptions, nil
+}
+
 // Cancel asks the agent to stop the current turn. It is a notification, so it
 // returns as soon as it is written; the in-flight Prompt then completes with
 // StopCancelled rather than an error.

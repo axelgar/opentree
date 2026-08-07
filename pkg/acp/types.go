@@ -13,6 +13,7 @@ const (
 	methodSessionLoad       = "session/load"
 	methodSessionPrompt     = "session/prompt"
 	methodSessionCancel     = "session/cancel"
+	methodSetConfigOption   = "session/set_config_option"
 	methodRequestPermission = "session/request_permission"
 	methodSessionUpdate     = "session/update"
 )
@@ -111,6 +112,22 @@ type ConfigOption struct {
 	Type         string              `json:"type,omitempty"`
 	CurrentValue string              `json:"currentValue,omitempty"`
 	Options      []ConfigOptionValue `json:"options,omitempty"`
+}
+
+// SetConfigOptionRequest changes one agent-declared control.
+//
+// The field is configId, not optionId — the latter belongs to permission
+// options, and sending it yields "expected string, received undefined".
+type SetConfigOptionRequest struct {
+	SessionID string `json:"sessionId"`
+	ConfigID  string `json:"configId"`
+	Value     string `json:"value"`
+}
+
+// SetConfigOptionResponse returns the full set, since changing one option can
+// change another: picking a model narrows which effort levels it supports.
+type SetConfigOptionResponse struct {
+	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
 }
 
 type ConfigOptionValue struct {

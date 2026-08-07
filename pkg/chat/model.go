@@ -177,6 +177,15 @@ type promptDoneMsg struct {
 
 type authDoneMsg struct{ err error }
 
+// configChangedMsg is the agent's answer to a settings change. It carries the
+// whole set back, since changing one option can change another.
+type configChangedMsg struct {
+	configID string
+	value    string
+	options  []acp.ConfigOption
+	err      error
+}
+
 type filesLoadedMsg struct{ files []string }
 
 // socketCommandMsg is an instruction from the workspace list, together with the
@@ -228,8 +237,9 @@ type Model struct {
 	agentVersion string
 	authMethods  []acp.AuthMethod
 
-	sessionID string
-	modelName string
+	sessionID     string
+	configOptions []acp.ConfigOption
+	settings      settings
 
 	entries []entry
 	toolIdx map[string]int

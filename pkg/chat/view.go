@@ -25,6 +25,8 @@ func newViewport(width, height int) viewport.Model {
 // viewport has to give back.
 func (m Model) footerHeight() int {
 	switch {
+	case m.settings.open:
+		return m.settingsHeight()
 	case m.stopped():
 		return len(m.stoppedLines()) + 4
 	case m.perm != nil:
@@ -51,10 +53,7 @@ func (m Model) View() string {
 func (m Model) header() string {
 	left := headerStyle.Render(fmt.Sprintf("%s · %s", m.opts.Workspace, m.opts.Agent))
 
-	var meta []string
-	if m.modelName != "" {
-		meta = append(meta, m.modelName)
-	}
+	meta := m.settingsSummary()
 	if m.usage != nil {
 		if m.usage.Size > 0 {
 			meta = append(meta, fmt.Sprintf("%d%% ctx", m.usage.Used*100/m.usage.Size))
@@ -74,6 +73,8 @@ func (m Model) header() string {
 
 func (m Model) footer() string {
 	switch {
+	case m.settings.open:
+		return m.settingsView()
 	case m.stopped():
 		return m.stoppedView()
 	case m.perm != nil:
