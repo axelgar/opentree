@@ -56,13 +56,14 @@ func runChat(ctx context.Context, name, version string) error {
 	}
 
 	return chat.Run(ctx, chat.Options{
-		Workspace: ws.Name,
-		Cwd:       ws.WorktreeDir,
-		Agent:     agent.Name,
-		Command:   agent.Command,
-		Args:      append(append([]string{}, agent.ACP.Args...), agent.ACP.CwdFlag, ws.WorktreeDir),
-		Version:   version,
-		SessionID: ws.ACPSessionID,
+		Workspace:   ws.Name,
+		Cwd:         ws.WorktreeDir,
+		Agent:       agent.Name,
+		Command:     agent.Command,
+		Args:        append(append([]string{}, agent.ACP.Args...), agent.ACP.CwdFlag, ws.WorktreeDir),
+		Version:     version,
+		AuthCommand: agent.ACP.AuthCommand,
+		SessionID:   ws.ACPSessionID,
 		SaveSession: func(id string) error {
 			ws.ACPSessionID = id
 			return store.UpdateWorkspace(ws)

@@ -9,6 +9,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -28,6 +29,10 @@ type Options struct {
 	Args      []string // ACP args, including the cwd flag and its value
 	Version   string   // opentree version, sent as clientInfo
 
+	// AuthCommand logs the agent in interactively, run in this terminal when
+	// the agent reports it needs credentials.
+	AuthCommand []string
+
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
@@ -35,6 +40,10 @@ type Options struct {
 	// resumes instead of forgetting.
 	SaveSession func(string) error
 }
+
+// launcher starts a fresh agent process and completes its handshake. Restart
+// needs this, which is why spawning is a closure rather than inline in Run.
+type launcher func() (*acp.Client, *acp.InitializeResponse, int, error)
 
 // Run starts the view and owns the agent process for its lifetime.
 func Run(ctx context.Context, opts Options) error {
@@ -51,7 +60,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
-	client, err := acp.Spawn(ctx, opts.Command, opts.Args, opts.Cwd, acp.Handlers{
+	handlers := acp.Handlers{
 		Update: func(u acp.SessionUpdate) { send(acpUpdateMsg(u)) },
 		Permission: func(req acp.PermissionRequest) string {
 			reply := make(chan string, 1)
@@ -65,27 +74,47 @@ func Run(ctx context.Context, opts Options) error {
 				return ""
 			}
 		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to start %s: %w", opts.Command, err)
-	}
-	defer func() { _ = client.Close() }()
-
-	info, err := client.Initialize(ctx, "opentree", opts.Version)
-	if err != nil {
-		return fmt.Errorf("ACP handshake failed: %w", err)
 	}
 
-	go func() {
-		<-client.Done()
-		send(agentGoneMsg{})
-	}()
+	// generation distinguishes a restarted agent from the one it replaced, so
+	// the old process's death notice does not mark the new one as gone.
+	var generation atomic.Int64
+	launch := func() (*acp.Client, *acp.InitializeResponse, int, error) {
+		gen := int(generation.Add(1))
+		client, err := acp.Spawn(ctx, opts.Command, opts.Args, opts.Cwd, handlers)
+		if err != nil {
+			return nil, nil, gen, fmt.Errorf("failed to start %s: %w", opts.Command, err)
+		}
+		info, err := client.Initialize(ctx, "opentree", opts.Version)
+		if err != nil {
+			_ = client.Close()
+			return nil, nil, gen, fmt.Errorf("ACP handshake failed: %w", err)
+		}
+		go func() {
+			<-client.Done()
+			send(agentGoneMsg{generation: gen})
+		}()
+		return client, info, gen, nil
+	}
 
-	p := tea.NewProgram(newModel(ctx, client, info, opts, msgs), tea.WithAltScreen())
-	_, err = p.Run()
+	client, info, gen, err := launch()
+	if err != nil {
+		return err
+	}
+
+	m := newModel(ctx, client, info, opts, msgs)
+	m.generation = gen
+	m.launch = launch
+
+	final, err := p(m).Run()
 	close(quit)
+	if fm, ok := final.(Model); ok && fm.client != nil {
+		_ = fm.client.Close()
+	}
 	return err
 }
+
+func p(m Model) *tea.Program { return tea.NewProgram(m, tea.WithAltScreen()) }
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -100,7 +129,13 @@ type permissionMsg struct {
 	reply chan string
 }
 
-type agentGoneMsg struct{}
+type agentGoneMsg struct{ generation int }
+
+type clientReadyMsg struct {
+	client     *acp.Client
+	info       *acp.InitializeResponse
+	generation int
+}
 
 type sessionReadyMsg struct {
 	id      string
@@ -113,9 +148,14 @@ type promptDoneMsg struct {
 	err  error
 }
 
+type authDoneMsg struct{ err error }
+
 type spinnerTickMsg struct{}
 
-type errMsg struct{ err error }
+type errMsg struct {
+	err  error
+	auth bool
+}
 
 // ---------------------------------------------------------------------------
 // Model
@@ -143,9 +183,11 @@ type entry struct {
 type Model struct {
 	ctx    context.Context
 	client *acp.Client
+	launch launcher
 	msgs   <-chan tea.Msg
 	opts   Options
 
+	generation   int
 	agentVersion string
 	authMethods  []acp.AuthMethod
 
@@ -165,6 +207,10 @@ type Model struct {
 	spinnerFrame int
 	usage        *acp.ContextUsage
 
+	// dead means the agent process is gone and only restart or quit apply.
+	dead     bool
+	authNeed bool
+
 	width, height int
 	ready         bool
 	err           error
@@ -175,7 +221,7 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 	ta.Placeholder = "Ask the agent…"
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
-	ta.SetHeight(3)
+	ta.SetHeight(inputHeight)
 	ta.CharLimit = 0
 	// Enter sends, so the textarea's own newline binding moves out of the way.
 	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
@@ -191,11 +237,16 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 		help:    help.New(),
 		keys:    keys,
 	}
-	if info != nil {
-		m.authMethods = info.AuthMethods
-		if info.AgentInfo != nil {
-			m.agentVersion = info.AgentInfo.Version
-		}
+	return m.withAgentInfo(info)
+}
+
+func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
+	if info == nil {
+		return m
+	}
+	m.authMethods = info.AuthMethods
+	if info.AgentInfo != nil {
+		m.agentVersion = info.AgentInfo.Version
 	}
 	return m
 }
@@ -214,53 +265,67 @@ func waitForMsg(ch <-chan tea.Msg) tea.Cmd {
 // its id. Resuming replays the whole history through Handlers.Update before it
 // returns, so the log fills in while this command is still running.
 func (m Model) startSession() tea.Cmd {
+	client, cwd, want := m.client, m.opts.Cwd, m.resumeID()
 	return func() tea.Msg {
-		if m.opts.SessionID != "" {
-			resp, err := m.client.LoadSession(m.ctx, m.opts.SessionID, m.opts.Cwd)
+		if want != "" {
+			resp, err := client.LoadSession(m.ctx, want, cwd)
 			if err == nil {
-				return sessionReadyMsg{id: m.opts.SessionID, options: resp.ConfigOptions}
+				return sessionReadyMsg{id: want, options: resp.ConfigOptions}
 			}
 			if acp.IsAuthRequired(err) {
-				return errMsg{err}
+				return errMsg{err: err, auth: true}
 			}
 			// A session the agent has forgotten is not worth failing over; the
 			// worktree is still the unit of work.
-			note := fmt.Sprintf("could not resume %s — started a new conversation", m.opts.SessionID)
-			resp2, err2 := m.client.NewSession(m.ctx, m.opts.Cwd)
-			if err2 != nil {
-				return errMsg{err2}
-			}
-			if err := m.saveSession(resp2.SessionID); err != nil {
-				return errMsg{err}
-			}
-			return sessionReadyMsg{id: resp2.SessionID, options: resp2.ConfigOptions, note: note}
+			note := fmt.Sprintf("could not resume %s — started a new conversation", want)
+			return m.freshSession(client, cwd, note)
 		}
-
-		resp, err := m.client.NewSession(m.ctx, m.opts.Cwd)
-		if err != nil {
-			return errMsg{err}
-		}
-		if err := m.saveSession(resp.SessionID); err != nil {
-			return errMsg{err}
-		}
-		return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions}
+		return m.freshSession(client, cwd, "")
 	}
 }
 
-func (m Model) saveSession(id string) error {
-	if m.opts.SaveSession == nil {
-		return nil
+// resumeID is the conversation to reopen: whichever one this view already has,
+// falling back to the one recorded for the workspace.
+func (m Model) resumeID() string {
+	if m.sessionID != "" {
+		return m.sessionID
 	}
-	if err := m.opts.SaveSession(id); err != nil {
-		return fmt.Errorf("failed to record session id: %w", err)
+	return m.opts.SessionID
+}
+
+func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
+	resp, err := client.NewSession(m.ctx, cwd)
+	if err != nil {
+		return errMsg{err: err, auth: acp.IsAuthRequired(err)}
 	}
-	return nil
+	if m.opts.SaveSession != nil {
+		if err := m.opts.SaveSession(resp.SessionID); err != nil {
+			return errMsg{err: fmt.Errorf("failed to record session id: %w", err)}
+		}
+	}
+	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, note: note}
 }
 
 func (m Model) promptCmd(text string) tea.Cmd {
+	client, sessionID := m.client, m.sessionID
 	return func() tea.Msg {
-		resp, err := m.client.Prompt(m.ctx, m.sessionID, text)
+		resp, err := client.Prompt(m.ctx, sessionID, text)
 		return promptDoneMsg{resp: resp, err: err}
+	}
+}
+
+// restartCmd replaces a dead agent with a fresh process.
+func (m Model) restartCmd() tea.Cmd {
+	old, launch := m.client, m.launch
+	return func() tea.Msg {
+		if old != nil {
+			_ = old.Close()
+		}
+		client, info, gen, err := launch()
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return clientReadyMsg{client: client, info: info, generation: gen}
 	}
 }
 

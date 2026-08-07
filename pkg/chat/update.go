@@ -2,6 +2,7 @@ package chat
 
 import (
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -63,15 +64,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, spinnerTick()
 
 	case agentGoneMsg:
+		// This arrives down the handler channel, so the reader has to be
+		// re-issued like any other delivery — otherwise the stream stops here
+		// and a restarted agent's history replay has nowhere to land.
+		//
+		// A restarted agent also supersedes the old one; the old process's
+		// death notice arrives afterwards and must not condemn its replacement.
+		if msg.generation != m.generation {
+			return m, waitForMsg(m.msgs)
+		}
+		m.dead = true
+		m.turn = false
 		if m.err == nil {
 			m.err = fmt.Errorf("%s exited", m.opts.Command)
 		}
-		m.turn = false
-		return m, nil
+		m = m.relayout()
+		return m, waitForMsg(m.msgs)
+
+	case clientReadyMsg:
+		m.client = msg.client
+		m.generation = msg.generation
+		m = m.withAgentInfo(msg.info)
+		m.dead, m.authNeed, m.err = false, false, nil
+		// The replay rebuilds the log from scratch, so drop what is on screen
+		// rather than rendering the conversation twice.
+		m.entries, m.toolIdx = nil, make(map[string]int)
+		m = m.relayout()
+		return m, m.startSession()
+
+	case authDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		// Credentials are read at startup, so a fresh login needs a fresh agent.
+		return m, m.restartCmd()
 
 	case errMsg:
 		m.err = msg.err
+		m.authNeed = msg.auth
 		m.turn = false
+		m = m.relayout()
 		return m, nil
 	}
 
@@ -83,6 +116,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.perm != nil {
 		return m.handlePermissionKey(msg)
+	}
+	// A stopped agent takes over the keyboard: r and l would otherwise be
+	// swallowed by the textarea, which is useless with nothing to send to.
+	if m.stopped() {
+		return m.handleStoppedKey(msg)
 	}
 
 	switch {
@@ -127,6 +165,33 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// stopped reports whether the agent is unusable until something is done about
+// it: either it exited, or it refused to work without credentials.
+func (m Model) stopped() bool { return m.dead || m.authNeed }
+
+func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Quit):
+		return m, tea.Quit
+
+	case key.Matches(msg, m.keys.Login) && len(m.opts.AuthCommand) > 0:
+		return m, m.authCmd()
+
+	case key.Matches(msg, m.keys.Restart):
+		return m, m.restartCmd()
+	}
+	return m, nil
+}
+
+// authCmd hands the terminal to the agent's own login flow. opentree cannot
+// perform the login itself — ACP only reports that one is needed — but it does
+// own a terminal, which is exactly what the agent asks for.
+func (m Model) authCmd() tea.Cmd {
+	c := exec.Command(m.opts.Command, m.opts.AuthCommand...) // #nosec G204 -- from the agent registry, not user input
+	c.Dir = m.opts.Cwd
+	return tea.ExecProcess(c, func(err error) tea.Msg { return authDoneMsg{err: err} })
 }
 
 // handlePermissionKey answers the pending escalation. Options are matched

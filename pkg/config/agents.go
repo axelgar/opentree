@@ -20,12 +20,17 @@ type PredefinedAgent struct {
 type ACPSpec struct {
 	Args    []string // subcommand and flags that select ACP mode
 	CwdFlag string   // flag that roots the session in a worktree
+
+	// AuthCommand logs the agent in interactively. ACP reports that
+	// authentication is required but leaves the remedy to the agent, whose own
+	// answer is "run this in a terminal" — which opentree happens to own.
+	AuthCommand []string
 }
 
 // PredefinedAgents is the built-in registry of known agents.
 var PredefinedAgents = []PredefinedAgent{
 	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
-		ACP: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd"}},
+		ACP: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent"},
 	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},
 	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI"},

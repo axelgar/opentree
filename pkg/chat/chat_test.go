@@ -468,6 +468,18 @@ func TestToolLabel(t *testing.T) {
 			}},
 			want: "edit (pkg/auth/session.go)",
 		},
+		{
+			name: "an absolute title is shortened",
+			call: acp.ToolCall{Title: "/repo/pkg/auth/session.go", Kind: "edit"},
+			want: "pkg/auth/session.go",
+		},
+		{
+			name: "the diff path is not repeated after the title",
+			call: acp.ToolCall{Title: "main.go", Kind: "edit", Content: []acp.ToolCallContent{
+				{Type: "diff", Path: "/repo/main.go"},
+			}},
+			want: "main.go",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -504,6 +516,260 @@ func TestTurnSummary(t *testing.T) {
 	})
 	if !strings.Contains(got, acp.StopCancelled) || !strings.Contains(got, "3 in / 4 out") {
 		t.Errorf("turnSummary() = %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Diffs and tool detail
+// ---------------------------------------------------------------------------
+
+func diffCall(status, old, updated string) acp.ToolCall {
+	return acp.ToolCall{
+		ToolCallID: "t1", Title: "edit", Kind: "edit", Status: status,
+		Content: []acp.ToolCallContent{
+			{Type: "diff", Path: "/repo/pkg/auth/session.go", OldText: old, NewText: updated},
+		},
+	}
+}
+
+func TestDiffStat(t *testing.T) {
+	tests := []struct {
+		name             string
+		old, updated     string
+		wantAdd, wantRem int
+	}{
+		{"replacement", "a\nb", "a\nb\nc", 3, 2},
+		{"pure insertion", "", "new line", 1, 0},
+		{"pure deletion", "gone\naway", "", 0, 2},
+		{"trailing newline is not a line", "a\n", "b\n", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			added, removed := diffStat(diffCall(acp.StatusCompleted, tt.old, tt.updated))
+			if added != tt.wantAdd || removed != tt.wantRem {
+				t.Errorf("diffStat() = +%d/-%d, want +%d/-%d", added, removed, tt.wantAdd, tt.wantRem)
+			}
+		})
+	}
+}
+
+func TestRenderTool_ShowsDiffLinesAndStat(t *testing.T) {
+	m := newTestModel()
+	out := m.renderTool(diffCall(acp.StatusCompleted, "old line", "new line"), 60)
+
+	for _, want := range []string{"pkg/auth/session.go", "+1", "-1", "- old line", "+ new line"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderTool() missing %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderDiffs_TruncatesLargeEdits(t *testing.T) {
+	big := strings.TrimSuffix(strings.Repeat("line\n", 50), "\n")
+	lines := renderDiffs(diffCall(acp.StatusCompleted, big, big), 80)
+
+	if len(lines) > diffMaxLines+1 {
+		t.Errorf("rendered %d lines, want at most %d plus a truncation marker", len(lines), diffMaxLines)
+	}
+	if !strings.Contains(lines[len(lines)-1], "truncated") {
+		t.Errorf("last line = %q, want a truncation marker", lines[len(lines)-1])
+	}
+}
+
+func TestRenderTool_ShowsFailureReason(t *testing.T) {
+	m := newTestModel()
+	call := acp.ToolCall{
+		ToolCallID: "t1", Title: "rm -rf dist", Kind: "execute", Status: acp.StatusFailed,
+		Content: []acp.ToolCallContent{
+			{Type: "content", Content: &acp.ContentBlock{Type: "text",
+				Text: "The user rejected permission to use this specific tool call."}},
+		},
+	}
+	out := m.renderTool(call, 80)
+	if !strings.Contains(out, "rejected permission") {
+		t.Errorf("renderTool() should explain a failure\ngot:\n%s", out)
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 40); got != "short" {
+		t.Errorf("truncate() = %q, want it untouched", got)
+	}
+	got := truncate(strings.Repeat("x", 50), 10)
+	if len([]rune(got)) != 10 || !strings.HasSuffix(got, "…") {
+		t.Errorf("truncate() = %q, want 10 runes ending in an ellipsis", got)
+	}
+}
+
+func TestSplitLines(t *testing.T) {
+	if got := splitLines(""); got != nil {
+		t.Errorf("splitLines(\"\") = %v, want nil", got)
+	}
+	if got := splitLines("a\nb\n"); len(got) != 2 {
+		t.Errorf("splitLines() = %v, want 2 lines", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stopped agent: restart and auth
+// ---------------------------------------------------------------------------
+
+func TestAgentGone_FromOldGenerationIsIgnored(t *testing.T) {
+	// A restarted agent supersedes its predecessor, whose death notice lands
+	// afterwards. Acting on it would kill the healthy replacement.
+	m := newTestModel()
+	m.generation = 2
+	m, _ = applyUpdate(m, agentGoneMsg{generation: 1})
+
+	if m.dead {
+		t.Error("a stale generation's exit must not mark the current agent dead")
+	}
+	if m.err != nil {
+		t.Errorf("err = %v, want none", m.err)
+	}
+}
+
+func TestChannelMessages_AlwaysReissueTheReader(t *testing.T) {
+	// Every message that arrives down the handler channel has to hand the
+	// reader back, or the stream stops dead at that message. agentGoneMsg got
+	// this wrong once: the log came back empty after a restart because the
+	// replay had nothing listening for it.
+	tests := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"update", textUpdate(acp.UpdateAgentMessage, "hi")},
+		{"permission", permission(allowOnce)},
+		{"agent gone", agentGoneMsg{generation: 1}},
+		{"agent gone from an old generation", agentGoneMsg{generation: 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel()
+			m.generation = 1
+			if _, cmd := applyUpdate(m, tt.msg); cmd == nil {
+				t.Error("expected the reader to be re-issued")
+			}
+		})
+	}
+}
+
+func TestAgentGone_CurrentGenerationStops(t *testing.T) {
+	m := newTestModel()
+	m.generation = 2
+	m.turn = true
+	m, _ = applyUpdate(m, agentGoneMsg{generation: 2})
+
+	if !m.dead || !m.stopped() {
+		t.Error("expected the agent to be marked dead")
+	}
+	if m.turn {
+		t.Error("a dead agent ends the turn")
+	}
+}
+
+func TestStopped_RestartKey(t *testing.T) {
+	m := newTestModel()
+	m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
+		return nil, nil, 2, nil
+	}
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+	_, cmd := applyUpdate(m, keyMsg("r"))
+	if cmd == nil {
+		t.Fatal("expected r to issue a restart")
+	}
+	if _, ok := cmd().(clientReadyMsg); !ok {
+		t.Errorf("restart produced %T, want clientReadyMsg", cmd())
+	}
+}
+
+func TestStopped_TypingDoesNotReachTheInput(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+	m, _ = applyUpdate(m, keyMsg("h"))
+
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want keystrokes ignored while the agent is gone", m.input.Value())
+	}
+}
+
+func TestClientReady_ClearsLogBeforeReplay(t *testing.T) {
+	// session/load replays the whole conversation, so keeping the old entries
+	// would render it twice.
+	m := newTestModel()
+	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, "old history"))
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+	m, cmd := applyUpdate(m, clientReadyMsg{generation: 7})
+	if len(m.entries) != 0 {
+		t.Errorf("entries = %d, want the log cleared for replay", len(m.entries))
+	}
+	if m.dead || m.err != nil {
+		t.Error("a fresh client clears the stopped state")
+	}
+	if m.generation != 7 {
+		t.Errorf("generation = %d, want 7", m.generation)
+	}
+	if cmd == nil {
+		t.Error("expected the session to be reopened after a restart")
+	}
+}
+
+func TestAuthRequired_OffersLogin(t *testing.T) {
+	m := newTestModel()
+	m.opts.Command = "opencode"
+	m.opts.AuthCommand = []string{"auth", "login"}
+	m.authMethods = []acp.AuthMethod{{ID: "opencode-login", Description: "Run `opencode auth login` in the terminal"}}
+	m, _ = applyUpdate(m, errMsg{err: errString("acp error -32000: Authentication required"), auth: true})
+
+	if !m.stopped() {
+		t.Fatal("an auth failure should stop the view")
+	}
+	view := m.footer()
+	for _, want := range []string{"Authentication required", "opencode auth login", "[l]", "[r]"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("footer() missing %q\ngot:\n%s", want, view)
+		}
+	}
+}
+
+func TestAuthDone_TriggersRestart(t *testing.T) {
+	m := newTestModel()
+	m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
+		return nil, nil, 3, nil
+	}
+	_, cmd := applyUpdate(m, authDoneMsg{})
+	if cmd == nil {
+		t.Fatal("a successful login should restart the agent")
+	}
+	if _, ok := cmd().(clientReadyMsg); !ok {
+		t.Errorf("produced %T, want clientReadyMsg", cmd())
+	}
+}
+
+func TestAuthDone_FailureIsSurfaced(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, authDoneMsg{err: errString("login cancelled")})
+	if m.err == nil || !strings.Contains(m.err.Error(), "login cancelled") {
+		t.Errorf("err = %v, want the login failure", m.err)
+	}
+}
+
+func TestErrorText_FirstLineOnly(t *testing.T) {
+	m := newTestModel()
+	m.err = errString("agent closed the connection\nstderr line 1\nstderr line 2")
+	if got := m.errorText(); got != "agent closed the connection" {
+		t.Errorf("errorText() = %q, want just the cause", got)
+	}
+}
+
+func TestFooterHeight_GrowsWhenStopped(t *testing.T) {
+	m := newTestModel()
+	base := m.footerHeight()
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+	if got := m.footerHeight(); got <= base {
+		t.Errorf("footerHeight when stopped = %d, want more than %d", got, base)
 	}
 }
 

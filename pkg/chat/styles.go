@@ -48,6 +48,14 @@ var (
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
+	errorBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("196")).
+			Padding(0, 1)
+
+	diffAddStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+	diffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
 	permBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#F4A261")).
