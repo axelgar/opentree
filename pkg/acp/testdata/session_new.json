@@ -1,0 +1,63 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "sessionId": "ses_0245655adffe1CULvF5B5tUcIX",
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "github-copilot/claude-sonnet-4.6",
+        "options": [
+          {
+            "value": "github-copilot/claude-haiku-4.5",
+            "name": "GitHub Copilot/Claude Haiku 4.5 (latest)"
+          },
+          {
+            "value": "github-copilot/claude-opus-4.5",
+            "name": "GitHub Copilot/Claude Opus 4.5 (latest)"
+          }
+        ]
+      },
+      {
+        "id": "effort",
+        "name": "Effort",
+        "description": "Available effort levels for this model",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "low",
+        "options": [
+          {
+            "value": "low",
+            "name": "Low"
+          },
+          {
+            "value": "medium",
+            "name": "Medium"
+          }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Session Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "build",
+        "options": [
+          {
+            "value": "build",
+            "name": "build",
+            "description": "The default agent. Executes tools based on configured permissions."
+          },
+          {
+            "value": "plan",
+            "name": "plan",
+            "description": "Plan mode. Disallows all edit tools."
+          }
+        ]
+      }
+    ]
+  }
+}

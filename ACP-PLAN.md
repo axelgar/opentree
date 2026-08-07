@@ -1,0 +1,187 @@
+# opentree × ACP — Integration Plan (opencode pilot)
+
+> Status: **planned, not started.** No code has been written against this document.
+> Companion to [PLAN.md](PLAN.md), which describes the shipped v0.1 architecture.
+
+## Overview
+
+opentree stops shelling out to an agent's own TUI and becomes an [Agent Client
+Protocol](https://agentclientprotocol.com) client. Each worktree's tmux window runs
+`opentree chat <ws>` — an altscreen Bubble Tea view that owns an `opencode acp` child
+over stdio and serves a unix socket so the main list can watch and control it.
+
+```
+opentree (main list, altscreen)
+     │  unix socket client  ──▸ .opentree/sock/<ws>
+     ▼
+opentree chat <ws>            ← tmux window, altscreen
+     ├─ ACP client  ── JSON-RPC/stdio ──▸ opencode acp --cwd <worktree>
+     └─ socket server (status out, control in)
+```
+
+Every current flow survives: one window per worktree, `enter` attaches, killing the
+window kills the agent, and `capture-pane` still drives the list preview — it just
+renders opentree's own frame now instead of raw agent output.
+
+## Why not the alternatives
+
+**Why not `opencode serve`?** It works — one server can host sessions in many
+directories, and `opencode attach` can join a live session, which ACP cannot. But it is
+opencode-specific, and the goal is a client that generalises to other agents.
+
+**Why not a broker daemon?** Only needed if two UIs render the same live session
+concurrently. The chat process is already long-lived in tmux, so it can hold the ACP
+pipe *and* serve the socket itself. No supervision, no pidfiles, no orphan reaping.
+
+**Why not a Go ACP library?** Four community libraries exist (`coder/acp-go-sdk`,
+`ironpark/acp-go`, `eino-contrib/acp`, `spachava753/acp-sdk`) — none official, none with
+a stated maintenance story, and a **v2 draft** is in flight. Our surface is JSON-RPC 2.0
+over newline-delimited stdio plus ~10 message types. Hand-roll it, zero new deps; fall
+back to `coder/acp-go-sdk` only if that drags.
+
+## Verified facts (Spike 0)
+
+Recorded from live `opencode acp` v1.18.12 traffic on 2026-08-07. Sanitized captures are
+committed as `pkg/acp/testdata/` and are the source of truth for the Go types — the
+protocol docs were not trusted over the wire.
+
+```
+initialize -> protocolVersion: 1
+              agentCapabilities.loadSession: true
+              sessionCapabilities: { close, fork, list, resume }
+              promptCapabilities:  { embeddedContext, image }
+              authMethods: [ opencode-login ]
+              agentInfo: { name: "OpenCode", version: "1.18.12" }
+```
+
+**Methods**
+
+| Direction | Method | Shape |
+|-----------|--------|-------|
+| →  | `session/new` | `{cwd, mcpServers}` → `{sessionId, configOptions[]}` |
+| →  | `session/load` | `{sessionId, cwd, mcpServers}` → replays history as `session/update` notifications, then `{configOptions}` |
+| →  | `session/prompt` | `{sessionId, prompt: ContentBlock[]}` → `{stopReason, usage{inputTokens,outputTokens,totalTokens,cachedReadTokens,cachedWriteTokens}}` |
+| →  | `session/cancel` | notification (no id); the in-flight prompt then returns `stopReason: "cancelled"` |
+| ←  | `session/request_permission` | `{sessionId, toolCall, options[{optionId,kind,name}]}` → `{outcome:{outcome:"selected", optionId}}` |
+
+**`session/update` variants** (discriminator: `sessionUpdate`)
+
+`agent_message_chunk` · `agent_thought_chunk` · `user_message_chunk` (replay only) ·
+`tool_call` · `tool_call_update` · `available_commands_update` · `usage_update`
+
+- Message chunks carry `{messageId, content:{type:"text", text}}`.
+- `tool_call`: `{toolCallId, title, kind, status, locations[], rawInput}`.
+  Kinds seen: `read`, `edit`, `execute`. Statuses: `pending`, `in_progress`,
+  `completed`, `failed`.
+- `tool_call_update` is a sparse patch — every field except `toolCallId` is optional, and
+  `kind`/`title` are frequently absent on the terminal update. **The client must merge
+  updates into retained state, not replace.**
+- Tool content blocks are wrapped, not bare: `{"type":"content","content":{ContentBlock}}`
+  and `{"type":"diff","path","oldText","newText"}`.
+
+**Behaviours that shape the implementation**
+
+- **Agent→client requests use a separate ID space starting at 0**, colliding with the
+  client's own outbound IDs. The client must key pending calls by direction, not by id alone.
+- Rejecting a permission produces `tool_call_update` with `status: "failed"` and an
+  explanatory content block — the turn continues rather than aborting.
+- opencode offers exactly three permission options: `once`/`allow_once`,
+  `always`/`allow_always`, `reject`/`reject_once`. There is **no `reject_always`**, so the
+  UI must render options from the wire rather than hardcoding four.
+- `--cwd` sets the session directory.
+- `opencode acp --port` does **not** serve HTTP — ACP mode is stdio only, so an ACP
+  session and an attached `opencode` TUI cannot share one process.
+- An ACP session has exactly one live client. `loadSession`/`resume` mean a *later*
+  client can re-open a session with full history, but not concurrently.
+
+### Two findings that change scope
+
+1. **opencode never emits `plan` updates.** Prompting it to use its todo tool produced
+   `tool_call` updates for `todowrite`, not a `plan` notification. The plan panel in
+   commit 4 would render nothing. Either drop it, or derive it from the `todowrite`
+   tool call's `rawInput` — which is opencode-specific and violates decision 9.
+2. **`usage_update` and `configOptions` are free wins not in the original plan.**
+   `usage_update` carries `{used, size, cost:{amount,currency}}` — live cost and context
+   usage with no extra work. `session/new` returns `configOptions` describing model,
+   effort, and mode as select controls with current values, which is a model/mode picker
+   handed over on a plate. Neither is in base ACP; both degrade to absent for other agents.
+
+## Decisions
+
+| # | Decision |
+|---|---|
+| 1 | tmux attach stays the primary way you work; the thing you attach to is now opentree's chat |
+| 2 | No `opencode serve`, no broker daemon — the chat process *is* the server |
+| 3 | Integrated path only for opencode; no plain-launch fallback |
+| 4 | Chat view is **altscreen**, full control |
+| 5 | Sessions persist: `session_id` in `state.json`, `session/load` replays history on reopen |
+| 6 | **Bidirectional unix socket** — answer permissions and interrupt from the list |
+| 7 | List shows status + control; preview stays `capture-pane` (no second renderer) |
+| 8 | No opentree permission policy — opencode's ruleset decides, opentree surfaces escalations |
+| 9 | Client written protocol-generic; `PredefinedAgent.ACP *ACPSpec`, only opencode filled in |
+| 10 | **Fat v1**: slash commands, `@` mentions, plan panel, thought blocks — and no escape hatch |
+| 11 | Fail loudly + `[r]` restart; auth-required offers `[l]` → `opencode auth login` in-window |
+| 12 | Ship `opentree chat` standalone, flip the create flow last |
+
+### Agent registry
+
+```go
+type PredefinedAgent struct {
+    Name, Command string
+    Args          []string
+    ACP           *ACPSpec // nil = plain launch, unchanged
+}
+
+// opencode: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd"}
+// claude, codex, copilot, gemini, pi: nil
+```
+
+Adding Gemini later is a registry entry, not a rewrite.
+
+### Permissions
+
+opencode applies its own ruleset first and only escalates what it cannot decide.
+opentree never auto-answers: an escalation becomes a badge in the list and a prompt in
+the chat, answered with `allow_once` / `allow_always` / `reject_once` / `reject_always`.
+Users wanting autonomy configure opencode's ruleset — opentree adds no second policy
+engine.
+
+## Sequence
+
+**Spike 0** — record real JSON from `opencode acp`: `session/new` with `--cwd` on a
+worktree, a prompt round-trip, a full `tool_call` lifecycle, and a live
+`session/request_permission`. Type everything downstream off these captures, not off the
+spec.
+
+| PR | Scope |
+|----|-------|
+| 1 | `pkg/acp`: JSON-RPC framing, `initialize`, `session/new`/`load`/`prompt`/`cancel`, `session/update` fan-out, `request_permission`. Tested against a scripted fake agent — no opencode needed. |
+| 2 | `opentree chat <ws>`: altscreen view, prompt in / streamed text out, session ID persisted to `state.json`. Run by hand. |
+| 3 | Tool-call rows with live status, diff blocks, permission modal, `esc` to cancel, error + auth states. |
+| 4 | Command palette from `available_commands_update`, `@` file completion via `resource_link`/`embeddedContext`, plan panel, collapsible thought blocks. |
+| 5 | Socket server + list-side client: badges, `[a]`/`[d]` from the list, interrupt. |
+| 6 | Flip `workspace.Service` to launch the chat; delete opencode's hook path. |
+
+PRs 1–5 change nothing for existing users. The other five agents keep
+`OPENTREE_STATUS_FILE` and their hooks untouched throughout.
+
+## Implementation calls already made
+
+- `fs: false` / `terminal: false` in `initialize` — those capabilities exist for editors
+  with unsaved buffers; opentree has none, so opencode does its own IO. Diffs still
+  arrive as `toolCall` content.
+- Session created lazily on first chat launch, not at workspace creation.
+- tmux invokes opentree via `os.Executable()`, not `PATH`.
+- Stale sockets unlinked on bind.
+- The list holds sockets for all opencode workspaces, not just the selected one.
+
+## Risks
+
+1. **Long runway.** Fat v1 with no fallback means PR 6 is the first day anyone benefits.
+   The sequencing contains this — but if PR 4 slips, resist flipping early.
+2. **Altscreen copy/paste.** Mouse mode vs. native selection is unresolved; see #34 for
+   how that bites. Decide it in PR 2, not PR 5.
+3. **ACP v2 draft.** The hand-rolled client is the hedge; budget a version-negotiation
+   pass.
+4. **`capture-pane` on an altscreen app.** Verify in PR 2 that the preview reads well.
+   If it doesn't, decision 7 needs revisiting — and that is a real scope change.

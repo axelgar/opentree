@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 1,
+      "outputTokens": 8,
+      "totalTokens": 12211,
+      "cachedReadTokens": 11942,
+      "cachedWriteTokens": 260
+    },
+    "_meta": {}
+  }
+}

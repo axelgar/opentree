@@ -1,0 +1,35 @@
+{
+  "jsonrpc": "2.0",
+  "id": 0,
+  "method": "session/request_permission",
+  "params": {
+    "sessionId": "ses_0245408a6ffeGBkGAGoy6M2SeI",
+    "toolCall": {
+      "toolCallId": "toolu_01EncJhJnU2NU2C51oi4TcGA",
+      "title": "echo permission-probe-one",
+      "kind": "execute",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {
+        "command": "echo permission-probe-one"
+      }
+    },
+    "options": [
+      {
+        "optionId": "once",
+        "kind": "allow_once",
+        "name": "Allow once"
+      },
+      {
+        "optionId": "always",
+        "kind": "allow_always",
+        "name": "Always allow"
+      },
+      {
+        "optionId": "reject",
+        "kind": "reject_once",
+        "name": "Reject"
+      }
+    ]
+  }
+}
