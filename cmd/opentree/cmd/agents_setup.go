@@ -48,6 +48,13 @@ opentree-launched sessions.`,
 			return fmt.Errorf("agent %q not found", args[0])
 		}
 
+		// An ACP agent needs no hooks: opentree runs it through its own chat
+		// view, which holds the protocol connection and therefore knows what
+		// the agent is doing without being told.
+		if agent.ACP != nil {
+			return reportNoHooksNeeded(agent.Name)
+		}
+
 		inst, ok := hookInstallers[agent.Command]
 		if !ok {
 			return fmt.Errorf("no status-hook setup is available for %q yet", agent.Name)
@@ -75,12 +82,11 @@ type hookInstaller struct {
 }
 
 var hookInstallers = map[string]hookInstaller{
-	"claude":   {install: installClaudeHooks},
-	"codex":    {install: installCodexHooks},
-	"gemini":   {install: installGeminiHooks},
-	"opencode": {install: installOpenCodeHooks},
-	"gh":       {manual: copilotManual}, // Copilot: no waiting-for-input event
-	"pi":       {manual: piManual},      // Pi: single-slot notify.json we won't clobber
+	"claude": {install: installClaudeHooks},
+	"codex":  {install: installCodexHooks},
+	"gemini": {install: installGeminiHooks},
+	"gh":     {manual: copilotManual}, // Copilot: no waiting-for-input event
+	"pi":     {manual: piManual},      // Pi: single-slot notify.json we won't clobber
 }
 
 // statusHookCommand builds the guarded shell command that writes a status value
@@ -153,48 +159,25 @@ func installGeminiHooks() error {
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode — ~/.config/opencode/plugin/opentree-status.js (JS/TS plugin)
+// ACP agents — nothing to install
 // ---------------------------------------------------------------------------
 
-func installOpenCodeHooks() error {
-	path, err := homePath(".config", "opencode", "plugin", "opentree-status.js")
-	if err != nil {
-		return err
+// reportNoHooksNeeded explains why an ACP agent has no setup step, and points
+// at the plugin an earlier opentree may have installed. The file is left alone
+// rather than deleted: it lives in the user's own agent config.
+func reportNoHooksNeeded(name string) error {
+	fmt.Printf("%s speaks the Agent Client Protocol, so opentree runs it through\n", name)
+	fmt.Println("its own chat view and reads status straight from the protocol.")
+	fmt.Println("There are no hooks to install.")
+
+	if path, err := homePath(".config", "opencode", "plugin", "opentree-status.js"); err == nil {
+		if _, err := os.Stat(path); err == nil {
+			fmt.Printf("\nAn older opentree left a status plugin at\n  %s\n", path)
+			fmt.Println("It is now unused and safe to delete.")
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, []byte(openCodePlugin), 0600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", path, err)
-	}
-	fmt.Printf("✓ Installed OpenCode status plugin at %s\n", path)
 	return nil
 }
-
-// openCodePlugin listens on the OpenCode plugin event bus and writes the status
-// file. It reads OPENTREE_STATUS_FILE from the process env opentree exports and
-// no-ops when unset. Direct fs write avoids shell-quoting pitfalls.
-const openCodePlugin = `import { writeFileSync } from "node:fs"
-
-export const OpentreeStatus = async () => {
-  const write = (status) => {
-    const f = process.env.OPENTREE_STATUS_FILE
-    if (!f) return
-    try {
-      writeFileSync(f, JSON.stringify({ status }))
-    } catch {}
-  }
-  return {
-    event: async ({ event }) => {
-      if (event.type === "session.idle") write("needs_input")
-      if (event.type === "session.status" && event.properties?.status?.type === "busy") write("in_progress")
-    },
-    "permission.ask": async () => {
-      write("needs_input")
-    },
-  }
-}
-`
 
 func homePath(parts ...string) (string, error) {
 	home, err := os.UserHomeDir()

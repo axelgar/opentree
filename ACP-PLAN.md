@@ -1,6 +1,6 @@
 # opentree × ACP — Integration Plan (opencode pilot)
 
-> Status: **planned, not started.** No code has been written against this document.
+> Status: **implemented.** All six commits landed on `feat/acp-integration`.
 > Companion to [PLAN.md](PLAN.md), which describes the shipped v0.1 architecture.
 
 ## Overview
@@ -153,17 +153,27 @@ worktree, a prompt round-trip, a full `tool_call` lifecycle, and a live
 `session/request_permission`. Type everything downstream off these captures, not off the
 spec.
 
-| PR | Scope |
-|----|-------|
-| 1 | `pkg/acp`: JSON-RPC framing, `initialize`, `session/new`/`load`/`prompt`/`cancel`, `session/update` fan-out, `request_permission`. Tested against a scripted fake agent — no opencode needed. |
-| 2 | `opentree chat <ws>`: altscreen view, prompt in / streamed text out, session ID persisted to `state.json`. Run by hand. |
-| 3 | Tool-call rows with live status, diff blocks, permission modal, `esc` to cancel, error + auth states. |
-| 4 | Command palette from `available_commands_update`, `@` file completion via `resource_link`/`embeddedContext`, plan panel, collapsible thought blocks. |
-| 5 | Socket server + list-side client: badges, `[a]`/`[d]` from the list, interrupt. |
-| 6 | Flip `workspace.Service` to launch the chat; delete opencode's hook path. |
+| Commit | Scope | Status |
+|--------|-------|--------|
+| 0 | Plan, plus recorded `opencode acp` traffic committed as `pkg/acp/testdata`. | done |
+| 1 | `pkg/acp` plus a line-based `opentree chat` to drive it. | done |
+| 2 | Altscreen chat view replacing the line UI. | done |
+| 3 | Diffs, failure detail, restart, and guided auth. | done |
+| 4 | Slash commands, `@` mentions, reasoning toggle. | done |
+| 5 | Control socket: badges, answer, interrupt, message from the list. | done |
+| 6 | Flip `workspace.Service` to launch the chat; retire opencode's hooks. | done |
 
-PRs 1–5 change nothing for existing users. The other five agents keep
+Commits 1–5 changed nothing for existing users. The other five agents keep
 `OPENTREE_STATUS_FILE` and their hooks untouched throughout.
+
+## Not built
+
+- **Sending a prompt from the list is one-way.** `m` delivers the text and the
+  reply lands in the chat window; the list shows only the resulting status. A
+  conversation still means attaching, which is decision 1 working as intended.
+- **No `reject_always`.** opencode does not offer it, and the UI renders the
+  options it receives rather than inventing one.
+- **The plan panel** was dropped for the reason in finding 1.
 
 ## Implementation calls already made
 

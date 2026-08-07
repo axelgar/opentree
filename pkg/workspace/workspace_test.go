@@ -19,20 +19,24 @@ import (
 // mockProcessManager is a test double for ProcessManager that records calls
 // and returns configurable results.
 type mockProcessManager struct {
-	createWindowCalls []string
-	createWindowEnvs  [][]string
-	createWindowErr   error
-	killWindowCalls   []string
-	killSessionCalled bool
-	sendMessageCalls  []sendMessageCall
-	sendMessageErr    error
-	windows           []Window
-	paneCommand       string // returned by PaneCurrentCommand; "" simulates "no window"
+	createWindowCalls    []string
+	createWindowEnvs     [][]string
+	createWindowCommands []string
+	createWindowArgs     [][]string
+	createWindowErr      error
+	killWindowCalls      []string
+	killSessionCalled    bool
+	sendMessageCalls     []sendMessageCall
+	sendMessageErr       error
+	windows              []Window
+	paneCommand          string // returned by PaneCurrentCommand; "" simulates "no window"
 }
 
 func (m *mockProcessManager) CreateWindow(name, workdir, command string, env []string, args ...string) error {
 	m.createWindowCalls = append(m.createWindowCalls, name)
 	m.createWindowEnvs = append(m.createWindowEnvs, env)
+	m.createWindowCommands = append(m.createWindowCommands, command)
+	m.createWindowArgs = append(m.createWindowArgs, args)
 	return m.createWindowErr
 }
 
@@ -989,5 +993,102 @@ func TestCreate_RejectsMissingAgentBinary(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(repoDir, ".opentree", "my-branch")); statErr == nil {
 		t.Error("no worktree should be created when the agent binary is missing")
+	}
+}
+
+// ---- ACP agent launch ----
+
+// fakeBinary drops an executable stub named cmd into dir, so Create's agent
+// validation passes without the real agent installed.
+func fakeBinary(t *testing.T, dir, cmd string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, cmd), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreate_ACPAgentLaunchesTheChatView(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	// Prepended, not replaced: the worktree work below still needs git.
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode" // has an ACP spec in the registry
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	if _, err := svc.Create("acp-branch", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if len(mock.createWindowArgs) != 1 {
+		t.Fatalf("CreateWindow calls = %d, want 1", len(mock.createWindowArgs))
+	}
+	// The window runs opentree's own chat, not the agent binary.
+	if got := mock.createWindowCommands[0]; got == "opencode" {
+		t.Errorf("command = %q, want the opentree binary rather than the agent", got)
+	}
+	wantArgs := []string{"chat", "acp-branch"}
+	if len(mock.createWindowArgs[0]) != 2 ||
+		mock.createWindowArgs[0][0] != wantArgs[0] || mock.createWindowArgs[0][1] != wantArgs[1] {
+		t.Errorf("args = %v, want %v", mock.createWindowArgs[0], wantArgs)
+	}
+	// Status comes over the control socket now, so the hook env is dead weight.
+	if len(mock.createWindowEnvs[0]) != 0 {
+		t.Errorf("env = %v, want none for an ACP agent", mock.createWindowEnvs[0])
+	}
+}
+
+func TestCreate_NonACPAgentKeepsThePlainLaunch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	cfg := config.Default()
+	cfg.Agent.Command = "echo" // not in the registry, so no ACP spec
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	if _, err := svc.Create("plain-branch", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if mock.createWindowCommands[0] != "echo" {
+		t.Errorf("command = %q, want the agent binary itself", mock.createWindowCommands[0])
+	}
+	wantEnv := "OPENTREE_STATUS_FILE=" + filepath.Join(svc.WorktreePath("plain-branch"), StatusFileName)
+	if len(mock.createWindowEnvs[0]) != 1 || mock.createWindowEnvs[0][0] != wantEnv {
+		t.Errorf("env = %v, want [%q]", mock.createWindowEnvs[0], wantEnv)
+	}
+}
+
+func TestChatCommand_UsesTheRunningBinary(t *testing.T) {
+	// Resolving from PATH would let a window launch a different opentree than
+	// the one that created it.
+	cmd, env, args := chatCommand("fix-auth")
+	if cmd == "opentree" {
+		t.Error("fell back to PATH; os.Executable should have resolved")
+	}
+	if !filepath.IsAbs(cmd) {
+		t.Errorf("command = %q, want an absolute path", cmd)
+	}
+	if env != nil {
+		t.Errorf("env = %v, want none", env)
+	}
+	if len(args) != 2 || args[0] != "chat" || args[1] != "fix-auth" {
+		t.Errorf("args = %v, want [chat fix-auth]", args)
 	}
 }

@@ -127,19 +127,41 @@ func agentEnv(worktreePath string) []string {
 	return []string{"OPENTREE_STATUS_FILE=" + filepath.Join(worktreePath, StatusFileName)}
 }
 
-// launchAgentWindow git-excludes the agent status file, then starts the
-// configured agent in a new window for name's worktree. On failure the
-// just-created worktree is rolled back; deleteBranch controls whether its
-// branch is deleted too (a pre-existing branch may hold the user's own
-// local-only commits).
+// launchAgentWindow starts the workspace's agent in a new tmux window for
+// name's worktree. On failure the just-created worktree is rolled back;
+// deleteBranch controls whether its branch is deleted too (a pre-existing
+// branch may hold the user's own local-only commits).
+//
+// An agent with an ACP mode is launched through `opentree chat`, which holds
+// the protocol connection and draws the conversation itself. Everything else
+// keeps the original path: the agent's own TUI, with status coming from hooks.
 func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, error) {
 	worktreePath := s.WorktreePath(name)
-	s.worktrees.EnsureExcluded(StatusFileName)
-	if err := s.process.CreateWindow(name, worktreePath, s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args...); err != nil {
+
+	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
+	if agent := config.FindAgent(s.cfg.Agent.Command); agent != nil && agent.ACP != nil {
+		command, env, args = chatCommand(name)
+	} else {
+		s.worktrees.EnsureExcluded(StatusFileName)
+	}
+
+	if err := s.process.CreateWindow(name, worktreePath, command, env, args...); err != nil {
 		_ = s.worktrees.Delete(name, deleteBranch)
 		return "", fmt.Errorf("failed to create tmux window: %w", err)
 	}
 	return worktreePath, nil
+}
+
+// chatCommand is how a tmux window runs opentree's own chat view. The binary is
+// resolved from the running process rather than PATH: opentree is frequently
+// run from a build directory, and a window that launches a different opentree
+// than the one that created it would be a confusing way to fail.
+func chatCommand(name string) (string, []string, []string) {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "opentree"
+	}
+	return exe, nil, []string{"chat", name}
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
