@@ -243,6 +243,10 @@ type Model struct {
 	files      []string
 	completion completionState
 
+	// queued holds a prompt from the workspace list that arrived while the
+	// agent was busy or still starting. At most one waits at a time.
+	queued string
+
 	perm         *permissionMsg
 	turn         bool
 	spinnerFrame int

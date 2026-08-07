@@ -276,16 +276,10 @@ func TestRemoteCommand_RefusalsAreReported(t *testing.T) {
 		wantReason string
 	}{
 		{
-			name:       "prompt while the agent is mid-turn",
-			setup:      func(m Model) Model { m.turn = true; return m },
-			cmd:        Command{Type: CommandPrompt, Text: "do a thing"},
-			wantReason: "busy",
-		},
-		{
-			name:       "prompt before the session exists",
-			setup:      func(m Model) Model { m.sessionID = ""; return m },
-			cmd:        Command{Type: CommandPrompt, Text: "do a thing"},
-			wantReason: "starting",
+			name:       "a second prompt while one is already queued",
+			setup:      func(m Model) Model { m.turn = true; m.queued = "first"; return m },
+			cmd:        Command{Type: CommandPrompt, Text: "second"},
+			wantReason: "already queued",
 		},
 		{
 			name:       "empty prompt",
@@ -322,6 +316,87 @@ func TestRemoteCommand_RefusalsAreReported(t *testing.T) {
 				t.Errorf("reason = %q, want it to mention %q", res.Reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestRemoteCommand_PromptQueues covers the other half of the vanishing-prompt
+// bug: a prompt that cannot run yet waits instead of being thrown away, and is
+// visible while it waits.
+func TestRemoteCommand_PromptQueues(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(Model) Model
+	}{
+		{"agent is mid-turn", func(m Model) Model { m.turn = true; return m }},
+		{"session not ready", func(m Model) Model { m.sessionID = ""; return m }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, res := remoteResult(tt.setup(newTestModel()), Command{Type: CommandPrompt, Text: "later please"})
+			if !res.OK {
+				t.Fatalf("prompt was refused: %q", res.Reason)
+			}
+			if m.queued != "later please" {
+				t.Errorf("queued = %q, want the prompt held", m.queued)
+			}
+			if !strings.Contains(m.renderLog(), "queued: later please") {
+				t.Error("a waiting prompt should be visible in the log")
+			}
+			if m.status().Queued == "" {
+				t.Error("a waiting prompt should be visible to the workspace list")
+			}
+		})
+	}
+}
+
+func TestQueuedPrompt_RunsWhenTheTurnEnds(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "run after"})
+
+	m, cmd := applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if m.queued != "" {
+		t.Error("the queue should be drained")
+	}
+	if !m.turn {
+		t.Error("expected the queued prompt to start its own turn")
+	}
+	if cmd == nil {
+		t.Error("expected a prompt cmd")
+	}
+	last := m.entries[len(m.entries)-1]
+	if last.kind != entryUser || last.text != "run after" {
+		t.Errorf("last entry = %+v, want the queued prompt", last)
+	}
+}
+
+func TestQueuedPrompt_RunsWhenTheSessionArrives(t *testing.T) {
+	m := newTestModel()
+	m.sessionID = ""
+	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "as soon as you can"})
+
+	m, cmd := applyUpdate(m, sessionReadyMsg{id: "ses_new"})
+	if m.queued != "" {
+		t.Error("the queue should be drained once the session exists")
+	}
+	if !m.turn || cmd == nil {
+		t.Error("expected the queued prompt to run")
+	}
+}
+
+func TestQueuedPrompt_DroppedWhenTheTurnFails(t *testing.T) {
+	// Firing a queued prompt into a session that just errored would stack a
+	// second failure on top of the first.
+	m := newTestModel()
+	m.turn = true
+	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "never runs"})
+
+	m, _ = applyUpdate(m, promptDoneMsg{err: errString("connection lost")})
+	if m.queued != "" {
+		t.Errorf("queued = %q, want it dropped after a failed turn", m.queued)
+	}
+	if m.turn {
+		t.Error("no new turn should have started")
 	}
 }
 
@@ -410,15 +485,6 @@ func TestRemoteCommand_Prompt(t *testing.T) {
 	}
 	if len(m.entries) != 1 || m.entries[0].text != "run the tests" {
 		t.Errorf("entries = %+v, want the prompt recorded", m.entries)
-	}
-}
-
-func TestRemoteCommand_PromptIgnoredWhileBusy(t *testing.T) {
-	m := newTestModel()
-	m.turn = true
-	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "queue this"}})
-	if len(m.entries) != 0 {
-		t.Error("a prompt must not queue while the agent is working")
 	}
 }
 

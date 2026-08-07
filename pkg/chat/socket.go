@@ -36,6 +36,7 @@ type Status struct {
 	Tool       string      `json:"tool,omitempty"`
 	Cost       float64     `json:"cost,omitempty"`
 	ContextPct int         `json:"context_pct,omitempty"`
+	Queued     string      `json:"queued,omitempty"`
 	Permission *Permission `json:"permission,omitempty"`
 }
 

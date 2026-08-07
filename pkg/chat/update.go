@@ -41,6 +41,9 @@ func (m Model) status() Status {
 		st.State = StateStarting
 	}
 
+	if m.queued != "" {
+		st.Queued = m.queued
+	}
 	st.Tool = m.currentTool()
 	if m.usage != nil {
 		if m.usage.Cost != nil {
@@ -96,17 +99,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.appendNotice(msg.note)
 		}
 		m = m.relayout()
-		return m, nil
+		return m.flushQueued()
 
 	case promptDoneMsg:
 		m.turn = false
 		if msg.err != nil {
 			m.err = msg.err
+			m.queued = "" // a queued prompt must not fire into a broken session
 			return m, nil
 		}
 		m = m.appendNotice(turnSummary(msg.resp))
 		m = m.relayout()
-		return m, nil
+		return m.flushQueued()
 
 	case spinnerTickMsg:
 		if !m.turn {
@@ -310,21 +314,44 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 
 	case CommandPrompt:
 		text := strings.TrimSpace(cmd.Text)
-		switch {
-		case text == "":
+		if text == "" {
 			return m, nil, Result{Reason: "empty prompt"}
-		case m.sessionID == "":
-			return m, nil, Result{Reason: "the agent is still starting"}
-		case m.turn:
-			return m, nil, Result{Reason: "the agent is busy — interrupt it first"}
 		}
-		prompt := m.promptCmd(text)
-		m.entries = append(m.entries, entry{kind: entryUser, text: text})
-		m.turn = true
-		m.err = nil
-		return m.relayout(), tea.Batch(prompt, spinnerTick()), Result{OK: true}
+		// A prompt that cannot run yet is queued rather than refused: the
+		// alternative is telling someone to retry a message they already typed.
+		// It is shown in the log and in the list's badge, so a prompt firing
+		// later is something you watched arrive, not a surprise.
+		if m.sessionID == "" || m.turn {
+			if m.queued != "" {
+				return m, nil, Result{Reason: "a prompt is already queued"}
+			}
+			m.queued = text
+			m = m.appendNotice("queued: " + text)
+			return m.relayout(), nil, Result{OK: true}
+		}
+		next, cmd := m.startTurn(text)
+		return next, cmd, Result{OK: true}
 	}
 	return m, nil, Result{Reason: "unknown command " + cmd.Type}
+}
+
+// startTurn sends text to the agent and records it in the log.
+func (m Model) startTurn(text string) (Model, tea.Cmd) {
+	cmd := m.promptCmd(text)
+	m.entries = append(m.entries, entry{kind: entryUser, text: text})
+	m.turn = true
+	m.err = nil
+	return m.relayout(), tea.Batch(cmd, spinnerTick())
+}
+
+// flushQueued runs a prompt that arrived while the agent was busy or starting.
+func (m Model) flushQueued() (tea.Model, tea.Cmd) {
+	if m.queued == "" || m.sessionID == "" || m.turn {
+		return m, nil
+	}
+	text := m.queued
+	m.queued = ""
+	return m.startTurn(text)
 }
 
 // stopped reports whether the agent is unusable until something is done about

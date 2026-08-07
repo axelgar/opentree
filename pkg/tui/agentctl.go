@@ -45,10 +45,16 @@ func renderChatBadge(st *chat.Status) string {
 		if st.Tool != "" {
 			label += " · " + st.Tool
 		}
+		if st.Queued != "" {
+			label += " · 1 queued"
+		}
 		return agentWorkingStyle.Render(truncateBadge(label))
 	case chat.StateStopped:
 		return dangerStyle.Render("agent stopped")
 	case chat.StateStarting:
+		if st.Queued != "" {
+			return agentIdleStyle.Render("starting… · 1 queued")
+		}
 		return agentIdleStyle.Render("starting…")
 	default:
 		return agentIdleStyle.Render("idle")
