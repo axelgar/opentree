@@ -30,10 +30,13 @@ type ACPSpec struct {
 	// appending an empty flag would hand it a stray argument.
 	CwdFlag string
 
-	// InstallHint tells the user how to get the ACP server when it is a
-	// separate program they may not have. Empty when the agent serves ACP
-	// itself and its own presence is enough.
-	InstallHint string
+	// Package is the npm package providing the ACP server, when it is a
+	// separate program. Empty when the agent serves ACP itself.
+	Package string
+
+	// InstallSize is what the user is agreeing to download, stated because it
+	// is large enough to matter on a slow connection.
+	InstallSize string
 
 	// AuthCommand logs the agent in interactively. ACP reports that
 	// authentication is required but leaves the remedy to the agent, whose own
@@ -51,7 +54,8 @@ var PredefinedAgents = []PredefinedAgent{
 		// `npm i -g @agentclientprotocol/claude-agent-acp`.
 		ACP: &ACPSpec{
 			Command:     "claude-agent-acp",
-			InstallHint: "npm i -g @agentclientprotocol/claude-agent-acp",
+			Package:     "@agentclientprotocol/claude-agent-acp",
+			InstallSize: "303MB",
 			AuthCommand: []string{"auth", "login"},
 		}},
 	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},

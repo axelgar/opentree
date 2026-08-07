@@ -709,7 +709,7 @@ func TestClientReady_ClearsLogBeforeReplay(t *testing.T) {
 	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, "old history"))
 	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
 
-	m, cmd := applyUpdate(m, clientReadyMsg{generation: 7})
+	m, cmd := applyUpdate(m, clientReadyMsg{client: &acp.Client{}, generation: 7})
 	if len(m.entries) != 0 {
 		t.Errorf("entries = %d, want the log cleared for replay", len(m.entries))
 	}

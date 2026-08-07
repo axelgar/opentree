@@ -141,7 +141,9 @@ func (m Model) statusLine() string {
 
 // stoppedLines describes why the agent is unusable and what to do about it.
 func (m Model) stoppedLines() []string {
-	lines := []string{errorStyle.Render("✕ " + m.errorText())}
+	// Trimmed to the box: an exec failure names a path and blows the border
+	// past the terminal edge otherwise.
+	lines := []string{errorStyle.Render(truncate("✕ "+m.errorText(), m.width-6))}
 	if m.authNeed {
 		if hint := m.authHint(); hint != "" {
 			lines = append(lines, noticeStyle.Render(hint))
@@ -149,6 +151,10 @@ func (m Model) stoppedLines() []string {
 	}
 
 	var actions []string
+	if len(m.opts.Install) > 0 && m.adapterMissing() {
+		actions = append(actions, permKeyStyle.Render("[i]")+" "+
+			permLabelStyle.Render(m.opts.InstallLabel))
+	}
 	if m.authNeed && len(m.opts.AuthCommand) > 0 {
 		actions = append(actions, permKeyStyle.Render("[l]")+" "+
 			permLabelStyle.Render(m.opts.Command+" "+strings.Join(m.opts.AuthCommand, " ")))

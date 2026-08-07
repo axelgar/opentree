@@ -35,6 +35,11 @@ type Options struct {
 	// the agent reports it needs credentials.
 	AuthCommand []string
 
+	// Install fetches the agent's ACP adapter, for agents reached through one.
+	// Run in this terminal so the user sees the package manager's own output.
+	Install      []string
+	InstallLabel string
+
 	// SocketPath is the control socket the workspace list connects to. Empty
 	// disables it.
 	SocketPath string
@@ -89,7 +94,9 @@ func Run(ctx context.Context, opts Options) error {
 		gen := int(generation.Add(1))
 		client, err := acp.Spawn(ctx, opts.Command, opts.Args, opts.Cwd, handlers)
 		if err != nil {
-			return nil, nil, gen, fmt.Errorf("failed to start %s: %w", opts.Command, err)
+			// Spawn already names the command; wrapping again produced
+			// "failed to start X: start X: exec: ...".
+			return nil, nil, gen, err
 		}
 		info, err := client.Initialize(ctx, "opentree", opts.Version)
 		if err != nil {
@@ -103,14 +110,17 @@ func Run(ctx context.Context, opts Options) error {
 		return client, info, gen, nil
 	}
 
+	// A failed first launch is not fatal: the view opens in its stopped state,
+	// where restarting or installing the adapter is one key away. Returning an
+	// error here would print it to a tmux window that then closes.
 	client, info, gen, err := launch()
-	if err != nil {
-		return err
-	}
 
 	m := newModel(ctx, client, info, opts, msgs)
 	m.generation = gen
 	m.launch = launch
+	if err != nil {
+		m.dead, m.err = true, err
+	}
 
 	// Best-effort: a chat with no control socket still works, it is just
 	// invisible to the workspace list.
@@ -176,6 +186,8 @@ type promptDoneMsg struct {
 }
 
 type authDoneMsg struct{ err error }
+
+type installDoneMsg struct{ err error }
 
 // configChangedMsg is the agent's answer to a settings change. It carries the
 // whole set back, since changing one option can change another.
@@ -299,6 +311,11 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 	return m.withAgentInfo(info)
 }
 
+// adapterMissing reports whether the agent has never started, which for an
+// agent reached through an adapter is what a missing one looks like. An agent
+// that started and later died wants a restart, not an install.
+func (m Model) adapterMissing() bool { return m.client == nil }
+
 func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 	if info == nil {
 		return m
@@ -344,6 +361,9 @@ func waitForMsg(ch <-chan tea.Msg) tea.Cmd {
 // returns, so the log fills in while this command is still running.
 func (m Model) startSession() tea.Cmd {
 	client, cwd, want := m.client, m.opts.Cwd, m.resumeID()
+	if client == nil {
+		return nil // nothing started; the stopped panel is already showing why
+	}
 	return func() tea.Msg {
 		if want != "" {
 			resp, err := client.LoadSession(m.ctx, want, cwd)

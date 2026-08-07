@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -122,14 +124,56 @@ func TestACPArgs(t *testing.T) {
 	}
 }
 
-func TestACPSpec_AdapterCarriesAnInstallHint(t *testing.T) {
+func TestACPSpec_AdapterIsInstallable(t *testing.T) {
 	// An agent reached through an adapter can be installed while the adapter is
-	// not, so the registry has to say how to get it.
+	// not, so the registry has to know how to fetch it.
 	claude := FindAgent("claude")
-	if claude.ACP.InstallHint == "" {
-		t.Error("Claude Code's adapter needs an install hint; its absence is a confusing failure")
+	if claude.ACP.Package == "" {
+		t.Fatal("Claude Code's adapter needs a package; without one it cannot be installed for the user")
 	}
-	if FindAgent("opencode").ACP.InstallHint != "" {
-		t.Error("opencode serves ACP itself, so there is nothing extra to install")
+	if claude.ACP.InstallSize == "" {
+		t.Error("state the download size — it is large enough that a user should agree to it knowingly")
+	}
+
+	got := claude.ACPInstallCommand()
+	if len(got) == 0 {
+		t.Fatal("expected an install command")
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--prefix") {
+		t.Errorf("install = %q, want an explicit prefix so nothing lands in the global npm root", joined)
+	}
+	if !strings.Contains(joined, claude.ACP.Package) {
+		t.Errorf("install = %q, want it to name the package", joined)
+	}
+
+	// opencode serves ACP itself, so there is nothing to fetch.
+	if opencode := FindAgent("opencode"); opencode.ACPInstallCommand() != nil {
+		t.Errorf("opencode install = %v, want none", opencode.ACPInstallCommand())
+	}
+	if FindAgent("pi").ACPInstallCommand() != nil {
+		t.Error("an agent with no ACP mode has no adapter to install")
+	}
+}
+
+func TestResolveACPCommand_PrefersOpentreesOwnCopy(t *testing.T) {
+	// Someone who installed the adapter themselves should not get a second copy.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claude := FindAgent("claude")
+	if got := claude.ResolveACPCommand(); got != "claude-agent-acp" {
+		t.Errorf("with nothing installed = %q, want the bare name for a PATH lookup", got)
+	}
+
+	managed := filepath.Join(home, ".opentree", "tools", "bin")
+	if err := os.MkdirAll(managed, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed, "claude-agent-acp"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := claude.ResolveACPCommand(); got != filepath.Join(managed, "claude-agent-acp") {
+		t.Errorf("with a managed copy = %q, want opentree's own", got)
 	}
 }

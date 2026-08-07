@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -52,7 +53,7 @@ opentree-launched sessions.`,
 		// view, which holds the protocol connection and therefore knows what
 		// the agent is doing without being told.
 		if agent.ACP != nil {
-			return reportNoHooksNeeded(agent.Name)
+			return setupACPAgent(agent)
 		}
 
 		inst, ok := hookInstallers[agent.Command]
@@ -161,6 +162,35 @@ func installGeminiHooks() error {
 // ---------------------------------------------------------------------------
 // ACP agents — nothing to install
 // ---------------------------------------------------------------------------
+
+// setupACPAgent installs the agent's ACP adapter when it needs one. Agents that
+// serve ACP themselves have nothing to set up, and say so.
+func setupACPAgent(agent *config.PredefinedAgent) error {
+	install := agent.ACPInstallCommand()
+	if len(install) == 0 {
+		return reportNoHooksNeeded(agent.Name)
+	}
+	if agent.ACPInstalled() {
+		fmt.Printf("✓ %s is already available at %s\n", agent.ACPCommand(), agent.ResolveACPCommand())
+		fmt.Println("Run this again to update it.")
+		return nil
+	}
+
+	fmt.Printf("%s speaks the Agent Client Protocol through %s.\n", agent.Name, agent.ACPCommand())
+	fmt.Printf("Installing %s", agent.ACP.Package)
+	if agent.ACP.InstallSize != "" {
+		fmt.Printf(" (%s, needs node)", agent.ACP.InstallSize)
+	}
+	fmt.Printf(" into %s\n\n", config.ToolsDir())
+
+	cmd := exec.Command(install[0], install[1:]...) // #nosec G204 -- from the agent registry
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("install failed: %w", err)
+	}
+	fmt.Printf("\n✓ %s ready\n", agent.ACPCommand())
+	return nil
+}
 
 // reportNoHooksNeeded explains why an ACP agent has no setup step, and points
 // at the plugin an earlier opentree may have installed. The file is left alone

@@ -174,6 +174,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return next, tea.Batch(cmd, waitForMsg(m.msgs))
 
+	case installDoneMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("install failed: %w", msg.err)
+			return m.relayout(), nil
+		}
+		// The adapter exists now, so the launch that failed can succeed.
+		return m, m.restartCmd()
+
 	case authDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -398,6 +406,11 @@ func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Login) && len(m.opts.AuthCommand) > 0:
 		return m, m.authCmd()
 
+	// Same guard as the panel that advertises it: an agent that has started
+	// once already has its adapter, and wants a restart instead.
+	case key.Matches(msg, m.keys.Install) && len(m.opts.Install) > 0 && m.adapterMissing():
+		return m, m.installCmd()
+
 	case key.Matches(msg, m.keys.Restart):
 		return m, m.restartCmd()
 	}
@@ -411,6 +424,13 @@ func (m Model) authCmd() tea.Cmd {
 	c := exec.Command(m.opts.Command, m.opts.AuthCommand...) // #nosec G204 -- from the agent registry, not user input
 	c.Dir = m.opts.Cwd
 	return tea.ExecProcess(c, func(err error) tea.Msg { return authDoneMsg{err: err} })
+}
+
+// installCmd hands the terminal to the package manager, so its progress and any
+// failure are the user's to read rather than something opentree paraphrases.
+func (m Model) installCmd() tea.Cmd {
+	c := exec.Command(m.opts.Install[0], m.opts.Install[1:]...) // #nosec G204 -- from the agent registry, not user input
+	return tea.ExecProcess(c, func(err error) tea.Msg { return installDoneMsg{err: err} })
 }
 
 // handlePermissionKey answers the pending escalation. Options are matched

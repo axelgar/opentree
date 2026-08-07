@@ -2,10 +2,8 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -64,11 +62,14 @@ func runChat(ctx context.Context, name, version string) error {
 	}
 
 	return chat.Run(ctx, chat.Options{
-		Workspace:   ws.Name,
-		Cwd:         ws.WorktreeDir,
-		Agent:       agent.Name,
-		Command:     agent.ACPCommand(),
-		Args:        agent.ACPArgs(ws.WorktreeDir),
+		Workspace: ws.Name,
+		Cwd:       ws.WorktreeDir,
+		Agent:     agent.Name,
+		Command:   agent.ResolveACPCommand(),
+		Args:      agent.ACPArgs(ws.WorktreeDir),
+		Install:   agent.ACPInstallCommand(),
+		InstallLabel: fmt.Sprintf("install %s%s", agent.ACPCommand(),
+			sizeSuffix(agent.ACP.InstallSize)),
 		Version:     version,
 		AuthCommand: agent.ACP.AuthCommand,
 		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
@@ -98,16 +99,17 @@ func resolveACPAgent(repoRoot string) (*config.PredefinedAgent, error) {
 	if agent == nil || agent.ACP == nil {
 		return nil, fmt.Errorf("agent %q has no ACP mode; only %s does", name, acpCapableAgents())
 	}
-	// An agent reached through an adapter can be installed while the adapter is
-	// not. "executable file not found" would be true but useless.
-	if _, err := exec.LookPath(agent.ACPCommand()); err != nil {
-		msg := fmt.Sprintf("%s needs %s, which is not installed", agent.Name, agent.ACPCommand())
-		if agent.ACP.InstallHint != "" {
-			msg += "\n  " + agent.ACP.InstallHint
-		}
-		return nil, errors.New(msg)
-	}
+	// A missing adapter is deliberately not an error here: the chat opens in its
+	// stopped state instead, where installing it is one key away.
 	return agent, nil
+}
+
+// sizeSuffix renders the download size when the registry states one.
+func sizeSuffix(size string) string {
+	if size == "" {
+		return ""
+	}
+	return " (" + size + ", needs node)"
 }
 
 func acpCapableAgents() string {

@@ -458,3 +458,85 @@ func TestFlagsSummary_PartialDeclarations(t *testing.T) {
 		t.Errorf("flags = %v, want just the mode when that is all there is", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Missing adapter
+// ---------------------------------------------------------------------------
+
+// newUnlaunchedModel is the state Run leaves behind when the very first spawn
+// fails — for an agent reached through an adapter, what a missing adapter looks
+// like. It used to be a bare CLI error printed into a tmux window that then
+// closed, leaving nothing to act on.
+func newUnlaunchedModel() Model {
+	m := newTestModel()
+	m.client = nil
+	m.dead = true
+	m.err = errString("failed to start claude-agent-acp: executable file not found in $PATH")
+	m.opts.Install = []string{"npm", "install", "-g", "--prefix", "/tmp/tools", "@acp/adapter"}
+	m.opts.InstallLabel = "install claude-agent-acp (303MB, needs node)"
+	return m
+}
+
+func TestMissingAdapter_OffersToInstallIt(t *testing.T) {
+	m := newUnlaunchedModel()
+	if !m.stopped() {
+		t.Fatal("a failed launch should leave the view stopped, not closed")
+	}
+	view := m.footer()
+	for _, want := range []string{"[i]", "303MB", "needs node", "[r]"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("stopped panel missing %q\ngot:\n%s", want, view)
+		}
+	}
+}
+
+func TestMissingAdapter_InstallKeyRuns(t *testing.T) {
+	m := newUnlaunchedModel()
+	if _, cmd := applyUpdate(m, keyMsg("i")); cmd == nil {
+		t.Error("i should run the installer")
+	}
+}
+
+func TestRunningAgent_IsNotOfferedAnInstall(t *testing.T) {
+	// An agent that started and later died wants a restart, not a 303MB
+	// download it already has.
+	m := newUnlaunchedModel()
+	m.client = &acp.Client{} // it launched once
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+	if strings.Contains(m.footer(), "[i]") {
+		t.Errorf("stopped panel should not offer an install\ngot:\n%s", m.footer())
+	}
+	if _, cmd := applyUpdate(m, keyMsg("i")); cmd != nil {
+		t.Error("i should do nothing once the adapter is known to exist")
+	}
+}
+
+func TestInstallDone_RestartsTheAgent(t *testing.T) {
+	m := newUnlaunchedModel()
+	m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
+		return &acp.Client{}, nil, 2, nil
+	}
+	_, cmd := applyUpdate(m, installDoneMsg{})
+	if cmd == nil {
+		t.Fatal("a finished install should retry the launch that failed")
+	}
+	if _, ok := cmd().(clientReadyMsg); !ok {
+		t.Errorf("produced %T, want clientReadyMsg", cmd())
+	}
+}
+
+func TestInstallDone_FailureIsSurfaced(t *testing.T) {
+	m := newUnlaunchedModel()
+	m, _ = applyUpdate(m, installDoneMsg{err: errString("npm ERR! network timeout")})
+	if m.err == nil || !strings.Contains(m.err.Error(), "network timeout") {
+		t.Errorf("err = %v, want the package manager's own failure", m.err)
+	}
+}
+
+func TestUnlaunchedModel_DoesNotStartASession(t *testing.T) {
+	// startSession would dereference a nil client.
+	if cmd := newUnlaunchedModel().startSession(); cmd != nil {
+		t.Error("there is no client to open a session on")
+	}
+}
