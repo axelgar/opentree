@@ -216,3 +216,141 @@ func TestSettings_LongListScrollsAndCounts(t *testing.T) {
 		t.Errorf("footerHeight = %d, want it capped near the window size", h)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// /model and shift+tab
+// ---------------------------------------------------------------------------
+
+func TestClientCommands_DerivedFromDeclaredSettings(t *testing.T) {
+	// Nothing names "model" or "mode": each command exists because the agent
+	// declared that setting, which is also why /effort appears for free.
+	got := map[string]bool{}
+	for _, c := range newSettingsModel().clientCommands() {
+		got[c.Name] = true
+	}
+	for _, want := range []string{"model", "effort", "mode"} {
+		if !got[want] {
+			t.Errorf("/%s missing; commands = %v", want, got)
+		}
+	}
+}
+
+func TestClientCommands_NoneWithoutSettings(t *testing.T) {
+	if got := newTestModel().clientCommands(); len(got) != 0 {
+		t.Errorf("commands = %v, want none when the agent declares no settings", got)
+	}
+}
+
+func TestClientCommands_AgentKeepsItsOwnName(t *testing.T) {
+	m := newSettingsModel()
+	m.commands = []acp.Command{{Name: "model", Description: "the agent's own"}}
+	for _, c := range m.clientCommands() {
+		if c.Name == "model" {
+			t.Error("an agent advertising /model should keep it; its command is more specific")
+		}
+	}
+}
+
+func TestPalette_OffersClientCommands(t *testing.T) {
+	m := newSettingsModel()
+	m = typeInto(m, "/mod")
+	if !m.completion.active() {
+		t.Fatal("expected the palette to offer /model")
+	}
+	if m.completion.items[0].value != "/model" {
+		t.Errorf("first item = %q, want /model", m.completion.items[0].value)
+	}
+	if !strings.Contains(m.completion.items[0].desc, "sonnet-4.6") {
+		t.Errorf("desc = %q, want the current value shown", m.completion.items[0].desc)
+	}
+}
+
+func TestSend_ClientCommandOpensThePickerInsteadOfPrompting(t *testing.T) {
+	m := newSettingsModel()
+	m.input.SetValue("/model")
+	m, cmd := applyUpdate(m, keyMsg("enter"))
+
+	if m.turn {
+		t.Fatal("/model must not be sent to the agent as a prompt")
+	}
+	if cmd != nil {
+		t.Error("no prompt should have been issued")
+	}
+	if !m.settings.open || m.settings.configID != "model" {
+		t.Fatalf("settings = %+v, want the model picker open", m.settings)
+	}
+	// Straight to the values, and landed on the current one.
+	if m.settings.cursor != 1 {
+		t.Errorf("cursor = %d, want the current model", m.settings.cursor)
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared", m.input.Value())
+	}
+}
+
+func TestSend_UnknownSlashStillGoesToTheAgent(t *testing.T) {
+	// The agent's own commands are prompts; only opentree's are intercepted.
+	m := newSettingsModel()
+	m.input.SetValue("/code-review")
+	m, cmd := applyUpdate(m, keyMsg("enter"))
+
+	if m.settings.open {
+		t.Error("an agent command should not open the settings picker")
+	}
+	if !m.turn || cmd == nil {
+		t.Error("expected it to be sent as a prompt")
+	}
+}
+
+func TestSend_ClientCommandWorksWhileTheAgentIsBusy(t *testing.T) {
+	// Changing a setting is not a prompt, so a running turn should not block it.
+	m := newSettingsModel()
+	m.turn = true
+	m.input.SetValue("/mode")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+	if !m.settings.open {
+		t.Error("expected the picker to open mid-turn")
+	}
+}
+
+func TestNextMode_AdvancesAndWraps(t *testing.T) {
+	configID, value, ok := nextMode(testConfigOptions) // currently "build"
+	if !ok {
+		t.Fatal("expected a mode to cycle")
+	}
+	if configID != "mode" || value != "plan" {
+		t.Errorf("next = %s -> %s, want mode -> plan", configID, value)
+	}
+
+	wrapped := []acp.ConfigOption{{
+		ID: "mode", Category: "mode", CurrentValue: "plan",
+		Options: []acp.ConfigOptionValue{{Value: "build"}, {Value: "plan"}},
+	}}
+	if _, value, _ := nextMode(wrapped); value != "build" {
+		t.Errorf("from the last mode = %q, want it to wrap to build", value)
+	}
+}
+
+func TestNextMode_NoneDeclared(t *testing.T) {
+	if _, _, ok := nextMode(nil); ok {
+		t.Error("an agent with no mode has nothing to cycle")
+	}
+	single := []acp.ConfigOption{{ID: "mode", Category: "mode", CurrentValue: "build",
+		Options: []acp.ConfigOptionValue{{Value: "build"}}}}
+	if _, _, ok := nextMode(single); ok {
+		t.Error("a single mode is not worth cycling")
+	}
+}
+
+func TestCycleMode_ShiftTabIssuesTheChange(t *testing.T) {
+	if _, cmd := applyUpdate(newSettingsModel(), tea.KeyMsg{Type: tea.KeyShiftTab}); cmd == nil {
+		t.Error("shift+tab should issue a mode change")
+	}
+}
+
+func TestCycleMode_NoModeIsANoop(t *testing.T) {
+	m := newTestModel() // no declared settings at all
+	if _, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyShiftTab}); cmd != nil {
+		t.Error("shift+tab should do nothing when the agent declares no mode")
+	}
+}

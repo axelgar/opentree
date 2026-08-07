@@ -3,22 +3,23 @@ package chat
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Send     key.Binding
-	Newline  key.Binding
-	Cancel   key.Binding
-	PageUp   key.Binding
-	PageDown key.Binding
-	ScrollUp key.Binding
-	ScrollDn key.Binding
-	Settings key.Binding
-	Thoughts key.Binding
-	Restart  key.Binding
-	Login    key.Binding
-	Quit     key.Binding
+	Send      key.Binding
+	Newline   key.Binding
+	Cancel    key.Binding
+	PageUp    key.Binding
+	PageDown  key.Binding
+	ScrollUp  key.Binding
+	ScrollDn  key.Binding
+	Settings  key.Binding
+	CycleMode key.Binding
+	Thoughts  key.Binding
+	Restart   key.Binding
+	Login     key.Binding
+	Quit      key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Settings, k.Thoughts, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Cancel, k.CycleMode, k.Settings, k.Quit}
 }
 
 // StoppedHelp is the reduced set offered when the agent has exited or needs
@@ -64,6 +65,12 @@ var keys = keyMap{
 	Settings: key.NewBinding(
 		key.WithKeys("ctrl+g"),
 		key.WithHelp("ctrl+g", "settings"),
+	),
+	// shift+tab is free: tab belongs to the completion palette, and the
+	// textarea binds neither.
+	CycleMode: key.NewBinding(
+		key.WithKeys("shift+tab"),
+		key.WithHelp("shift+tab", "cycle mode"),
 	),
 	// Not ctrl+t: that is the textarea's transpose-character binding.
 	Thoughts: key.NewBinding(

@@ -222,6 +222,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Settings):
 		return m.openSettings()
 
+	case key.Matches(msg, m.keys.CycleMode):
+		return m.cycleMode()
+
 	case key.Matches(msg, m.keys.Thoughts):
 		m.hideThoughts = !m.hideThoughts
 		m = m.relayout()
@@ -251,7 +254,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Send):
 		text := strings.TrimSpace(m.input.Value())
-		if text == "" || m.turn || m.sessionID == "" {
+		if text == "" {
+			return m, nil
+		}
+		// opentree's own commands never reach the agent.
+		if configID, ok := m.clientCommandFor(text); ok {
+			m.input.Reset()
+			m.completion = completionState{}
+			return m.openSettingsAt(configID)
+		}
+		if m.turn || m.sessionID == "" {
 			return m, nil
 		}
 		cmd := m.promptCmd(text)
@@ -274,7 +286,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the cursor at zero on every keystroke is deliberate: the best match should be
 // selected as the token narrows, not whatever was highlighted three letters ago.
 func (m Model) refreshCompletion() Model {
-	next := completionFor(m.input.Value(), m.commands, m.files)
+	next := completionFor(m.input.Value(), m.paletteCommands(), m.files)
 	if next.token != m.completion.token || next.kind != m.completion.kind {
 		m.completion = next
 		return m.relayout()

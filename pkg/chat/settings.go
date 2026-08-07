@@ -193,6 +193,99 @@ func (m Model) settingsHeight() int {
 	return rows + 5
 }
 
+// clientCommands are opentree's own slash commands, derived from the settings
+// the agent declares: /model, /mode and /effort exist exactly where those
+// settings do, and an agent declaring something else gets a command for it too.
+//
+// They are opentree's because the protocol has no equivalent — an agent's
+// available_commands are its prompt-level skills, and opencode advertises
+// thirty-five of them without a /model among them.
+func (m Model) clientCommands() []acp.Command {
+	advertised := make(map[string]bool, len(m.commands))
+	for _, c := range m.commands {
+		advertised[c.Name] = true
+	}
+
+	var out []acp.Command
+	for _, o := range m.configOptions {
+		// An agent that advertises the same name keeps it; its own command is
+		// the more specific thing.
+		if advertised[o.ID] {
+			continue
+		}
+		desc := "change " + strings.ToLower(o.Name)
+		if o.CurrentValue != "" {
+			desc += " (now " + o.CurrentValue + ")"
+		}
+		out = append(out, acp.Command{Name: o.ID, Description: desc})
+	}
+	return out
+}
+
+// paletteCommands is everything the slash palette offers.
+func (m Model) paletteCommands() []acp.Command {
+	return append(m.clientCommands(), m.commands...)
+}
+
+// clientCommandFor reports whether typed text is one of opentree's own
+// commands, so it opens a picker instead of being sent to the agent.
+func (m Model) clientCommandFor(text string) (string, bool) {
+	name := strings.TrimPrefix(strings.TrimSpace(text), "/")
+	if name == text || name == "" {
+		return "", false
+	}
+	for _, c := range m.clientCommands() {
+		if c.Name == name {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// openSettingsAt jumps straight into one option's values, which is what
+// /model is for.
+func (m Model) openSettingsAt(configID string) (tea.Model, tea.Cmd) {
+	opt, ok := configOption(m.configOptions, configID)
+	if !ok {
+		return m, nil
+	}
+	m.settings = settings{open: true, configID: configID}
+	for j, v := range opt.Options {
+		if v.Value == opt.CurrentValue {
+			m.settings.cursor = j
+		}
+	}
+	return m.relayout(), nil
+}
+
+// nextMode is the mode that follows the current one, or ok=false when the agent
+// declares no mode to cycle.
+func nextMode(options []acp.ConfigOption) (configID, value string, ok bool) {
+	for _, o := range options {
+		if o.Category != "mode" || len(o.Options) < 2 {
+			continue
+		}
+		next := 0
+		for i, v := range o.Options {
+			if v.Value == o.CurrentValue {
+				next = (i + 1) % len(o.Options)
+			}
+		}
+		return o.ID, o.Options[next].Value, true
+	}
+	return "", "", false
+}
+
+// cycleMode advances the session mode by one, so the common flip between
+// build and plan does not need the picker at all.
+func (m Model) cycleMode() (tea.Model, tea.Cmd) {
+	configID, value, ok := nextMode(m.configOptions)
+	if !ok {
+		return m, nil
+	}
+	return m, m.setConfigCmd(configID, value)
+}
+
 // settingsSummary is the model and mode shown in the header. It reads the
 // agent's own current values, so it stays right after a change without the
 // header knowing what a "model" is.
