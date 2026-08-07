@@ -1569,6 +1569,9 @@ func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
 	m := newTestModel(testWS("ws"))
 	m.agentSelecting = true
 	m.agentCursor = 1 // Claude Code
+	// Enter now depends on whether the agent can actually run, which otherwise
+	// makes this test agree or disagree based on what is installed here.
+	m.agentReadiness = alwaysReady
 
 	m, _ = applyUpdate(m, keyMsg("enter"))
 
@@ -1579,6 +1582,8 @@ func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
 		t.Errorf("cfg.Agent.Command = %q, want %q", m.cfg.Agent.Command, "claude")
 	}
 }
+
+func alwaysReady(config.PredefinedAgent) (string, bool) { return agentReady, true }
 
 func TestAgentSelection_ViewShowsOverlay(t *testing.T) {
 	m := newTestModel(testWS("ws"))

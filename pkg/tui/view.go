@@ -34,6 +34,28 @@ func (m Model) View() string {
 		return appStyle.Render(sb.String())
 	}
 
+	// Adapter download confirmation. Enter on an agent whose adapter is missing
+	// means "use this agent", but 300MB is asked about rather than sprung.
+	if m.agentInstallConfirm != nil {
+		agent := *m.agentInstallConfirm
+		size := ""
+		if agent.ACP != nil && agent.ACP.InstallSize != "" {
+			size = " (" + agent.ACP.InstallSize + ", needs node)"
+		}
+		footer := fmt.Sprintf("%s %s  •  %s %s",
+			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("install and use"),
+			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
+		)
+		content := fmt.Sprintf("%s\n\n%s\n%s\n\n%s",
+			titleStyle.Render("Install adapter for "+agent.Name+"?"),
+			confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
+				agent.ACPCommand()+size+"."),
+			confirmLabelStyle.Render("It installs to "+config.ToolsDir()+"."),
+			footer,
+		)
+		return appStyle.Render(content)
+	}
+
 	// Agent selection overlay
 	if m.agentSelecting {
 		var sb strings.Builder
@@ -52,12 +74,12 @@ func (m Model) View() string {
 				name += " (active)"
 			}
 
-			status, ready := agentReadiness(agent)
+			status, ready := m.readiness(agent)
 			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
 			switch {
 			case ready:
 				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
-			case status == "adapter missing":
+			case status == agentAdapterMissing:
 				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#E9C46A"))
 			}
 
@@ -74,6 +96,12 @@ func (m Model) View() string {
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
+		// The overlay covers the list, so a refusal has nowhere else to appear —
+		// without this, enter on an unusable agent looks like a dead key.
+		if m.err != nil {
+			sb.WriteString(dangerStyle.Render(m.err.Error()))
+			sb.WriteString("\n\n")
+		}
 		sb.WriteString(helpStyle.Render("↑/↓ navigate • Enter select • i install adapter • Esc cancel"))
 		return appStyle.Render(sb.String())
 	}

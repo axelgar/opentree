@@ -127,6 +127,14 @@ type Model struct {
 	agentSelecting bool
 	agentCursor    int
 
+	// confirming a 300MB adapter download, and the agent to switch to once it
+	// lands
+	agentInstallConfirm *config.PredefinedAgent
+	agentPendingSelect  *config.PredefinedAgent
+
+	// agentReadiness overrides the real check in tests; nil uses it.
+	agentReadiness func(config.PredefinedAgent) (string, bool)
+
 	// answering a chat agent's permission prompt without attaching
 	answering    bool
 	answerWs     string

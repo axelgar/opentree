@@ -119,6 +119,26 @@ func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd
 	}
 }
 
+// selectAgent makes an agent the configured one and persists it. Returns an
+// error message for the caller to surface, or "" on success.
+func (m *Model) selectAgent(agent config.PredefinedAgent) string {
+	m.cfg.Agent.Command = agent.Command
+	if agent.Args != nil {
+		m.cfg.Agent.Args = agent.Args
+	} else {
+		m.cfg.Agent.Args = []string{}
+	}
+	// Persist only the agent keys (not the merged config), and surface failures
+	// instead of silently losing the selection.
+	if err := config.SetKeys(config.FindConfigFile(), map[string]any{
+		"agent.command": m.cfg.Agent.Command,
+		"agent.args":    m.cfg.Agent.Args,
+	}); err != nil {
+		return fmt.Sprintf("failed to save agent selection: %v", err)
+	}
+	return ""
+}
+
 // installAdapterCmd fetches an agent's ACP adapter, handing the terminal to the
 // package manager so its progress and any failure are the user's to read.
 func (m Model) installAdapterCmd(agent config.PredefinedAgent) tea.Cmd {
@@ -129,17 +149,33 @@ func (m Model) installAdapterCmd(agent config.PredefinedAgent) tea.Cmd {
 	})
 }
 
+// What the picker can say about an agent, and what pressing enter on it does.
+const (
+	agentReady          = "installed"
+	agentNotFound       = "not found"
+	agentAdapterMissing = "adapter missing"
+)
+
 // agentReadiness is the status shown beside an agent in the picker. An agent
 // reached through an adapter can be installed while the adapter is not, and the
 // picker is where you would want to learn that.
 func agentReadiness(agent config.PredefinedAgent) (string, bool) {
 	if !agent.IsInstalled() {
-		return "not found", false
+		return agentNotFound, false
 	}
 	if len(agent.ACPInstallCommand()) > 0 && !agent.ACPInstalled() {
-		return "adapter missing", false
+		return agentAdapterMissing, false
 	}
-	return "installed", true
+	return agentReady, true
+}
+
+// readiness answers through the model so tests are not at the mercy of which
+// agents happen to be installed on the machine running them.
+func (m Model) readiness(agent config.PredefinedAgent) (string, bool) {
+	if m.agentReadiness != nil {
+		return m.agentReadiness(agent)
+	}
+	return agentReadiness(agent)
 }
 
 // openAnswerDialog arms the permission dialog for the selected workspace.

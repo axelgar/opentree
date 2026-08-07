@@ -398,3 +398,139 @@ func TestAdapterInstall_FailureIsReported(t *testing.T) {
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+// ---------------------------------------------------------------------------
+// Enter means "use this agent"
+// ---------------------------------------------------------------------------
+
+func readinessOf(status string) func(config.PredefinedAgent) (string, bool) {
+	return func(config.PredefinedAgent) (string, bool) { return status, status == agentReady }
+}
+
+// pickerOn opens the agent picker with the cursor on Claude Code, whose
+// readiness is stubbed so the test does not depend on this machine.
+func pickerOn(t *testing.T, status string) Model {
+	t.Helper()
+	t.Chdir(t.TempDir()) // selecting persists to config; keep it out of the repo
+	m := newTestModel(testWS("ws"))
+	m.agentSelecting = true
+	m.agentCursor = 1 // Claude Code
+	m.agentReadiness = readinessOf(status)
+	return m
+}
+
+func TestEnter_UninstalledAgentIsRefused(t *testing.T) {
+	// The old behaviour recorded the choice anyway, leaving you "using" an
+	// agent that cannot start.
+	m := pickerOn(t, agentNotFound)
+	before := m.cfg.Agent.Command
+
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if m.cfg.Agent.Command != before {
+		t.Errorf("agent = %q, want it unchanged at %q", m.cfg.Agent.Command, before)
+	}
+	if !m.agentSelecting {
+		t.Error("the picker should stay open so another agent can be chosen")
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "not installed") {
+		t.Errorf("err = %v, want it to say the agent is not installed", m.err)
+	}
+	// The overlay covers the list, so the message has to appear on the overlay
+	// itself or enter reads as a dead key.
+	if !strings.Contains(m.View(), "not installed") {
+		t.Errorf("the picker should show why enter was refused\ngot:\n%s", m.View())
+	}
+}
+
+func TestEnter_AdapterMissingAsksFirst(t *testing.T) {
+	m := pickerOn(t, agentAdapterMissing)
+	before := m.cfg.Agent.Command
+
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if m.agentInstallConfirm == nil {
+		t.Fatal("expected a confirmation before a 300MB download")
+	}
+	if m.cfg.Agent.Command != before {
+		t.Errorf("agent = %q, want nothing committed until the install is agreed", m.cfg.Agent.Command)
+	}
+	view := m.View()
+	for _, want := range []string{"Install adapter", "claude-agent-acp", "303MB"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("confirmation missing %q\ngot:\n%s", want, view)
+		}
+	}
+}
+
+func TestEnter_ReadyAgentIsSelected(t *testing.T) {
+	m := pickerOn(t, agentReady)
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if m.agentSelecting {
+		t.Error("the picker should close")
+	}
+	if m.cfg.Agent.Command != "claude" {
+		t.Errorf("agent = %q, want claude", m.cfg.Agent.Command)
+	}
+}
+
+func TestInstallConfirm_Declined(t *testing.T) {
+	m := pickerOn(t, agentAdapterMissing)
+	m, _ = applyUpdate(m, keyMsg("enter"))
+	m, cmd := applyUpdate(m, keyMsg("n"))
+
+	if m.agentInstallConfirm != nil {
+		t.Error("declining should close the confirmation")
+	}
+	if cmd != nil {
+		t.Error("nothing should be downloaded")
+	}
+	if m.agentPendingSelect != nil {
+		t.Error("no selection should be pending")
+	}
+}
+
+func TestInstallConfirm_AcceptedInstallsThenSelects(t *testing.T) {
+	m := pickerOn(t, agentAdapterMissing)
+	m, _ = applyUpdate(m, keyMsg("enter"))
+	m, cmd := applyUpdate(m, keyMsg("y"))
+
+	if cmd == nil {
+		t.Fatal("expected the install to run")
+	}
+	if m.agentPendingSelect == nil {
+		t.Fatal("the agent to switch to should be remembered across the install")
+	}
+	if m.cfg.Agent.Command == "claude" {
+		t.Error("the switch should wait until the adapter is actually there")
+	}
+
+	// The install finishes; enter meant "use this agent", so finish the job.
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp"})
+	if m.cfg.Agent.Command != "claude" {
+		t.Errorf("agent = %q, want claude selected once the adapter landed", m.cfg.Agent.Command)
+	}
+	if m.agentPendingSelect != nil {
+		t.Error("the pending selection should be cleared")
+	}
+	if !strings.Contains(m.notice, "now using") {
+		t.Errorf("notice = %q, want it to say the switch happened", m.notice)
+	}
+}
+
+func TestInstallFailed_DoesNotSwitchAgent(t *testing.T) {
+	m := pickerOn(t, agentAdapterMissing)
+	m, _ = applyUpdate(m, keyMsg("enter"))
+	m, _ = applyUpdate(m, keyMsg("y"))
+	before := m.cfg.Agent.Command
+
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: errStr("npm ERR!")})
+
+	if m.cfg.Agent.Command != before {
+		t.Errorf("agent = %q, want it unchanged when the adapter never arrived", m.cfg.Agent.Command)
+	}
+	if m.agentPendingSelect != nil {
+		t.Error("the pending selection should not survive a failed install")
+	}
+}

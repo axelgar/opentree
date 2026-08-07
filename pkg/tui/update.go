@@ -69,6 +69,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Confirming an adapter download before switching agent
+		if m.agentInstallConfirm != nil {
+			agent := *m.agentInstallConfirm
+			switch msg.String() {
+			case "y", "Y", "enter":
+				m.agentInstallConfirm = nil
+				m.agentPendingSelect = &agent
+				m.agentSelecting = false
+				return m, m.installAdapterCmd(agent)
+			case "n", "esc", "q":
+				m.agentInstallConfirm = nil
+			}
+			return m, nil
+		}
+
 		// Agent selection mode
 		if m.agentSelecting {
 			agents := config.PredefinedAgents
@@ -82,25 +97,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.agentCursor++
 				}
 			case "enter":
+				// Enter means "use this agent", so it does whatever that takes
+				// — including fetching an adapter — rather than recording a
+				// choice that cannot start.
 				agent := agents[m.agentCursor]
-				m.cfg.Agent.Command = agent.Command
-				if agent.Args != nil {
-					m.cfg.Agent.Args = agent.Args
-				} else {
-					m.cfg.Agent.Args = []string{}
+				switch status, _ := m.readiness(agent); status {
+				case agentNotFound:
+					return m, m.transientErrCmd(fmt.Sprintf(
+						"%s is not installed — install %s first", agent.Name, agent.Command))
+				case agentAdapterMissing:
+					// A download this size is asked about, not sprung.
+					m.agentInstallConfirm = &agents[m.agentCursor]
+					return m, nil
 				}
 				m.agentSelecting = false
-				// Persist only the agent keys (not the merged config), and
-				// surface failures instead of silently losing the selection.
-				if err := config.SetKeys(config.FindConfigFile(), map[string]any{
-					"agent.command": m.cfg.Agent.Command,
-					"agent.args":    m.cfg.Agent.Args,
-				}); err != nil {
-					return m, m.transientErrCmd(fmt.Sprintf("failed to save agent selection: %v", err))
+				if errMsg := m.selectAgent(agent); errMsg != "" {
+					return m, m.transientErrCmd(errMsg)
 				}
 			case "i":
-				// Agents reached through an adapter need it installed, and
-				// choosing an agent is where you find that out.
+				// Installing without switching to it, for preparing ahead.
 				agent := agents[m.agentCursor]
 				if len(agent.ACPInstallCommand()) == 0 {
 					return m, m.transientErrCmd(fmt.Sprintf("%s needs no adapter", agent.Name))
@@ -806,10 +821,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case adapterInstalledMsg:
+		pending := m.agentPendingSelect
+		m.agentPendingSelect = nil
 		if msg.err != nil {
 			return m, m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err))
 		}
 		m.notice = fmt.Sprintf("installed %s", msg.adapter)
+		// Enter meant "use this agent"; the install was only what stood in the
+		// way, so finish the job.
+		if pending != nil {
+			if errMsg := m.selectAgent(*pending); errMsg != "" {
+				return m, m.transientErrCmd(errMsg)
+			}
+			m.notice += ", now using " + pending.Name
+		}
 		m.noticeSeq++
 		seq := m.noticeSeq
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
