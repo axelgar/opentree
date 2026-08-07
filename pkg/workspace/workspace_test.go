@@ -1076,6 +1076,92 @@ func TestCreate_NonACPAgentKeepsThePlainLaunch(t *testing.T) {
 	}
 }
 
+// ---- EnsureWindow ----
+
+func TestEnsureWindow_ReopensAClosedWindow(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode"
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("gone", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// paneCommand "" is the mock's way of saying the window is not there,
+	// which is what quitting the chat leaves behind.
+	mock.paneCommand = ""
+	reopened, err := svc.EnsureWindow("gone")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if !reopened {
+		t.Fatal("expected the window to be reopened")
+	}
+	if len(mock.createWindowCalls) != 2 {
+		t.Fatalf("CreateWindow calls = %d, want the create plus the reopen", len(mock.createWindowCalls))
+	}
+	// It must come back as the chat, not the bare agent.
+	want := []string{"chat", "gone", "--agent", "opencode"}
+	if strings.Join(mock.createWindowArgs[1], " ") != strings.Join(want, " ") {
+		t.Errorf("reopen args = %v, want %v", mock.createWindowArgs[1], want)
+	}
+}
+
+func TestEnsureWindow_LeavesALiveWindowAlone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	cfg.Agent.Command = "echo"
+	mock := &mockProcessManager{paneCommand: "opentree"}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("alive", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	reopened, err := svc.EnsureWindow("alive")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if reopened {
+		t.Error("a live window must not be relaunched")
+	}
+	if len(mock.createWindowCalls) != 1 {
+		t.Errorf("CreateWindow calls = %d, want only the original create", len(mock.createWindowCalls))
+	}
+}
+
+func TestEnsureWindow_UnknownWorkspace(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	cfg := config.Default()
+	cfg.Agent.Command = "echo"
+	svc, err := newWithMock(initGitRepo(t), cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.EnsureWindow("never-existed"); err == nil {
+		t.Error("expected an error for a workspace that is not in state")
+	}
+}
+
 func TestChatCommand_UsesTheRunningBinary(t *testing.T) {
 	// Resolving from PATH would let a window launch a different opentree than
 	// the one that created it.

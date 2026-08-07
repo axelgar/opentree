@@ -34,6 +34,14 @@ var AttachCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize workspace service: %w", err)
 		}
 
+		// A closed window is not a dead workspace: reopen it before attaching,
+		// the same as the TUI does.
+		if reopened, err := svc.EnsureWindow(branchName); err != nil {
+			return err
+		} else if reopened {
+			fmt.Printf("Reopened %s\n", branchName)
+		}
+
 		if err := svc.Process().AttachWindow(branchName); err != nil {
 			return fmt.Errorf("failed to attach to workspace: %w", err)
 		}

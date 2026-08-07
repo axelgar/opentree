@@ -176,11 +176,22 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
+		// Quitting the chat closes its window; the worktree and the agent
+		// conversation both survive, so attaching reopens rather than refuses.
+		if _, err := m.svc.EnsureWindow(name); err != nil {
+			return errMsg{err}
+		}
 		cmd, err := m.svc.Process().AttachCmd(name)
 		if err != nil {
 			return errMsg{err}
 		}
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				// tmux's own message is lost to ExecProcess, so a bare
+				// "exit status 1" is all that survives — at least name the
+				// workspace it was trying to reach.
+				err = fmt.Errorf("failed to attach to %q: %w", name, err)
+			}
 			return attachFinishedMsg{err: err}
 		})()
 	}

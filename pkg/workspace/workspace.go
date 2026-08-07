@@ -171,6 +171,35 @@ func chatCommand(name, agentCommand string) (string, []string, []string) {
 	return exe, nil, []string{"chat", name, "--agent", agentCommand}
 }
 
+// EnsureWindow reopens a workspace's agent window when it no longer exists,
+// and reports whether it had to. Closing the window is now an ordinary thing to
+// do — the chat view runs as the window's command, so quitting it takes the
+// window with it — and the worktree plus its resumable conversation both
+// outlive that. Attaching should bring the workspace back rather than refuse.
+func (s *Service) EnsureWindow(name string) (bool, error) {
+	ws, err := s.state.GetWorkspace(name)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.process.PaneCurrentCommand(name); err == nil {
+		return false, nil
+	}
+
+	worktreePath := s.WorktreePath(name)
+	if _, err := os.Stat(worktreePath); err != nil {
+		return false, fmt.Errorf("worktree for %q is missing: %w", name, err)
+	}
+
+	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
+	if agent := config.FindAgent(ws.Agent); agent != nil && agent.ACP != nil {
+		command, env, args = chatCommand(name, agent.Command)
+	}
+	if err := s.process.CreateWindow(name, worktreePath, command, env, args...); err != nil {
+		return false, fmt.Errorf("failed to reopen window for %q: %w", name, err)
+	}
+	return true, nil
+}
+
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	// Fail before creating anything, not with a "✓ Launched" success message
