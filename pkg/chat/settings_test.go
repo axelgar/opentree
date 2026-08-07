@@ -408,3 +408,53 @@ func TestCycleMode_NoModeIsANoop(t *testing.T) {
 		t.Error("shift+tab should do nothing when the agent declares no mode")
 	}
 }
+
+// TestFlagsSummary_OnlyTheSettingsWorthPermanentSpace is the Claude Code
+// regression: it declares five options, and showing every non-model one filled
+// the line with "auto · high · off · default", pushing the help off screen to
+// report two things nobody changes mid-conversation.
+func TestFlagsSummary_OnlyTheSettingsWorthPermanentSpace(t *testing.T) {
+	claudeLike := []acp.ConfigOption{
+		{ID: "mode", Category: "mode", CurrentValue: "auto"},
+		{ID: "model", Category: "model", CurrentValue: "opus[1m]"},
+		{ID: "effort", Category: "thought_level", CurrentValue: "high"},
+		{ID: "fast", Category: "model_config", CurrentValue: "off"},
+		{ID: "agent", CurrentValue: "default"},
+	}
+	m := newTestModel()
+	m.configOptions = claudeLike
+
+	got := m.flagsSummary()
+	if strings.Join(got, " · ") != "auto · high" {
+		t.Errorf("flags = %v, want [auto high] — mode first, then effort", got)
+	}
+	// The ones left out are still reachable.
+	names := map[string]bool{}
+	for _, c := range m.clientCommands() {
+		names[c.Name] = true
+	}
+	for _, want := range []string{"fast", "agent"} {
+		if !names[want] {
+			t.Errorf("/%s should still exist; a setting without a flag is not a hidden setting", want)
+		}
+	}
+}
+
+func TestFlagsSummary_ModeLeadsRegardlessOfDeclarationOrder(t *testing.T) {
+	m := newTestModel()
+	m.configOptions = []acp.ConfigOption{
+		{ID: "effort", Category: "thought_level", CurrentValue: "low"},
+		{ID: "mode", Category: "mode", CurrentValue: "plan"},
+	}
+	if got := m.flagsSummary(); strings.Join(got, " ") != "plan low" {
+		t.Errorf("flags = %v, want mode first — it is the one shift+tab cycles", got)
+	}
+}
+
+func TestFlagsSummary_PartialDeclarations(t *testing.T) {
+	m := newTestModel()
+	m.configOptions = []acp.ConfigOption{{ID: "mode", Category: "mode", CurrentValue: "build"}}
+	if got := m.flagsSummary(); len(got) != 1 || got[0] != "build" {
+		t.Errorf("flags = %v, want just the mode when that is all there is", got)
+	}
+}

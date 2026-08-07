@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -65,8 +67,8 @@ func runChat(ctx context.Context, name, version string) error {
 		Workspace:   ws.Name,
 		Cwd:         ws.WorktreeDir,
 		Agent:       agent.Name,
-		Command:     agent.Command,
-		Args:        append(append([]string{}, agent.ACP.Args...), agent.ACP.CwdFlag, ws.WorktreeDir),
+		Command:     agent.ACPCommand(),
+		Args:        agent.ACPArgs(ws.WorktreeDir),
 		Version:     version,
 		AuthCommand: agent.ACP.AuthCommand,
 		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
@@ -95,6 +97,15 @@ func resolveACPAgent(repoRoot string) (*config.PredefinedAgent, error) {
 	agent := config.FindAgent(name)
 	if agent == nil || agent.ACP == nil {
 		return nil, fmt.Errorf("agent %q has no ACP mode; only %s does", name, acpCapableAgents())
+	}
+	// An agent reached through an adapter can be installed while the adapter is
+	// not. "executable file not found" would be true but useless.
+	if _, err := exec.LookPath(agent.ACPCommand()); err != nil {
+		msg := fmt.Sprintf("%s needs %s, which is not installed", agent.Name, agent.ACPCommand())
+		if agent.ACP.InstallHint != "" {
+			msg += "\n  " + agent.ACP.InstallHint
+		}
+		return nil, errors.New(msg)
 	}
 	return agent, nil
 }

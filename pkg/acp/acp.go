@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // CodeAuthRequired is the JSON-RPC error code an agent returns when a request
@@ -116,6 +117,10 @@ type outResponse struct {
 func Spawn(ctx context.Context, name string, args []string, dir string, h Handlers) (*Client, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	// Own process group. Agents spawn their own children — shells for tool
+	// calls, MCP servers — and killing only the direct child orphans those to
+	// init, leaving them holding the worktree after the chat is gone.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -159,7 +164,11 @@ func (c *Client) Close() error {
 	if c.cmd == nil || c.cmd.Process == nil {
 		return nil
 	}
-	_ = c.cmd.Process.Kill()
+	// Negative pid signals the whole group, so the agent's children go with it.
+	// Fall back to the bare process if the group is already gone.
+	if err := syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		_ = c.cmd.Process.Kill()
+	}
 	_ = c.cmd.Wait()
 	return nil
 }

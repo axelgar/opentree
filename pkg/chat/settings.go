@@ -292,25 +292,47 @@ func (m Model) settingsSummary() []string {
 	return m.currentValues(true)
 }
 
-// flagsSummary is what sits beside the input: every other setting the agent
-// declares — mode, effort, whatever a future agent adds. These are the ones
-// that change how the next turn behaves, so they belong next to the box you
-// are about to type into, shown permanently rather than announced once and
-// scrolled away.
-func (m Model) flagsSummary() []string {
-	return m.currentValues(false)
+// flagCategories are the settings worth permanent space beside the input: how
+// the next turn is allowed to behave, and how hard it will think.
+//
+// Not every declared option earns a flag. Claude Code declares five — adding
+// "fast" and a persona picker — and showing them all produced
+// "auto · high · off · default", which crowded the help off the line to report
+// two things nobody changes mid-conversation. Everything else stays one ctrl+g
+// or /command away. These are ACP's own category values, not agent names, so an
+// agent declaring a mode gets a flag whoever it is.
+var flagCategories = map[string]int{
+	"mode":          0, // first: the one shift+tab cycles
+	"thought_level": 1,
 }
 
-// currentValues splits the declared settings by whether they name the model.
-// The mode leads the flags, being the one shift+tab cycles.
+// flagsSummary is what sits beside the input, shown permanently rather than
+// announced once and scrolled away.
+func (m Model) flagsSummary() []string {
+	ordered := make([]string, len(flagCategories))
+	for _, o := range m.configOptions {
+		rank, ok := flagCategories[o.Category]
+		if !ok || o.CurrentValue == "" {
+			continue
+		}
+		ordered[rank] = o.CurrentValue
+	}
+
+	out := make([]string, 0, len(ordered))
+	for _, v := range ordered {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// settingsSummary is what the header shows: the model, a fact about the session
+// rather than a flag you flip.
 func (m Model) currentValues(model bool) []string {
 	var out []string
 	for _, o := range m.configOptions {
 		if (o.Category == "model") != model || o.CurrentValue == "" {
-			continue
-		}
-		if o.Category == "mode" {
-			out = append([]string{o.CurrentValue}, out...)
 			continue
 		}
 		out = append(out, o.CurrentValue)

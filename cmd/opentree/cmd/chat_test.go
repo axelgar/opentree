@@ -53,15 +53,35 @@ func TestResolveACPAgent_FallsBackToRepoConfig(t *testing.T) {
 
 func TestResolveACPAgent_RejectsNonACPAgent(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, repo, "claude")
+	writeConfig(t, repo, "pi") // no ACP mode in the registry
 
 	agentFlag = ""
 	_, err := resolveACPAgent(repo)
 	if err == nil {
 		t.Fatal("expected an error for an agent with no ACP mode")
 	}
-	if !strings.Contains(err.Error(), "claude") || !strings.Contains(err.Error(), "opencode") {
+	if !strings.Contains(err.Error(), "pi") || !strings.Contains(err.Error(), "opencode") {
 		t.Errorf("error = %q, want it to name the rejected agent and the ones that work", err)
+	}
+}
+
+func TestResolveACPAgent_MissingAdapterExplainsItself(t *testing.T) {
+	// Claude Code is reached through a separate adapter binary, so the agent
+	// can be installed while the thing that serves ACP is not. "executable file
+	// not found in $PATH" would be true and useless.
+	repo := t.TempDir()
+	writeConfig(t, repo, "claude")
+	t.Setenv("PATH", t.TempDir()) // no adapter anywhere
+
+	agentFlag = ""
+	_, err := resolveACPAgent(repo)
+	if err == nil {
+		t.Skip("claude-agent-acp is installed here, so there is nothing to miss")
+	}
+	for _, want := range []string{"claude-agent-acp", "npm i -g"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
 	}
 }
 
@@ -79,7 +99,10 @@ func TestACPCapableAgents(t *testing.T) {
 	if !strings.Contains(got, "opencode") {
 		t.Errorf("acpCapableAgents() = %q, want it to list opencode", got)
 	}
-	if strings.Contains(got, "claude") {
+	if !strings.Contains(got, "claude") {
+		t.Errorf("acpCapableAgents() = %q, want claude listed now that it has an adapter", got)
+	}
+	if strings.Contains(got, "pi") {
 		t.Errorf("acpCapableAgents() = %q, should not list agents without an ACP spec", got)
 	}
 }

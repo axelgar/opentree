@@ -18,8 +18,22 @@ type PredefinedAgent struct {
 // stdio. Agents without one keep the plain launch path, where opentree types
 // the command into a shell and the agent draws its own TUI.
 type ACPSpec struct {
-	Args    []string // subcommand and flags that select ACP mode
-	CwdFlag string   // flag that roots the session in a worktree
+	// Command overrides the agent's binary when its ACP server is a separate
+	// program. opencode serves ACP itself; Claude Code does not, and is reached
+	// through an adapter binary of its own.
+	Command string
+
+	Args []string // subcommand and flags that select ACP mode
+
+	// CwdFlag roots the session in a worktree. Optional: ACP already carries
+	// cwd on session/new, so an adapter that takes no flags needs none, and
+	// appending an empty flag would hand it a stray argument.
+	CwdFlag string
+
+	// InstallHint tells the user how to get the ACP server when it is a
+	// separate program they may not have. Empty when the agent serves ACP
+	// itself and its own presence is enough.
+	InstallHint string
 
 	// AuthCommand logs the agent in interactively. ACP reports that
 	// authentication is required but leaves the remedy to the agent, whose own
@@ -31,11 +45,44 @@ type ACPSpec struct {
 var PredefinedAgents = []PredefinedAgent{
 	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
 		ACP: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}}},
-	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent"},
+	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
+		// Claude Code has no ACP mode of its own; claude-agent-acp bridges it,
+		// reusing the same login. Install with
+		// `npm i -g @agentclientprotocol/claude-agent-acp`.
+		ACP: &ACPSpec{
+			Command:     "claude-agent-acp",
+			InstallHint: "npm i -g @agentclientprotocol/claude-agent-acp",
+			AuthCommand: []string{"auth", "login"},
+		}},
 	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},
 	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI"},
 	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent"},
 	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent"},
+}
+
+// ACPCommand is the binary that serves ACP for this agent: its own, unless the
+// spec names a separate adapter.
+func (a PredefinedAgent) ACPCommand() string {
+	if a.ACP == nil {
+		return ""
+	}
+	if a.ACP.Command != "" {
+		return a.ACP.Command
+	}
+	return a.Command
+}
+
+// ACPArgs is the full argument list for the ACP server, including the worktree
+// when the agent wants it as a flag.
+func (a PredefinedAgent) ACPArgs(worktree string) []string {
+	if a.ACP == nil {
+		return nil
+	}
+	args := append([]string{}, a.ACP.Args...)
+	if a.ACP.CwdFlag != "" {
+		args = append(args, a.ACP.CwdFlag, worktree)
+	}
+	return args
 }
 
 // FindAgent performs a case-insensitive lookup by Name or Command, falling back

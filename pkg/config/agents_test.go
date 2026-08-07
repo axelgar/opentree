@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFindAgent_ByName(t *testing.T) {
 	agent := FindAgent("Claude Code")
@@ -75,5 +78,58 @@ func TestIsActive(t *testing.T) {
 	claude := FindAgent("Claude Code")
 	if claude.IsActive(cfg) {
 		t.Error("expected Claude Code to not be active with default config")
+	}
+}
+
+// ---- ACP launch specs ----
+
+func TestACPCommand(t *testing.T) {
+	tests := []struct {
+		agent string
+		want  string
+	}{
+		// opencode serves ACP itself.
+		{"opencode", "opencode"},
+		// Claude Code does not; a separate adapter binary does.
+		{"claude", "claude-agent-acp"},
+		// No ACP mode at all.
+		{"pi", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.agent, func(t *testing.T) {
+			a := FindAgent(tt.agent)
+			if a == nil {
+				t.Fatalf("FindAgent(%q) = nil", tt.agent)
+			}
+			if got := a.ACPCommand(); got != tt.want {
+				t.Errorf("ACPCommand() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestACPArgs(t *testing.T) {
+	// An agent with a cwd flag gets the worktree; one without must not be
+	// handed a stray empty flag and a bare path.
+	if got := FindAgent("opencode").ACPArgs("/work/tree"); strings.Join(got, " ") != "acp --cwd /work/tree" {
+		t.Errorf("opencode args = %v, want [acp --cwd /work/tree]", got)
+	}
+	if got := FindAgent("claude").ACPArgs("/work/tree"); len(got) != 0 {
+		t.Errorf("claude args = %v, want none — the adapter takes no flags", got)
+	}
+	if got := FindAgent("pi").ACPArgs("/work/tree"); got != nil {
+		t.Errorf("pi args = %v, want nil for an agent with no ACP mode", got)
+	}
+}
+
+func TestACPSpec_AdapterCarriesAnInstallHint(t *testing.T) {
+	// An agent reached through an adapter can be installed while the adapter is
+	// not, so the registry has to say how to get it.
+	claude := FindAgent("claude")
+	if claude.ACP.InstallHint == "" {
+		t.Error("Claude Code's adapter needs an install hint; its absence is a confusing failure")
+	}
+	if FindAgent("opencode").ACP.InstallHint != "" {
+		t.Error("opencode serves ACP itself, so there is nothing extra to install")
 	}
 }
