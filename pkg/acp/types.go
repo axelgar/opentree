@@ -151,16 +151,26 @@ type CancelNotification struct {
 	SessionID string `json:"sessionId"`
 }
 
-// ContentBlock is one piece of a message. Only text is modelled: opentree
-// neither sends nor renders images yet.
+// ContentBlock is one piece of a message. Text and resource links are
+// modelled; opentree neither sends nor renders images yet.
 type ContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+
+	// resource_link
+	URI  string `json:"uri,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
-// TextBlock builds the only content block opentree sends.
 func TextBlock(text string) ContentBlock {
 	return ContentBlock{Type: "text", Text: text}
+}
+
+// ResourceLink points the agent at a file without inlining it. This is how an
+// @-mention travels: the agent reads the file itself rather than the client
+// pasting its contents into the prompt.
+func ResourceLink(uri, name string) ContentBlock {
+	return ContentBlock{Type: "resource_link", URI: uri, Name: name}
 }
 
 // ---------------------------------------------------------------------------

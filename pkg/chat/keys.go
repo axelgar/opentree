@@ -10,13 +10,14 @@ type keyMap struct {
 	PageDown key.Binding
 	ScrollUp key.Binding
 	ScrollDn key.Binding
+	Thoughts key.Binding
 	Restart  key.Binding
 	Login    key.Binding
 	Quit     key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Cancel, k.ScrollUp, k.ScrollDn, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Thoughts, k.ScrollUp, k.Quit}
 }
 
 // StoppedHelp is the reduced set offered when the agent has exited or needs
@@ -53,6 +54,10 @@ var keys = keyMap{
 	ScrollDn: key.NewBinding(
 		key.WithKeys("ctrl+d"),
 		key.WithHelp("ctrl+d", "scroll down"),
+	),
+	Thoughts: key.NewBinding(
+		key.WithKeys("ctrl+t"),
+		key.WithHelp("ctrl+t", "toggle reasoning"),
 	),
 	Restart: key.NewBinding(
 		key.WithKeys("r"),

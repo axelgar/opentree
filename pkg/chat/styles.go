@@ -48,6 +48,13 @@ var (
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
+	completionItemStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888"))
+
+	completionSelectedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F4A261")).
+				Bold(true)
+
 	errorBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("196")).

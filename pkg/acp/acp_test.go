@@ -650,7 +650,7 @@ func TestCall_ContextCancelled(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		_, err := f.client.Prompt(ctx, "ses_1", "hello")
+		_, err := f.client.Prompt(ctx, "ses_1", []ContentBlock{TextBlock("hello")})
 		errc <- err
 	}()
 	f.next()
@@ -668,7 +668,9 @@ func TestCall_ContextCancelled(t *testing.T) {
 
 func TestPrompt_SendsTextBlock(t *testing.T) {
 	f := newFakeAgent(t, Handlers{})
-	go func() { _, _ = f.client.Prompt(context.Background(), "ses_1", "do the thing") }()
+	go func() {
+		_, _ = f.client.Prompt(context.Background(), "ses_1", []ContentBlock{TextBlock("do the thing")})
+	}()
 
 	params := f.next()["params"].(map[string]any)
 	if params["sessionId"] != "ses_1" {

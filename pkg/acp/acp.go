@@ -226,9 +226,9 @@ func (c *Client) Done() <-chan struct{} { return c.done }
 
 // Prompt sends a turn and blocks until the agent stops. Everything the agent
 // produces along the way arrives through Handlers.Update.
-func (c *Client) Prompt(ctx context.Context, sessionID, text string) (*PromptResponse, error) {
+func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []ContentBlock) (*PromptResponse, error) {
 	var resp PromptResponse
-	req := PromptRequest{SessionID: sessionID, Prompt: []ContentBlock{TextBlock(text)}}
+	req := PromptRequest{SessionID: sessionID, Prompt: blocks}
 	if err := c.call(ctx, methodSessionPrompt, req, &resp); err != nil {
 		return nil, err
 	}

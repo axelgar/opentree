@@ -30,7 +30,7 @@ func (m Model) footerHeight() int {
 	case m.perm != nil:
 		return len(m.perm.req.Options) + 5
 	default:
-		return inputHeight + 2
+		return inputHeight + 2 + len(m.completion.items)
 	}
 }
 
@@ -82,10 +82,31 @@ func (m Model) footer() string {
 
 	var b strings.Builder
 	b.WriteString("\n")
+	if m.completion.active() {
+		b.WriteString(m.completionView())
+		b.WriteString("\n")
+	}
 	b.WriteString(inputBoxStyle.Render(m.input.View()))
 	b.WriteString("\n")
 	b.WriteString(m.statusLine())
 	return b.String()
+}
+
+// completionView lists the palette above the input, closest match first.
+func (m Model) completionView() string {
+	lines := make([]string, 0, len(m.completion.items))
+	for i, item := range m.completion.items {
+		style, mark := completionItemStyle, "  "
+		if i == m.completion.cursor {
+			style, mark = completionSelectedStyle, "› "
+		}
+		row := mark + item.value
+		if item.desc != "" {
+			row += "  " + item.desc
+		}
+		lines = append(lines, style.Render(truncate(row, m.width-2)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // statusLine carries the help text, or an error when the agent is still alive
@@ -190,6 +211,9 @@ func (m Model) renderLog() string {
 
 	var b strings.Builder
 	for _, e := range m.entries {
+		if e.kind == entryThought && m.hideThoughts {
+			continue
+		}
 		b.WriteString(m.renderEntry(e, width))
 		b.WriteString("\n")
 	}

@@ -92,6 +92,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 		return m, m.startSession()
 
+	case filesLoadedMsg:
+		m.files = msg.files
+		return m, nil
+
 	case authDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -123,9 +127,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleStoppedKey(msg)
 	}
 
+	// The palette owns navigation and acceptance while it is open, so arrows
+	// and tab do not fall through to scrolling or the textarea.
+	if m.completion.active() {
+		if handled, model, cmd := m.handleCompletionKey(msg); handled {
+			return model, cmd
+		}
+	}
+
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
+
+	case key.Matches(msg, m.keys.Thoughts):
+		m.hideThoughts = !m.hideThoughts
+		m = m.relayout()
+		return m, nil
 
 	case key.Matches(msg, m.keys.Cancel):
 		if m.turn {
@@ -154,17 +171,59 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if text == "" || m.turn || m.sessionID == "" {
 			return m, nil
 		}
+		cmd := m.promptCmd(text)
 		m.input.Reset()
+		m.completion = completionState{}
 		m.entries = append(m.entries, entry{kind: entryUser, text: text})
 		m.turn = true
 		m.err = nil
 		m = m.relayout()
-		return m, tea.Batch(m.promptCmd(text), spinnerTick())
+		return m, tea.Batch(cmd, spinnerTick())
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m = m.refreshCompletion()
 	return m, cmd
+}
+
+// refreshCompletion recomputes the palette from whatever is now typed. Keeping
+// the cursor at zero on every keystroke is deliberate: the best match should be
+// selected as the token narrows, not whatever was highlighted three letters ago.
+func (m Model) refreshCompletion() Model {
+	next := completionFor(m.input.Value(), m.commands, m.files)
+	if next.token != m.completion.token || next.kind != m.completion.kind {
+		m.completion = next
+		return m.relayout()
+	}
+	next.cursor = m.completion.cursor
+	m.completion = next
+	return m
+}
+
+// handleCompletionKey returns handled=false for anything the palette does not
+// claim, so ordinary typing still reaches the textarea.
+func (m Model) handleCompletionKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "ctrl+p":
+		m.completion.cursor = (m.completion.cursor - 1 + len(m.completion.items)) % len(m.completion.items)
+		return true, m, nil
+
+	case "down", "ctrl+n":
+		m.completion.cursor = (m.completion.cursor + 1) % len(m.completion.items)
+		return true, m, nil
+
+	case "tab", "enter":
+		m.input.SetValue(applyCompletion(m.input.Value(), m.completion.items[m.completion.cursor]))
+		m.input.CursorEnd()
+		m.completion = completionState{}
+		return true, m.relayout(), nil
+
+	case "esc":
+		m.completion = completionState{}
+		return true, m.relayout(), nil
+	}
+	return false, m, nil
 }
 
 // stopped reports whether the agent is unusable until something is done about
@@ -266,6 +325,9 @@ func (m Model) applyUpdate(u acp.SessionUpdate) Model {
 		if u.ToolCall != nil {
 			m = m.upsertToolCall(*u.ToolCall)
 		}
+
+	case acp.UpdateCommands:
+		m.commands = u.Commands
 
 	case acp.UpdateUsage:
 		m.usage = u.Usage

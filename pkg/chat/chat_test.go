@@ -20,6 +20,8 @@ import (
 func newTestModel() Model {
 	ta := textarea.New()
 	ta.SetHeight(inputHeight)
+	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
+	ta.Focus()
 	m := Model{
 		opts:      Options{Workspace: "fix-auth", Agent: "OpenCode", Cwd: "/repo"},
 		toolIdx:   make(map[string]int),
@@ -39,6 +41,7 @@ func newTestModel() Model {
 func newUnsizedTestModel() Model {
 	ta := textarea.New()
 	ta.SetHeight(inputHeight)
+	ta.Focus()
 	return Model{
 		opts:    Options{Workspace: "fix-auth", Agent: "OpenCode"},
 		toolIdx: make(map[string]int),

@@ -9,6 +9,8 @@ package chat
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -150,6 +152,8 @@ type promptDoneMsg struct {
 
 type authDoneMsg struct{ err error }
 
+type filesLoadedMsg struct{ files []string }
+
 type spinnerTickMsg struct{}
 
 type errMsg struct {
@@ -202,10 +206,18 @@ type Model struct {
 	help     help.Model
 	keys     keyMap
 
+	commands   []acp.Command
+	files      []string
+	completion completionState
+
 	perm         *permissionMsg
 	turn         bool
 	spinnerFrame int
 	usage        *acp.ContextUsage
+
+	// hideThoughts collapses the agent's reasoning, which is noise when you
+	// are following what it did rather than why.
+	hideThoughts bool
 
 	// dead means the agent process is gone and only restart or quit apply.
 	dead     bool
@@ -252,7 +264,26 @@ func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForMsg(m.msgs), m.startSession(), textarea.Blink)
+	return tea.Batch(waitForMsg(m.msgs), m.startSession(), loadFilesCmd(m.opts.Cwd), textarea.Blink)
+}
+
+// loadFilesCmd lists the worktree's tracked files for @-mention completion.
+// git already knows which files matter, which beats walking the tree and
+// reimplementing ignore rules.
+func loadFilesCmd(cwd string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := exec.Command("git", "-C", cwd, "ls-files").Output()
+		if err != nil {
+			return filesLoadedMsg{}
+		}
+		var files []string
+		for _, line := range strings.Split(string(out), "\n") {
+			if line != "" {
+				files = append(files, line)
+			}
+		}
+		return filesLoadedMsg{files: files}
+	}
 }
 
 // waitForMsg turns the ACP handler channel into a Bubble Tea command. Update
@@ -308,10 +339,19 @@ func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
 
 func (m Model) promptCmd(text string) tea.Cmd {
 	client, sessionID := m.client, m.sessionID
+	blocks := composePrompt(text, m.opts.Cwd, m.trackedFiles())
 	return func() tea.Msg {
-		resp, err := client.Prompt(m.ctx, sessionID, text)
+		resp, err := client.Prompt(m.ctx, sessionID, blocks)
 		return promptDoneMsg{resp: resp, err: err}
 	}
+}
+
+func (m Model) trackedFiles() map[string]bool {
+	known := make(map[string]bool, len(m.files))
+	for _, f := range m.files {
+		known[f] = true
+	}
+	return known
 }
 
 // restartCmd replaces a dead agent with a fresh process.
