@@ -646,8 +646,8 @@ func TestChannelMessages_AlwaysReissueTheReader(t *testing.T) {
 		{"permission", permission(allowOnce)},
 		{"agent gone", agentGoneMsg{generation: 1}},
 		{"agent gone from an old generation", agentGoneMsg{generation: 0}},
-		{"socket command", socketCommandMsg{Type: CommandInterrupt}},
-		{"socket command with nothing to do", socketCommandMsg{Type: CommandPermission}},
+		{"socket command", socketCommandMsg{cmd: Command{Type: CommandInterrupt}}},
+		{"socket command with nothing to do", socketCommandMsg{cmd: Command{Type: CommandPermission}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

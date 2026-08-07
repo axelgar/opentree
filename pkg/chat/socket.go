@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -58,6 +59,16 @@ type Command struct {
 	Text     string `json:"text,omitempty"`
 }
 
+// Result is the chat's answer to a command. A command that arrives at a moment
+// the chat cannot honour it — a prompt while the agent is mid-turn, a
+// permission that was already answered in the window — is refused with a
+// reason. Accepting the bytes is not the same as acting on them, and the list
+// reporting "sent" for a command that went nowhere is worse than an error.
+type Result struct {
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // socketRoot is /tmp rather than os.TempDir() because macOS resolves TMPDIR to
 // a long /var/folders/... path, and unix socket paths are capped near 104
 // bytes. Everything opentree runs on has /tmp; it already requires tmux.
@@ -96,7 +107,7 @@ type server struct {
 // hangs up. Polling beats a persistent stream here because the workspace list
 // already refreshes on a tick, and one-shot means no reconnect logic on either
 // side.
-func serve(path string, onCommand func(Command)) (*server, error) {
+func serve(path string, onCommand func(Command) Result) (*server, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -112,7 +123,7 @@ func serve(path string, onCommand func(Command)) (*server, error) {
 	return s, nil
 }
 
-func (s *server) accept(onCommand func(Command)) {
+func (s *server) accept(onCommand func(Command) Result) {
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
@@ -122,7 +133,7 @@ func (s *server) accept(onCommand func(Command)) {
 	}
 }
 
-func (s *server) handle(conn net.Conn, onCommand func(Command)) {
+func (s *server) handle(conn net.Conn, onCommand func(Command) Result) {
 	defer func() { _ = conn.Close() }()
 
 	s.mu.Lock()
@@ -132,14 +143,18 @@ func (s *server) handle(conn net.Conn, onCommand func(Command)) {
 		return
 	}
 
-	dec := json.NewDecoder(conn)
+	dec, enc := json.NewDecoder(conn), json.NewEncoder(conn)
 	for {
 		var cmd Command
 		if err := dec.Decode(&cmd); err != nil {
 			return
 		}
+		res := Result{OK: true}
 		if onCommand != nil {
-			onCommand(cmd)
+			res = onCommand(cmd)
+		}
+		if err := enc.Encode(res); err != nil {
+			return
 		}
 	}
 }
@@ -187,9 +202,23 @@ func Send(path string, cmd Command) error {
 	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(commandTimeout))
-	// The server greets with a status before listening; drain it so the
-	// command is not interleaved with a write the peer has not finished.
+
+	// One decoder for the whole exchange: it buffers, so a second decoder
+	// would lose whatever the first read past the greeting.
+	dec := json.NewDecoder(conn)
 	var st Status
-	_ = json.NewDecoder(conn).Decode(&st)
-	return json.NewEncoder(conn).Encode(cmd)
+	_ = dec.Decode(&st) // greeting
+
+	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
+		return err
+	}
+
+	var res Result
+	if err := dec.Decode(&res); err != nil {
+		return fmt.Errorf("no answer from the agent: %w", err)
+	}
+	if !res.OK {
+		return errors.New(res.Reason)
+	}
+	return nil
 }

@@ -151,7 +151,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case socketCommandMsg:
 		// Also arrives down the handler channel, so the reader has to be handed
 		// back alongside whatever the command itself triggers.
-		next, cmd := m.applyRemoteCommand(Command(msg))
+		next, cmd, res := m.applyRemoteCommand(msg.cmd)
+		if msg.reply != nil {
+			msg.reply <- res
+		}
 		return next, tea.Batch(cmd, waitForMsg(m.msgs))
 
 	case authDoneMsg:
@@ -288,34 +291,40 @@ func (m Model) handleCompletionKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 // only honoured in the state it makes sense in — the list's view of this
 // session is up to a refresh tick stale, so it can ask to allow a permission
 // that was already answered here.
-func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd) {
+func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 	switch cmd.Type {
 	case CommandPermission:
 		if m.perm == nil {
-			return m, nil
+			return m, nil, Result{Reason: "nothing is waiting on permission"}
 		}
 		m.perm.reply <- cmd.OptionID
 		m.perm = nil
-		return m.relayout(), nil
+		return m.relayout(), nil, Result{OK: true}
 
 	case CommandInterrupt:
-		if m.turn {
-			_ = m.client.Cancel(m.sessionID)
+		if !m.turn {
+			return m, nil, Result{Reason: "the agent is not working"}
 		}
-		return m, nil
+		_ = m.client.Cancel(m.sessionID)
+		return m, nil, Result{OK: true}
 
 	case CommandPrompt:
 		text := strings.TrimSpace(cmd.Text)
-		if text == "" || m.turn || m.sessionID == "" {
-			return m, nil
+		switch {
+		case text == "":
+			return m, nil, Result{Reason: "empty prompt"}
+		case m.sessionID == "":
+			return m, nil, Result{Reason: "the agent is still starting"}
+		case m.turn:
+			return m, nil, Result{Reason: "the agent is busy — interrupt it first"}
 		}
 		prompt := m.promptCmd(text)
 		m.entries = append(m.entries, entry{kind: entryUser, text: text})
 		m.turn = true
 		m.err = nil
-		return m.relayout(), tea.Batch(prompt, spinnerTick())
+		return m.relayout(), tea.Batch(prompt, spinnerTick()), Result{OK: true}
 	}
-	return m, nil
+	return m, nil, Result{Reason: "unknown command " + cmd.Type}
 }
 
 // stopped reports whether the agent is unusable until something is done about

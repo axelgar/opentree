@@ -115,7 +115,19 @@ func Run(ctx context.Context, opts Options) error {
 	// Best-effort: a chat with no control socket still works, it is just
 	// invisible to the workspace list.
 	if opts.SocketPath != "" {
-		if srv, err := serve(opts.SocketPath, func(c Command) { send(socketCommandMsg(c)) }); err == nil {
+		onCommand := func(c Command) Result {
+			reply := make(chan Result, 1)
+			send(socketCommandMsg{cmd: c, reply: reply})
+			select {
+			case res := <-reply:
+				return res
+			case <-quit:
+				return Result{Reason: "chat closed"}
+			case <-ctx.Done():
+				return Result{Reason: "chat closed"}
+			}
+		}
+		if srv, err := serve(opts.SocketPath, onCommand); err == nil {
 			defer func() { _ = srv.Close() }()
 			m.publish = srv.publish
 		}
@@ -167,8 +179,12 @@ type authDoneMsg struct{ err error }
 
 type filesLoadedMsg struct{ files []string }
 
-// socketCommandMsg is an instruction from the workspace list.
-type socketCommandMsg Command
+// socketCommandMsg is an instruction from the workspace list, together with the
+// channel the sender is blocked on. Exactly one Result must be sent to reply.
+type socketCommandMsg struct {
+	cmd   Command
+	reply chan Result
+}
 
 type spinnerTickMsg struct{}
 

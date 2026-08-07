@@ -109,10 +109,11 @@ func TestSend_DeliversCommand(t *testing.T) {
 
 	var mu sync.Mutex
 	var got []Command
-	srv, err := serve(path, func(c Command) {
+	srv, err := serve(path, func(c Command) Result {
 		mu.Lock()
 		defer mu.Unlock()
 		got = append(got, c)
+		return Result{OK: true}
 	})
 	if err != nil {
 		t.Fatalf("serve: %v", err)
@@ -255,11 +256,124 @@ func TestUpdate_PublishesOnEveryChange(t *testing.T) {
 // Remote commands
 // ---------------------------------------------------------------------------
 
+// remoteResult runs a command through the model the way the socket does and
+// returns what the sender would be told.
+func remoteResult(m Model, cmd Command) (Model, Result) {
+	reply := make(chan Result, 1)
+	next, _ := applyUpdate(m, socketCommandMsg{cmd: cmd, reply: reply})
+	return next, <-reply
+}
+
+// TestRemoteCommand_RefusalsAreReported is the regression for a prompt sent
+// from the workspace list vanishing without trace: the chat dropped anything it
+// could not act on, and the socket had already accepted the bytes, so the list
+// reported success for a message that never existed.
+func TestRemoteCommand_RefusalsAreReported(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(Model) Model
+		cmd        Command
+		wantReason string
+	}{
+		{
+			name:       "prompt while the agent is mid-turn",
+			setup:      func(m Model) Model { m.turn = true; return m },
+			cmd:        Command{Type: CommandPrompt, Text: "do a thing"},
+			wantReason: "busy",
+		},
+		{
+			name:       "prompt before the session exists",
+			setup:      func(m Model) Model { m.sessionID = ""; return m },
+			cmd:        Command{Type: CommandPrompt, Text: "do a thing"},
+			wantReason: "starting",
+		},
+		{
+			name:       "empty prompt",
+			setup:      func(m Model) Model { return m },
+			cmd:        Command{Type: CommandPrompt, Text: "   "},
+			wantReason: "empty",
+		},
+		{
+			name:       "permission nobody is waiting on",
+			setup:      func(m Model) Model { return m },
+			cmd:        Command{Type: CommandPermission, OptionID: "once"},
+			wantReason: "waiting on permission",
+		},
+		{
+			name:       "interrupt while idle",
+			setup:      func(m Model) Model { return m },
+			cmd:        Command{Type: CommandInterrupt},
+			wantReason: "not working",
+		},
+		{
+			name:       "unknown command",
+			setup:      func(m Model) Model { return m },
+			cmd:        Command{Type: "teleport"},
+			wantReason: "unknown command",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, res := remoteResult(tt.setup(newTestModel()), tt.cmd)
+			if res.OK {
+				t.Fatal("command was accepted; the sender would be told it worked")
+			}
+			if !strings.Contains(res.Reason, tt.wantReason) {
+				t.Errorf("reason = %q, want it to mention %q", res.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestRemoteCommand_AcceptedPromptReportsOK(t *testing.T) {
+	m, res := remoteResult(newTestModel(), Command{Type: CommandPrompt, Text: "run the tests"})
+	if !res.OK {
+		t.Fatalf("prompt was refused: %q", res.Reason)
+	}
+	if !m.turn {
+		t.Error("expected the turn to start")
+	}
+}
+
+// TestSend_SurfacesARefusal covers the wire: a refusal has to travel back to
+// the list as an error, not be swallowed by a successful write.
+func TestSend_SurfacesARefusal(t *testing.T) {
+	path := socketPath(t)
+	srv, err := serve(path, func(Command) Result {
+		return Result{Reason: "the agent is busy — interrupt it first"}
+	})
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	err = Send(path, Command{Type: CommandPrompt, Text: "hello"})
+	if err == nil {
+		t.Fatal("Send reported success for a refused command")
+	}
+	if !strings.Contains(err.Error(), "busy") {
+		t.Errorf("error = %q, want the agent's reason", err)
+	}
+}
+
+func TestSend_AcceptedCommandReturnsNil(t *testing.T) {
+	path := socketPath(t)
+	srv, err := serve(path, func(Command) Result { return Result{OK: true} })
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	if err := Send(path, Command{Type: CommandInterrupt}); err != nil {
+		t.Errorf("Send: %v", err)
+	}
+}
+
 func TestRemoteCommand_AnswersPermission(t *testing.T) {
 	m := newTestModel()
 	perm := permission(allowOnce, rejectOnce)
 	m, _ = applyUpdate(m, perm)
-	m, _ = applyUpdate(m, socketCommandMsg{Type: CommandPermission, OptionID: "reject"})
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPermission, OptionID: "reject"}})
 
 	if m.perm != nil {
 		t.Error("permission should be cleared")
@@ -278,7 +392,7 @@ func TestRemoteCommand_StalePermissionIsIgnored(t *testing.T) {
 	// The list's view is up to a refresh tick old, so it can answer a prompt
 	// that was already handled in the chat window.
 	m := newTestModel()
-	m, _ = applyUpdate(m, socketCommandMsg{Type: CommandPermission, OptionID: "once"})
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPermission, OptionID: "once"}})
 	if m.perm != nil {
 		t.Error("nothing should have changed")
 	}
@@ -286,7 +400,7 @@ func TestRemoteCommand_StalePermissionIsIgnored(t *testing.T) {
 
 func TestRemoteCommand_Prompt(t *testing.T) {
 	m := newTestModel()
-	m, cmd := applyUpdate(m, socketCommandMsg{Type: CommandPrompt, Text: "run the tests"})
+	m, cmd := applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "run the tests"}})
 
 	if !m.turn {
 		t.Error("expected a turn to start")
@@ -302,7 +416,7 @@ func TestRemoteCommand_Prompt(t *testing.T) {
 func TestRemoteCommand_PromptIgnoredWhileBusy(t *testing.T) {
 	m := newTestModel()
 	m.turn = true
-	m, _ = applyUpdate(m, socketCommandMsg{Type: CommandPrompt, Text: "queue this"})
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "queue this"}})
 	if len(m.entries) != 0 {
 		t.Error("a prompt must not queue while the agent is working")
 	}
@@ -310,7 +424,7 @@ func TestRemoteCommand_PromptIgnoredWhileBusy(t *testing.T) {
 
 func TestRemoteCommand_EmptyPromptIgnored(t *testing.T) {
 	m := newTestModel()
-	m, _ = applyUpdate(m, socketCommandMsg{Type: CommandPrompt, Text: "   "})
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "   "}})
 	if m.turn {
 		t.Error("whitespace should not start a turn")
 	}
@@ -319,7 +433,7 @@ func TestRemoteCommand_EmptyPromptIgnored(t *testing.T) {
 func TestRemoteCommand_UnknownTypeIsInert(t *testing.T) {
 	m := newTestModel()
 	before := len(m.entries)
-	m, _ = applyUpdate(m, socketCommandMsg{Type: "something-new"})
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: "something-new"}})
 	if len(m.entries) != before {
 		t.Error("an unrecognized command should do nothing")
 	}

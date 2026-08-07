@@ -96,12 +96,16 @@ func (ws WorkspaceItem) chatWorking() bool {
 	return ws.ChatStatus != nil && ws.ChatStatus.State == chat.StateWorking
 }
 
-// sendAgentCommand delivers one instruction to a workspace's chat process.
+// sendAgentCommand delivers one instruction to a workspace's chat process and
+// waits for it to say whether it acted. The chat refuses anything it cannot
+// honour — a prompt while the agent is mid-turn, a permission already answered
+// in the window — and reporting "sent" for one of those would be a lie the user
+// only discovers by attaching and finding nothing there.
 func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd {
 	repoRoot := m.repoRoot
 	return func() tea.Msg {
 		if err := chat.Send(chat.SocketPath(repoRoot, wsName), cmd); err != nil {
-			return errMsg{fmt.Errorf("failed to reach %s's agent: %w", wsName, err)}
+			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
 		}
 		return agentCommandSentMsg{wsName: wsName, action: action}
 	}
