@@ -11,11 +11,21 @@ type PredefinedAgent struct {
 	Command     string   // binary: "claude"
 	Args        []string // default args
 	Description string   // short description for list display
+	ACP         *ACPSpec // how to run it as an ACP server; nil means no ACP mode
+}
+
+// ACPSpec describes how to start an agent as an Agent Client Protocol server on
+// stdio. Agents without one keep the plain launch path, where opentree types
+// the command into a shell and the agent draws its own TUI.
+type ACPSpec struct {
+	Args    []string // subcommand and flags that select ACP mode
+	CwdFlag string   // flag that roots the session in a worktree
 }
 
 // PredefinedAgents is the built-in registry of known agents.
 var PredefinedAgents = []PredefinedAgent{
-	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI"},
+	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
+		ACP: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd"}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent"},
 	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},
 	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI"},

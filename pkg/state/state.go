@@ -37,6 +37,7 @@ type Workspace struct {
 	PRStatus       string    `json:"pr_status,omitempty"` // "open", "merged", "closed"
 	IssueNumber    int       `json:"issue_number,omitempty"`
 	IssueTitle     string    `json:"issue_title,omitempty"`
+	ACPSessionID   string    `json:"acp_session_id,omitempty"` // resumable agent conversation
 	BranchPushed   bool      `json:"branch_pushed,omitempty"`
 	MergeConflicts bool      `json:"merge_conflicts,omitempty"`
 	RemoteDeleted  bool      `json:"remote_deleted,omitempty"`
