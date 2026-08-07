@@ -100,6 +100,12 @@ type outRequest struct {
 	Params  any    `json:"params,omitempty"`
 }
 
+type outNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
 type outResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -202,6 +208,21 @@ func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) (*LoadS
 	}
 	return &resp, nil
 }
+
+// Cancel asks the agent to stop the current turn. It is a notification, so it
+// returns as soon as it is written; the in-flight Prompt then completes with
+// StopCancelled rather than an error.
+func (c *Client) Cancel(sessionID string) error {
+	return c.write(outNotification{
+		JSONRPC: "2.0",
+		Method:  methodSessionCancel,
+		Params:  CancelNotification{SessionID: sessionID},
+	})
+}
+
+// Done is closed when the connection ends, whether through Close or because
+// the agent exited on its own.
+func (c *Client) Done() <-chan struct{} { return c.done }
 
 // Prompt sends a turn and blocks until the agent stops. Everything the agent
 // produces along the way arrives through Handlers.Update.

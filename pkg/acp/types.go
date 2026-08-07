@@ -12,6 +12,7 @@ const (
 	methodSessionNew        = "session/new"
 	methodSessionLoad       = "session/load"
 	methodSessionPrompt     = "session/prompt"
+	methodSessionCancel     = "session/cancel"
 	methodRequestPermission = "session/request_permission"
 	methodSessionUpdate     = "session/update"
 )
@@ -144,6 +145,10 @@ type TokenUsage struct {
 	TotalTokens       int `json:"totalTokens"`
 	CachedReadTokens  int `json:"cachedReadTokens"`
 	CachedWriteTokens int `json:"cachedWriteTokens"`
+}
+
+type CancelNotification struct {
+	SessionID string `json:"sessionId"`
 }
 
 // ContentBlock is one piece of a message. Only text is modelled: opentree

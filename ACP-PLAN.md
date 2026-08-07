@@ -177,11 +177,26 @@ PRs 1–5 change nothing for existing users. The other five agents keep
 
 ## Risks
 
-1. **Long runway.** Fat v1 with no fallback means PR 6 is the first day anyone benefits.
-   The sequencing contains this — but if PR 4 slips, resist flipping early.
-2. **Altscreen copy/paste.** Mouse mode vs. native selection is unresolved; see #34 for
-   how that bites. Decide it in PR 2, not PR 5.
+1. **Long runway.** Fat v1 with no fallback means the final commit is the first day
+   anyone benefits. The sequencing contains this — but if commit 4 slips, resist
+   flipping early.
+2. ~~**Altscreen copy/paste.**~~ **Resolved in commit 2.** The chat runs altscreen
+   *without* mouse mode, so terminal and tmux text selection keep working natively.
+   Scrolling is `pgup`/`pgdn` and `ctrl+u`/`ctrl+d` instead of the wheel. This is the
+   opposite call from the main list (`tea.WithMouseCellMotion`), which is what caused #34
+   — a reading surface needs selection more than it needs wheel scroll.
 3. **ACP v2 draft.** The hand-rolled client is the hedge; budget a version-negotiation
    pass.
-4. **`capture-pane` on an altscreen app.** Verify in PR 2 that the preview reads well.
-   If it doesn't, decision 7 needs revisiting — and that is a real scope change.
+4. ~~**`capture-pane` on an altscreen app.**~~ **Resolved in commit 2.** Captured live
+   from tmux: the frame renders cleanly, including the permission dialog. Decision 7
+   holds and the list needs no second renderer.
+
+## Deviations from the plan as written
+
+- **Commits 1 and 2 of the original sequence were merged.** `make check` runs
+  `go tool deadcode ./cmd/opentree`, and tests do not count as reachability, so a
+  `pkg/acp` commit with no caller in the binary cannot pass the gate. Commit 1 is
+  therefore the client plus a line-based `opentree chat`, and commit 2 replaces that line
+  UI with the altscreen view. Six commits, same content, every one of them green.
+- **The plan panel is dropped** (see finding 1). opencode emits no `plan` update, so
+  commit 4 covers slash commands, `@` mentions, and thought blocks only.
