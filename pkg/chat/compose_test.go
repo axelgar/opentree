@@ -340,17 +340,17 @@ func TestThoughts_ToggleHidesThem(t *testing.T) {
 		t.Fatal("reasoning should be shown by default")
 	}
 
-	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlO})
 	log := m.renderLog()
 	if strings.Contains(log, "reasoning aloud") {
-		t.Error("ctrl+t should hide reasoning")
+		t.Error("ctrl+o should hide reasoning")
 	}
 	if !strings.Contains(log, "the answer") {
 		t.Error("hiding reasoning must not hide the reply")
 	}
 
-	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlO})
 	if !strings.Contains(m.renderLog(), "reasoning aloud") {
-		t.Error("ctrl+t should bring reasoning back")
+		t.Error("ctrl+o should bring reasoning back")
 	}
 }

@@ -47,17 +47,21 @@ var keys = keyMap{
 		key.WithKeys("pgdown"),
 		key.WithHelp("pgdn", "page down"),
 	),
+	// Scrolling deliberately avoids ctrl+u / ctrl+d: the textarea binds those
+	// to delete-to-line-start and delete-forward, and an input box that cannot
+	// erase a line is a worse trade than one without half-page scroll keys.
 	ScrollUp: key.NewBinding(
-		key.WithKeys("ctrl+u"),
-		key.WithHelp("ctrl+u", "scroll up"),
+		key.WithKeys("shift+up"),
+		key.WithHelp("shift+↑", "scroll up"),
 	),
 	ScrollDn: key.NewBinding(
-		key.WithKeys("ctrl+d"),
-		key.WithHelp("ctrl+d", "scroll down"),
+		key.WithKeys("shift+down"),
+		key.WithHelp("shift+↓", "scroll down"),
 	),
+	// Not ctrl+t: that is the textarea's transpose-character binding.
 	Thoughts: key.NewBinding(
-		key.WithKeys("ctrl+t"),
-		key.WithHelp("ctrl+t", "toggle reasoning"),
+		key.WithKeys("ctrl+o"),
+		key.WithHelp("ctrl+o", "toggle reasoning"),
 	),
 	Restart: key.NewBinding(
 		key.WithKeys("r"),

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -775,6 +776,83 @@ func TestFooterHeight_GrowsWhenStopped(t *testing.T) {
 	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
 	if got := m.footerHeight(); got <= base {
 		t.Errorf("footerHeight when stopped = %d, want more than %d", got, base)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Text editing
+// ---------------------------------------------------------------------------
+
+// TestEditingKeys_ReachTheInput pins the keys the textarea needs for word and
+// line deletion. Every one of these was, or could be, shadowed by a Model-level
+// binding — and an input box that cannot erase a word is worse than one missing
+// a scroll shortcut.
+func TestEditingKeys_ReachTheInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   tea.KeyMsg
+		start string
+		want  string
+	}{
+		{
+			name:  "alt+backspace deletes the previous word",
+			key:   tea.KeyMsg{Type: tea.KeyBackspace, Alt: true},
+			start: "fix the login bug",
+			want:  "fix the login ",
+		},
+		{
+			name:  "ctrl+w deletes the previous word",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlW},
+			start: "fix the login bug",
+			want:  "fix the login ",
+		},
+		{
+			name:  "ctrl+u deletes to the start of the line",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlU},
+			start: "a whole sentence to erase",
+			want:  "",
+		},
+		{
+			name:  "ctrl+k deletes to the end of the line",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlK},
+			start: "keep this",
+			want:  "keep this", // cursor is already at the end
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel()
+			m.input.SetValue(tt.start)
+			m.input.CursorEnd()
+
+			m, _ = applyUpdate(m, tt.key)
+			if got := m.input.Value(); got != tt.want {
+				t.Errorf("input = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScrollKeys_DoNotShadowEditing(t *testing.T) {
+	// Scrolling moved to shift+arrows precisely so these stay with the input.
+	for _, b := range [][]string{m2s(keys.ScrollUp), m2s(keys.ScrollDn), m2s(keys.Thoughts)} {
+		for _, k := range b {
+			switch k {
+			case "ctrl+u", "ctrl+d", "ctrl+w", "ctrl+k", "ctrl+a", "ctrl+e", "ctrl+t", "alt+backspace":
+				t.Errorf("%q is a text-editing key and must not be bound to navigation", k)
+			}
+		}
+	}
+}
+
+func m2s(b key.Binding) []string { return b.Keys() }
+
+func TestThoughtsToggle_OnItsNewKey(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentThought, "reasoning aloud"))
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if strings.Contains(m.renderLog(), "reasoning aloud") {
+		t.Error("ctrl+o should hide reasoning")
 	}
 }
 
