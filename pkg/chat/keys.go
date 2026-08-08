@@ -13,19 +13,41 @@ type keyMap struct {
 	Settings  key.Binding
 	CycleMode key.Binding
 	Thoughts  key.Binding
+	Help      key.Binding
 	Restart   key.Binding
 	Login     key.Binding
 	Quit      key.Binding
+
+	// Commands and Mentions open the completion palette by being typed into
+	// the message rather than by being intercepted, so they are never passed
+	// to key.Matches. They are here to be listed: a palette nobody knows to
+	// summon may as well not exist.
+	Commands key.Binding
+	Mentions key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Settings, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Help, k.Quit}
+}
+
+// FullHelp is every key, grouped by what it is for.
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Send, k.Newline, k.Commands, k.Mentions},
+		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts},
+		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Quit},
+	}
 }
 
 // StoppedHelp is the reduced set offered when the agent has exited or needs
-// credentials, where sending a prompt is not an option.
-func (k keyMap) StoppedHelp() []key.Binding {
-	return []key.Binding{k.Restart, k.Login, k.Quit}
+// credentials, where sending a prompt is not an option. Logging in only
+// appears when credentials are what is missing — offering it to someone whose
+// agent crashed is advice that cannot help.
+func (k keyMap) StoppedHelp(login bool) []key.Binding {
+	if login {
+		return []key.Binding{k.Restart, k.Login, k.Quit}
+	}
+	return []key.Binding{k.Restart, k.Quit}
 }
 
 var keys = keyMap{
@@ -77,6 +99,12 @@ var keys = keyMap{
 		key.WithKeys("ctrl+o"),
 		key.WithHelp("ctrl+o", "toggle reasoning"),
 	),
+	// A printable character, so it only opens the key list when the message is
+	// empty — typing "?" into a question must reach the textarea.
+	Help: key.NewBinding(
+		key.WithKeys("?"),
+		key.WithHelp("?", "keys"),
+	),
 	Restart: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "restart agent"),
@@ -89,4 +117,8 @@ var keys = keyMap{
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("ctrl+c", "quit"),
 	),
+	// Both carry their key as well as their help text: bubbles drops a binding
+	// with no keys from the help entirely.
+	Commands: key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "commands")),
+	Mentions: key.NewBinding(key.WithKeys("@"), key.WithHelp("@", "attach a file")),
 }

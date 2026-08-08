@@ -31,6 +31,8 @@ func (m Model) footerHeight() int {
 		return len(m.stoppedLines()) + 4
 	case m.perm != nil:
 		return len(m.perm.req.Options) + 5
+	case m.showHelp:
+		return lipgloss.Height(m.helpView())
 	default:
 		return inputHeight + 2 + len(m.completion.items)
 	}
@@ -79,6 +81,8 @@ func (m Model) footer() string {
 		return m.stoppedView()
 	case m.perm != nil:
 		return m.permissionView()
+	case m.showHelp:
+		return m.helpView()
 	}
 
 	var b strings.Builder
@@ -154,7 +158,7 @@ func (m Model) stoppedLines() []string {
 	if m.opts.InstallHint != "" && m.adapterMissing() {
 		lines = append(lines, noticeStyle.Render(m.opts.InstallHint))
 	}
-	if m.authNeed && len(m.opts.AuthCommand) > 0 {
+	if m.canLogIn() {
 		actions = append(actions, permKeyStyle.Render("[l]")+" "+
 			permLabelStyle.Render(m.opts.Command+" "+strings.Join(m.opts.AuthCommand, " ")))
 	}
@@ -169,7 +173,24 @@ func (m Model) stoppedView() string {
 	b.WriteString("\n")
 	b.WriteString(errorBoxStyle.Render(strings.Join(m.stoppedLines(), "\n")))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render(m.help.ShortHelpView(m.keys.StoppedHelp())))
+	b.WriteString(helpStyle.Render(m.help.ShortHelpView(m.keys.StoppedHelp(m.canLogIn()))))
+	return b.String()
+}
+
+// helpView is the whole key list, shown in place of the input. It exists
+// because the status line has room for five bindings and the chat has twelve.
+func (m Model) helpView() string {
+	h := m.help
+	h.ShowAll = true
+	if m.width > 4 {
+		h.Width = m.width - 4
+	}
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(permBoxStyle.Render(h.FullHelpView(m.keys.FullHelp())))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("any key to close"))
 	return b.String()
 }
 
@@ -235,6 +256,10 @@ func (m Model) renderLog() string {
 		width = 20
 	}
 
+	if len(m.entries) == 0 && !m.turn {
+		return m.emptyState()
+	}
+
 	var b strings.Builder
 	for _, e := range m.entries {
 		if e.kind == entryThought && m.hideThoughts {
@@ -248,6 +273,28 @@ func (m Model) renderLog() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// emptyState orients someone who has just landed in a chat they did not set
+// up: what they are talking to, and the things typing alone will not reveal.
+func (m Model) emptyState() string {
+	who := m.opts.Agent
+	if m.agentVersion != "" {
+		who += " " + m.agentVersion
+	}
+
+	lines := []string{
+		noticeStyle.Render(fmt.Sprintf("%s, working in %s.", who, m.opts.Workspace)),
+		"",
+		hintLine("/", "the agent's own commands"),
+		hintLine("@", "point it at a file in this worktree"),
+		hintLine("?", "every key"),
+	}
+	return "\n" + strings.Join(lines, "\n") + "\n"
+}
+
+func hintLine(sigil, desc string) string {
+	return "  " + permKeyStyle.Render(sigil) + "  " + toolTitleStyle.Render(desc)
 }
 
 func (m Model) renderEntry(e entry, width int) string {

@@ -209,6 +209,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSettingsKey(msg)
 	}
 
+	// The key list is a read-only overlay, so anything at all dismisses it
+	// rather than making people hunt for the one key that closes it.
+	if m.showHelp {
+		if key.Matches(msg, m.keys.Quit) {
+			return m, tea.Quit
+		}
+		m.showHelp = false
+		return m.relayout(), nil
+	}
+
 	// The palette owns navigation and acceptance while it is open, so arrows
 	// and tab do not fall through to scrolling or the textarea.
 	if m.completion.active() {
@@ -231,6 +241,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hideThoughts = !m.hideThoughts
 		m = m.relayout()
 		return m, nil
+
+	// Guarded on an empty message: "?" is a character before it is a key, and
+	// a chat that cannot type a question mark is a bad trade for a shortcut.
+	case key.Matches(msg, m.keys.Help) && m.input.Value() == "":
+		m.showHelp = true
+		return m.relayout(), nil
 
 	case key.Matches(msg, m.keys.Cancel):
 		if m.turn {
@@ -395,7 +411,7 @@ func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
 
-	case key.Matches(msg, m.keys.Login) && len(m.opts.AuthCommand) > 0:
+	case key.Matches(msg, m.keys.Login) && m.canLogIn():
 		return m, m.authCmd()
 
 	case key.Matches(msg, m.keys.Restart):

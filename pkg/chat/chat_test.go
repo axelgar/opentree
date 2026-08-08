@@ -868,3 +868,120 @@ func TestWindowResize_MakesModelReady(t *testing.T) {
 		t.Errorf("viewport height = %d, want at least 1", m.viewport.Height)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Orientation
+// ---------------------------------------------------------------------------
+
+func TestEmptyChat_ShowsWhatToDo(t *testing.T) {
+	m := newTestModel()
+	m.agentVersion = "1.18.12"
+	m = m.relayout()
+	view := m.View()
+
+	for _, want := range []string{"OpenCode 1.18.12", "fix-auth", "/", "@", "?"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("empty chat is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestEmptyChat_HintGoesAwayOnceTheChatStarts(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, textUpdate("agent_message_chunk", "hello"))
+
+	if strings.Contains(m.View(), "point it at a file") {
+		t.Errorf("the opening hint outlived the first message:\n%s", m.View())
+	}
+}
+
+func TestHelp_QuestionMarkOpensTheKeyList(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, keyMsg("?"))
+
+	if !m.showHelp {
+		t.Fatal("? on an empty message did not open the key list")
+	}
+	view := m.View()
+	for _, want := range []string{"ctrl+o", "shift+tab", "pgup", "attach a file"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("key list is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// A question mark is a character before it is a shortcut.
+func TestHelp_QuestionMarkTypesWhenTheMessageIsNotEmpty(t *testing.T) {
+	m := newTestModel()
+	m.input.SetValue("why")
+	m, _ = applyUpdate(m, keyMsg("?"))
+
+	if m.showHelp {
+		t.Error("? opened the key list instead of reaching the message")
+	}
+	if got := m.input.Value(); got != "why?" {
+		t.Errorf("input = %q, want %q", got, "why?")
+	}
+}
+
+func TestHelp_AnyKeyCloses(t *testing.T) {
+	m := newTestModel()
+	m.showHelp = true
+	m, _ = applyUpdate(m, keyMsg("x"))
+
+	if m.showHelp {
+		t.Error("the key list stayed open")
+	}
+	if got := m.input.Value(); got != "" {
+		t.Errorf("the dismissing key leaked into the input: %q", got)
+	}
+}
+
+func TestHelp_CtrlCStillQuits(t *testing.T) {
+	m := newTestModel()
+	m.showHelp = true
+	_, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if cmd == nil {
+		t.Fatal("ctrl+c from the key list did not quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stopped panel
+// ---------------------------------------------------------------------------
+
+func TestStopped_LogInOnlyWhenCredentialsAreTheProblem(t *testing.T) {
+	tests := []struct {
+		name      string
+		dead      bool
+		authNeed  bool
+		auth      []string
+		wantLogin bool
+	}{
+		{name: "agent wants credentials", authNeed: true, auth: []string{"auth", "login"}, wantLogin: true},
+		{name: "agent crashed", dead: true, auth: []string{"auth", "login"}},
+		{name: "agent has no login command", authNeed: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel()
+			m.dead, m.authNeed = tt.dead, tt.authNeed
+			m.opts.AuthCommand = tt.auth
+			m.err = errString("agent exited")
+			m = m.relayout()
+
+			got := strings.Contains(m.View(), "log in")
+			if got != tt.wantLogin {
+				t.Errorf("stopped panel offers log in = %v, want %v:\n%s", got, tt.wantLogin, m.View())
+			}
+			if !strings.Contains(m.View(), "restart") {
+				t.Error("stopped panel does not offer a restart")
+			}
+		})
+	}
+}

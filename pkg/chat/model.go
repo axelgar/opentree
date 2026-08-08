@@ -293,6 +293,9 @@ type Model struct {
 	// are following what it did rather than why.
 	hideThoughts bool
 
+	// showHelp swaps the input for the full key list.
+	showHelp bool
+
 	// dead means the agent process is gone and only restart or quit apply.
 	dead     bool
 	authNeed bool
@@ -330,6 +333,10 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 // agent reached through an adapter is what a missing one looks like. An agent
 // that started and later died wants a restart, not an install.
 func (m Model) adapterMissing() bool { return m.client == nil }
+
+// canLogIn reports whether logging in is a remedy for the current state, which
+// takes both an agent asking for credentials and a command to give them with.
+func (m Model) canLogIn() bool { return m.authNeed && len(m.opts.AuthCommand) > 0 }
 
 func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 	if info == nil {
