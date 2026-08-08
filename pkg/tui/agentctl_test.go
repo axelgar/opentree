@@ -226,16 +226,32 @@ func TestInterruptKey_OnlyWhileWorking(t *testing.T) {
 func TestChatKeys_ExplainThemselvesWithoutAChat(t *testing.T) {
 	for _, k := range []string{"m", "a", "c"} {
 		t.Run(k, func(t *testing.T) {
-			m := newTestModel(testWS("fix-auth"))
+			ws := testWS("fix-auth")
+			ws.Agent = "codex" // no ACP mode
+			m := newTestModel(ws)
 			m, _ = applyUpdate(m, keyMsg(k))
 
 			if m.prompting || m.answering {
 				t.Fatalf("%q opened a dialog for a workspace with no chat", k)
 			}
-			if m.err == nil || !strings.Contains(m.err.Error(), "has no chat") {
-				t.Errorf("err = %v, want %q to explain that there is no chat", m.err, k)
+			if m.err == nil || !strings.Contains(m.err.Error(), "draws its own screen") {
+				t.Errorf("err = %v, want %q to explain that this agent has no chat", m.err, k)
 			}
 		})
+	}
+}
+
+// A silent socket also means "the chat window was closed", which is now an
+// ordinary thing to do. Telling someone their ACP agent draws its own screen
+// would send them looking for a TUI that does not exist.
+func TestChatKeys_ClosedChatIsNotMistakenForAPlainAgent(t *testing.T) {
+	ws := testWS("fix-auth")
+	ws.Agent = "opencode"
+	m := newTestModel(ws)
+	m, _ = applyUpdate(m, keyMsg("m"))
+
+	if got := m.err.Error(); !strings.Contains(got, "not running") {
+		t.Errorf("err = %q, want it to offer reopening the chat", got)
 	}
 }
 

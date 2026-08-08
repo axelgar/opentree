@@ -108,14 +108,24 @@ func (ws WorkspaceItem) chatWorking() bool {
 // agent, or "" when it can. Only ACP agents have a chat to talk to, so in a
 // repo with a mix of them these keys apply to some rows and not others — and a
 // key that quietly does nothing is indistinguishable from a broken one.
+//
+// A silent socket is ambiguous: the agent may have no chat mode at all, or its
+// chat window may just have been closed, which is now an ordinary thing to do.
+// Enter is the answer to both, but telling someone their ACP agent draws its
+// own screen would be wrong, so the workspace's recorded agent picks the
+// sentence. An agent the registry does not know falls to the vaguer one.
 func (ws WorkspaceItem) chatUnavailable() string {
-	switch {
-	case ws.ChatStatus == nil:
-		return fmt.Sprintf("%s has no chat — its agent draws its own screen, press enter to attach", ws.Name)
-	case ws.ChatStatus.State == chat.StateStopped:
-		return fmt.Sprintf("%s's agent has stopped — attach to restart it", ws.Name)
+	if ws.ChatStatus != nil {
+		if ws.ChatStatus.State == chat.StateStopped {
+			return fmt.Sprintf("%s's agent has stopped — attach to restart it", ws.Name)
+		}
+		return ""
 	}
-	return ""
+	if agent := config.FindAgent(ws.Agent); agent != nil && agent.ACP == nil {
+		return fmt.Sprintf("%s runs %s, which draws its own screen — press enter to attach",
+			ws.Name, agent.Name)
+	}
+	return fmt.Sprintf("%s's chat is not running — press enter to reopen it", ws.Name)
 }
 
 // sendAgentCommand delivers one instruction to a workspace's chat process and
