@@ -528,18 +528,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(visible) == 0 {
 				return m, nil
 			}
-			return m.openAnswerDialog(visible[m.cursor]), nil
+			ws := visible[m.cursor]
+			if reason := ws.chatUnavailable(); reason != "" {
+				return m, m.transientErrCmd(reason)
+			}
+			if ws.pendingPermission() == nil {
+				return m, m.transientErrCmd(fmt.Sprintf("%s is not waiting on a permission", ws.Name))
+			}
+			return m.openAnswerDialog(ws), nil
 
 		case key.Matches(msg, m.keys.Stop):
-			if len(visible) == 0 || !visible[m.cursor].chatWorking() {
+			if len(visible) == 0 {
 				return m, nil
 			}
-			return m, m.sendAgentCommand(visible[m.cursor].Name, "interrupted",
+			ws := visible[m.cursor]
+			if reason := ws.chatUnavailable(); reason != "" {
+				return m, m.transientErrCmd(reason)
+			}
+			if !ws.chatWorking() {
+				return m, m.transientErrCmd(fmt.Sprintf("%s's agent is not working", ws.Name))
+			}
+			return m, m.sendAgentCommand(ws.Name, "interrupted",
 				chat.Command{Type: chat.CommandInterrupt})
 
 		case key.Matches(msg, m.keys.Msg):
-			if len(visible) == 0 || visible[m.cursor].ChatStatus == nil {
+			if len(visible) == 0 {
 				return m, nil
+			}
+			if reason := visible[m.cursor].chatUnavailable(); reason != "" {
+				return m, m.transientErrCmd(reason)
 			}
 			m.prompting = true
 			m.promptWs = visible[m.cursor].Name

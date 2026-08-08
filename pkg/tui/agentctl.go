@@ -104,6 +104,20 @@ func (ws WorkspaceItem) chatWorking() bool {
 	return ws.ChatStatus != nil && ws.ChatStatus.State == chat.StateWorking
 }
 
+// chatUnavailable explains why the dashboard cannot reach this workspace's
+// agent, or "" when it can. Only ACP agents have a chat to talk to, so in a
+// repo with a mix of them these keys apply to some rows and not others — and a
+// key that quietly does nothing is indistinguishable from a broken one.
+func (ws WorkspaceItem) chatUnavailable() string {
+	switch {
+	case ws.ChatStatus == nil:
+		return fmt.Sprintf("%s has no chat — its agent draws its own screen, press enter to attach", ws.Name)
+	case ws.ChatStatus.State == chat.StateStopped:
+		return fmt.Sprintf("%s's agent has stopped — attach to restart it", ws.Name)
+	}
+	return ""
+}
+
 // sendAgentCommand delivers one instruction to a workspace's chat process and
 // waits for it to say whether it acted. The chat refuses anything it cannot
 // honour — a prompt while the agent is mid-turn, a permission already answered

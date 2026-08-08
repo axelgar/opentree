@@ -193,23 +193,61 @@ func TestAnswerKey_OpensDialogFromTheList(t *testing.T) {
 	}
 }
 
-func TestAnswerKey_NoopWithoutAPendingPermission(t *testing.T) {
+func TestAnswerKey_SaysWhyWithoutAPendingPermission(t *testing.T) {
 	m := newTestModel(wsWithChat("fix-auth", &chat.Status{State: chat.StateIdle}))
 	m, _ = applyUpdate(m, keyMsg("a"))
 	if m.answering {
-		t.Error("a should do nothing when nothing is pending")
+		t.Error("a should not open the dialog when nothing is pending")
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "not waiting on a permission") {
+		t.Errorf("err = %v, want an explanation of why a did nothing", m.err)
 	}
 }
 
 func TestInterruptKey_OnlyWhileWorking(t *testing.T) {
 	idle := newTestModel(wsWithChat("fix-auth", &chat.Status{State: chat.StateIdle}))
-	if _, cmd := applyUpdate(idle, keyMsg("c")); cmd != nil {
-		t.Error("interrupt should do nothing when the agent is idle")
+	idle, _ = applyUpdate(idle, keyMsg("c"))
+	if idle.err == nil || !strings.Contains(idle.err.Error(), "not working") {
+		t.Errorf("err = %v, want interrupting an idle agent to say so", idle.err)
 	}
 
 	busy := newTestModel(wsWithChat("fix-auth", &chat.Status{State: chat.StateWorking}))
-	if _, cmd := applyUpdate(busy, keyMsg("c")); cmd == nil {
+	busy, cmd := applyUpdate(busy, keyMsg("c"))
+	if cmd == nil {
 		t.Error("expected an interrupt to be sent")
+	}
+	if busy.err != nil {
+		t.Errorf("interrupting a working agent complained: %v", busy.err)
+	}
+}
+
+// Only ACP agents have a chat, so in a mixed repo these keys apply to some rows
+// and not others. Each one says so rather than appearing broken.
+func TestChatKeys_ExplainThemselvesWithoutAChat(t *testing.T) {
+	for _, k := range []string{"m", "a", "c"} {
+		t.Run(k, func(t *testing.T) {
+			m := newTestModel(testWS("fix-auth"))
+			m, _ = applyUpdate(m, keyMsg(k))
+
+			if m.prompting || m.answering {
+				t.Fatalf("%q opened a dialog for a workspace with no chat", k)
+			}
+			if m.err == nil || !strings.Contains(m.err.Error(), "has no chat") {
+				t.Errorf("err = %v, want %q to explain that there is no chat", m.err, k)
+			}
+		})
+	}
+}
+
+func TestChatKeys_ExplainAStoppedAgent(t *testing.T) {
+	m := newTestModel(wsWithChat("fix-auth", &chat.Status{State: chat.StateStopped}))
+	m, _ = applyUpdate(m, keyMsg("m"))
+
+	if m.prompting {
+		t.Fatal("m opened a prompt for a stopped agent")
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "attach to restart") {
+		t.Errorf("err = %v, want a stopped agent to point at attaching", m.err)
 	}
 }
 
