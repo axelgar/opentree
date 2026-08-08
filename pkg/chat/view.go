@@ -118,29 +118,43 @@ func (m Model) completionView() string {
 // but the last turn failed — a case the stopped panel does not cover. The
 // agent's live flags sit right-aligned against it.
 func (m Model) statusLine() string {
-	left := helpStyle.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
-	if m.err != nil {
-		left = errorStyle.Render("✕ " + m.errorText())
-	}
-
 	flags := m.flagsSummary()
 	if len(flags) == 0 {
-		return left
+		if m.err != nil {
+			return errorStyle.Render("✕ " + m.errorText())
+		}
+		return helpStyle.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 	}
-	right := flagStyle.Render(strings.Join(flags, " · ")) +
-		helpStyle.Render("  shift+tab")
 
 	// The flags are the point of the line; the help gives way when the terminal
-	// is too narrow for both. MaxWidth rather than a rune slice: the help is
-	// already styled, and cutting runes lands mid escape sequence and takes the
-	// rest of the line with it.
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-	if gap < 1 {
-		room := max(m.width-lipgloss.Width(right)-3, 0)
-		left = lipgloss.NewStyle().MaxWidth(room).Render(left)
-		gap = 1
+	// is too narrow for both.
+	right := flagStyle.Render(strings.Join(flags, " · ")) +
+		helpStyle.Render("  shift+tab")
+	room := max(m.width-lipgloss.Width(right)-2, 0)
+
+	left := m.shortHelp(room)
+	if m.err != nil {
+		left = errorStyle.Render(truncate("✕ "+m.errorText(), room))
 	}
+
+	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// shortHelp renders as many bindings as fit, dropping whole ones from the end.
+// Cutting the rendered line instead leaves a dangling "•" hanging off the last
+// binding that survived, which reads as a rendering fault rather than as the
+// deliberate omission it is.
+func (m Model) shortHelp(room int) string {
+	bindings := m.keys.ShortHelp()
+	for len(bindings) > 0 {
+		line := helpStyle.Render(m.help.ShortHelpView(bindings))
+		if lipgloss.Width(line) <= room {
+			return line
+		}
+		bindings = bindings[:len(bindings)-1]
+	}
+	return ""
 }
 
 // stoppedLines describes why the agent is unusable and what to do about it.
@@ -256,11 +270,10 @@ func (m Model) renderLog() string {
 		width = 20
 	}
 
-	if len(m.entries) == 0 && !m.turn {
-		return m.emptyState()
-	}
-
 	var b strings.Builder
+	if !m.conversationStarted() && !m.turn {
+		b.WriteString(m.emptyState())
+	}
 	for _, e := range m.entries {
 		if e.kind == entryThought && m.hideThoughts {
 			continue
@@ -277,20 +290,32 @@ func (m Model) renderLog() string {
 
 // emptyState orients someone who has just landed in a chat they did not set
 // up: what they are talking to, and the things typing alone will not reveal.
-func (m Model) emptyState() string {
-	who := m.opts.Agent
-	if m.agentVersion != "" {
-		who += " " + m.agentVersion
+// conversationStarted reports whether anyone has said anything yet. Notices
+// are opentree talking to itself — a failed resume is the common one, and it
+// arrives before the first word, exactly when the hint is still wanted.
+func (m Model) conversationStarted() bool {
+	for _, e := range m.entries {
+		if e.kind != entryNotice {
+			return true
+		}
 	}
+	return false
+}
 
+// The agent's version is deliberately absent. ACP reports the version of
+// whatever serves the protocol, which for Claude Code is the adapter — so
+// "Claude Code 0.66.0" would name a release of Claude Code that does not exist.
+func (m Model) emptyState() string {
 	lines := []string{
-		noticeStyle.Render(fmt.Sprintf("%s, working in %s.", who, m.opts.Workspace)),
+		noticeStyle.Render(fmt.Sprintf("%s, working in %s.", m.opts.Agent, m.opts.Workspace)),
 		"",
 		hintLine("/", "the agent's own commands"),
 		hintLine("@", "point it at a file in this worktree"),
 		hintLine("?", "every key"),
 	}
-	return "\n" + strings.Join(lines, "\n") + "\n"
+	// Trailing blank line: a notice can follow the hint, and the two run
+	// together otherwise.
+	return "\n" + strings.Join(lines, "\n") + "\n\n"
 }
 
 func hintLine(sigil, desc string) string {

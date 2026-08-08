@@ -396,9 +396,10 @@ func (m Model) startSession() tea.Cmd {
 				return errMsg{err: err, auth: true}
 			}
 			// A session the agent has forgotten is not worth failing over; the
-			// worktree is still the unit of work.
-			note := fmt.Sprintf("could not resume %s — started a new conversation", want)
-			return m.freshSession(client, cwd, note)
+			// worktree is still the unit of work. The id is left out: it is the
+			// agent's bookkeeping, and nothing the reader can act on.
+			return m.freshSession(client, cwd,
+				"the previous conversation could not be resumed — this is a new one")
 		}
 		return m.freshSession(client, cwd, "")
 	}

@@ -26,8 +26,11 @@ type keyMap struct {
 	Mentions key.Binding
 }
 
+// ShortHelp is ordered by what should survive a narrow terminal, because the
+// status line drops from the end. ? outranks esc and ctrl+c: it is the one
+// binding that leads to the others.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Cancel, k.Help, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Help, k.Cancel, k.Quit}
 }
 
 // FullHelp is every key, grouped by what it is for.

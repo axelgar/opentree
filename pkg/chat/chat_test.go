@@ -875,14 +875,47 @@ func TestWindowResize_MakesModelReady(t *testing.T) {
 
 func TestEmptyChat_ShowsWhatToDo(t *testing.T) {
 	m := newTestModel()
-	m.agentVersion = "1.18.12"
-	m = m.relayout()
 	view := m.View()
 
-	for _, want := range []string{"OpenCode 1.18.12", "fix-auth", "/", "@", "?"} {
+	for _, want := range []string{"OpenCode", "fix-auth", "/", "@", "?"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("empty chat is missing %q:\n%s", want, view)
 		}
+	}
+}
+
+// ACP reports the version of whatever serves the protocol, which for an agent
+// behind an adapter is the adapter's — a number that does not belong to the
+// agent it is named after.
+func TestEmptyChat_DoesNotClaimTheAgentsVersion(t *testing.T) {
+	m := newTestModel()
+	m.agentVersion = "0.66.0"
+	m = m.relayout()
+
+	if strings.Contains(m.View(), "0.66.0") {
+		t.Errorf("empty chat put the ACP server's version on the agent:\n%s", m.View())
+	}
+}
+
+// The status line drops whole bindings when the flags crowd it, because a cut
+// through the rendered line leaves a separator dangling off the end.
+func TestStatusLine_NarrowTerminalDropsWholeBindings(t *testing.T) {
+	m := newTestModel()
+	m.width = 62
+	m.configOptions = []acp.ConfigOption{
+		{ID: "mode", Name: "Mode", Category: "mode", CurrentValue: "plan"},
+	}
+	m = m.relayout()
+
+	line := m.statusLine()
+	if strings.Contains(line, "•  ") || strings.HasSuffix(strings.TrimSpace(line), "•") {
+		t.Errorf("status line has a dangling separator: %q", line)
+	}
+	if !strings.Contains(line, "enter") {
+		t.Errorf("status line dropped everything: %q", line)
+	}
+	if !strings.Contains(line, "plan") {
+		t.Errorf("status line dropped the flags it was making room for: %q", line)
 	}
 }
 
@@ -983,5 +1016,35 @@ func TestStopped_LogInOnlyWhenCredentialsAreTheProblem(t *testing.T) {
 				t.Error("stopped panel does not offer a restart")
 			}
 		})
+	}
+}
+
+// ? is the binding that leads to the others, so it should outlast esc and
+// ctrl+c when the line has to shed something.
+func TestStatusLine_KeepsTheKeyListPointerLongest(t *testing.T) {
+	m := newTestModel()
+	m.width = 62
+	m.configOptions = []acp.ConfigOption{
+		{ID: "mode", Name: "Mode", Category: "mode", CurrentValue: "plan"},
+	}
+	m = m.relayout()
+
+	line := m.statusLine()
+	if strings.Contains(line, "ctrl+c") {
+		t.Fatalf("nothing was dropped, so this proves nothing: %q", line)
+	}
+	if !strings.Contains(line, "? keys") {
+		t.Errorf("? was dropped before less useful bindings: %q", line)
+	}
+}
+
+// A failed resume lands before the first word, which is exactly when someone
+// still wants to be told what the chat can do.
+func TestEmptyChat_HintSurvivesANotice(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, sessionReadyMsg{id: "ses_new", note: "could not resume"})
+
+	if !strings.Contains(m.View(), "point it at a file") {
+		t.Errorf("a notice suppressed the opening hint:\n%s", m.View())
 	}
 }
