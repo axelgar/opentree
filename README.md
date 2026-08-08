@@ -12,6 +12,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 
 - **🌳 Isolated Workspaces**: Each workspace = git worktree + branch + tmux window
 - **🤖 Agent Integration**: Launch OpenCode (or other agents) automatically in each workspace
+- **💬 Built-in Chat**: Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com) run inside opentree's own chat view — answer permissions, watch diffs, and drive the agent from the dashboard without attaching
 - **📊 TUI Dashboard**: Interactive terminal UI for managing workspaces (press `?` for help)
 - **🔀 Parallel Development**: Work on multiple branches simultaneously without checkout overhead
 - **📝 Diff Viewer**: Review changes before committing
@@ -28,6 +29,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **tmux** (3.0+) - for session orchestration
 - **OpenCode** (optional) - default coding agent ([install](https://github.com/anomalyco/opencode))
 - **GitHub CLI** (`gh`) (optional) - for PR creation and issue fetching ([install](https://cli.github.com/))
+- **Node** (optional) - only to run Claude Code through its ACP adapter
 
 ## Installation
 
@@ -109,6 +111,64 @@ opentree
 - `q` - Quit
 
 The TUI also shows a live **agent output preview** for the selected workspace and **CI check status** badges for open PRs.
+
+### Talking to the agent
+
+Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
+(ACP) don't get their own TUI in the tmux window — opentree talks to them
+directly and draws the conversation itself. You get the same worktree-per-branch
+flow, but the agent's turns, tool calls, diffs and permission prompts are
+rendered by opentree, which means the dashboard knows what every agent is doing
+without scraping its output.
+
+Press `Enter` on a workspace to attach to its chat:
+
+```
+ fix-auth · OpenCode                              claude-sonnet-4.6 · plan · 12% ctx · $0.0431
+
+ › add a rate limiter to the login handler
+
+   ✓ pkg/auth/login.go  +18 -2
+     + limiter := rate.NewLimiter(rate.Every(time.Second), 5)
+   ⠹ go test ./pkg/auth/
+
+ ╭──────────────────────────────────────╮
+ │ go test ./pkg/auth/                  │
+ │ [a] Allow once                       │
+ │ [A] Always allow                     │
+ │ [d] Reject                           │
+ ╰──────────────────────────────────────╯
+ permission needed · esc to cancel
+```
+
+| Key | |
+| --- | --- |
+| `enter` | send |
+| `ctrl+j` | newline |
+| `/` | the agent's own slash commands |
+| `@` | attach a file from this worktree |
+| `esc` | interrupt the current turn |
+| `shift+tab` | cycle the agent's mode (plan / build / …) |
+| `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
+| `ctrl+o` | show or hide the agent's reasoning |
+| `?` | every key |
+
+The agent's live model, mode and effort sit on the right of the input, next to
+the running context and cost. `ctrl+c` closes the chat and its tmux window; the
+conversation is saved and resumes where it left off next time you attach.
+
+**From the dashboard.** You don't have to attach to drive a chat. With a
+workspace selected, `m` sends it a prompt, `a` answers a pending permission
+request, and `c` interrupts the current turn — the row shows what the agent is
+doing, what it's waiting on, and what it has cost. A prompt sent to a busy agent
+is queued rather than refused.
+
+**Which agents.** OpenCode serves ACP itself. Claude Code is reached through the
+`claude-agent-acp` adapter, which opentree installs on request into
+`~/.opentree/tools` rather than your global npm root — press `A` in the
+dashboard, pick Claude Code, and it offers the download (303MB, needs `node`).
+Any other agent keeps the original behaviour: its own TUI in the tmux window,
+with status coming from [hooks](#agent-status-signals).
 
 ### CLI Mode (Direct Commands)
 
@@ -226,6 +286,11 @@ command = "claude"            # Or "aider", "cursor", etc.
 args = ["--some-flag"]
 ```
 
+Or press `A` in the dashboard to pick from the agents you have installed — it
+writes the same config, and offers to fetch an ACP adapter if the agent needs
+one. `opencode` and `claude` run in opentree's [built-in chat](#talking-to-the-agent);
+everything else launches its own TUI in the tmux window.
+
 ### Agent status signals
 
 Agents can tell opentree how they're doing by writing a `.opentree-status.json`
@@ -311,6 +376,8 @@ e.g. a Claude Code hook in `~/.claude/settings.json`:
 
 4. **Agent Integration**: When creating a workspace, opentree launches your configured agent inside the tmux window, ready to code. With no agent configured, it uses the first supported agent found on your PATH.
 
+5. **The Chat**: For an ACP agent, the tmux window runs `opentree chat` rather than the agent's own TUI. It holds one JSON-RPC connection to the agent over stdio and renders the conversation, so opentree sees every turn, tool call and permission request as structured data instead of scraped terminal output. The dashboard reaches a running chat over a Unix socket, which is how `m`, `a` and `c` work without attaching. Session IDs are kept in `state.json` so conversations survive closing the window.
+
 ## Workflow Example
 
 ```bash
@@ -361,6 +428,19 @@ opentree sets the agent's environment via `tmux new-window -e`, which needs tmux
 ### "Error: opencode not found"
 
 Install OpenCode from [github.com/anomalyco/opencode](https://github.com/anomalyco/opencode), or configure a different agent in `opentree.toml`.
+
+### The chat says the agent needs an adapter
+
+Claude Code speaks ACP through `claude-agent-acp`. Press `A` in the dashboard,
+select Claude Code, and accept the download — it installs to `~/.opentree/tools`
+and needs `node` on your PATH. If you already have the package installed
+globally, opentree uses that instead of fetching a second copy.
+
+### The chat says the agent needs credentials
+
+The chat's stopped panel offers `[l]`, which runs the agent's own login command
+(`opencode auth login`, `claude auth login`) and restarts the session when it
+finishes. Anything else that stops an agent offers `[r]` to restart it.
 
 ### "Error: gh not found"
 
