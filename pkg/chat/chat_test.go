@@ -478,6 +478,51 @@ func TestPermissionView_RendersOfferedOptionsOnly(t *testing.T) {
 	}
 }
 
+// The request carries the same blocks a finished call does. Showing only the
+// title meant approving something you were never shown — the Claude Code
+// adapter asks "Ready to code?" with the whole plan in a content block, and an
+// edit's diff arrives the same way.
+func TestPermissionView_ShowsWhatIsBeingApproved(t *testing.T) {
+	m := newTestModel()
+	perm := permission(allowOnce, rejectOnce)
+	perm.req.ToolCall.Content = []acp.ToolCallContent{
+		{Type: "diff", Path: "/repo/pkg/auth/session.go", OldText: "timeout := 30", NewText: "timeout := 3600"},
+		{Type: "content", Content: &acp.ContentBlock{Type: "text", Text: "raises the session lifetime"}},
+	}
+	m, _ = applyUpdate(m, perm)
+
+	view := m.permissionView()
+	for _, want := range []string{"- timeout := 30", "+ timeout := 3600", "raises the session lifetime"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("permissionView() missing %q\ngot:\n%s", want, view)
+		}
+	}
+	if m.footerHeight() <= len(perm.req.Options)+5 {
+		t.Error("the footer has to make room for the detail it draws")
+	}
+}
+
+// A dialog sits over the conversation, so it cannot grow without bound: a
+// hundred-line diff would push the transcript off the screen to ask one
+// yes/no question.
+func TestPermissionView_DetailIsCapped(t *testing.T) {
+	m := newTestModel()
+	perm := permission(allowOnce)
+	perm.req.ToolCall.Content = []acp.ToolCallContent{{
+		Type: "diff", Path: "/repo/big.go",
+		OldText: strings.TrimSuffix(strings.Repeat("was\n", 60), "\n"),
+		NewText: strings.TrimSuffix(strings.Repeat("now\n", 60), "\n"),
+	}}
+	m, _ = applyUpdate(m, perm)
+
+	if got := len(m.permDetail()); got > 9 {
+		t.Errorf("permDetail() = %d lines, want it capped with a marker", got)
+	}
+	if h, tall := m.footerHeight(), m.height/2; h > tall {
+		t.Errorf("footerHeight = %d, want the dialog to leave the conversation room (< %d)", h, tall)
+	}
+}
+
 func TestFooterHeight_GrowsWithOptions(t *testing.T) {
 	m := newTestModel()
 	base := m.footerHeight()

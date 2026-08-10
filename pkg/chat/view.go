@@ -40,7 +40,7 @@ func (m Model) footerHeight() int {
 	case overlayStopped:
 		return len(m.stoppedLines()) + 4
 	case overlayPermission:
-		return len(m.perm().req.Options) + 5
+		return len(m.perm().req.Options) + len(m.permDetail()) + 5
 	case overlayHelp:
 		return lipgloss.Height(m.helpView())
 	default:
@@ -257,6 +257,7 @@ func (m Model) permissionView() string {
 	// The dialog is a fixed box, so a long command or path is trimmed rather
 	// than allowed to blow the border out past the terminal edge.
 	lines := []string{permLabelStyle.Render(truncate(toolLabel(req.ToolCall, m.opts.Cwd), m.width-6))}
+	lines = append(lines, m.permDetail()...)
 	for i, o := range req.Options {
 		lines = append(lines, fmt.Sprintf("%s %s",
 			permKeyStyle.Render("["+optionHint(o, i)+"]"),
@@ -277,6 +278,29 @@ func (m Model) permissionView() string {
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render(hint))
 	return b.String()
+}
+
+// permDetail is what the call would actually do. A title on its own is not
+// enough to decide on: the Claude Code adapter asks "Ready to code?" with the
+// whole plan in a content block, and an edit's diff arrives the same way — so
+// approving meant approving something never shown. The request carries the
+// same blocks a finished call does, and they render the same way here.
+func (m Model) permDetail() []string {
+	// The box sits over the conversation, so this is capped tighter than a
+	// tool row: a hundred-line diff would push the transcript off the screen to
+	// ask one yes/no question.
+	const maxLines = 8
+
+	call, width := m.perm().req.ToolCall, m.width-6
+	detail := renderDiffs(call, width)
+	detail = append(detail, renderOutput(call, width, toolOutputStyle)...)
+	if len(detail) <= maxLines {
+		return detail
+	}
+	// Both renderers have their own budget and may have added a marker already,
+	// so this one does not try to count what is left — only to say that the box
+	// is not the whole story.
+	return append(detail[:maxLines], noticeStyle.Render("    …"))
 }
 
 // optionHint is the key that selects an option: a stable letter for the kinds
