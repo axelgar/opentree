@@ -547,8 +547,55 @@ func (m Model) applyUpdate(u acp.SessionUpdate) Model {
 
 	case acp.UpdateUsage:
 		m.usage = u.Usage
+
+	case acp.UpdatePlan:
+		m = m.upsertPlan(u.Plan)
+
+	case acp.UpdateMode, acp.UpdateConfigOptions:
+		// The agent changed its own settings — answering its plan-mode dialog,
+		// or narrowing the effort levels after a model switch. Without these the
+		// flags beside the input keep reporting what was last asked for, which
+		// after "yes, and auto-accept edits" still reads "plan" while edits no
+		// longer stop for permission.
+		if len(u.ConfigOptions) > 0 {
+			m.configOptions = u.ConfigOptions
+		}
+		if u.CurrentModeID != "" {
+			m.configOptions = withModeValue(m.configOptions, u.CurrentModeID)
+		}
 	}
 	return m
+}
+
+// upsertPlan keeps the agent's plan as one entry, patched where it stands. The
+// whole list arrives on every change — six times for a three-item plan — and
+// appending each would bury the conversation under its own table of contents.
+func (m Model) upsertPlan(entries []acp.PlanEntry) Model {
+	if len(entries) == 0 {
+		return m
+	}
+	for i := range m.entries {
+		if m.entries[i].kind == entryPlan {
+			m.entries[i].plan = entries
+			return m
+		}
+	}
+	m.entries = append(m.entries, entry{kind: entryPlan, plan: entries})
+	return m
+}
+
+// withModeValue records the mode the agent says it is now in. The mode is one
+// of the declared config options, so this keeps it where the picker and the
+// flags already look rather than adding a second place to hold it.
+func withModeValue(options []acp.ConfigOption, mode string) []acp.ConfigOption {
+	out := make([]acp.ConfigOption, len(options))
+	copy(out, options)
+	for i := range out {
+		if out[i].Category == categoryMode {
+			out[i].CurrentValue = mode
+		}
+	}
+	return out
 }
 
 // replayUserChunk folds one chunk of a replayed message back into the log.

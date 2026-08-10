@@ -457,8 +457,27 @@ func (m Model) renderEntry(e entry, width int) string {
 		return noticeStyle.Render("  " + e.text)
 	case entryTool:
 		return m.renderTool(e.tool, width)
+	case entryPlan:
+		return renderPlan(e.plan, width)
 	}
 	return ""
+}
+
+// renderPlan draws the agent's plan as the checklist it is. Only agents that
+// send one get this — opencode never does.
+func renderPlan(entries []acp.PlanEntry, width int) string {
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		glyph, style := "☐", toolTitleStyle
+		switch e.Status {
+		case acp.PlanCompleted:
+			glyph, style = "☑", toolDoneStyle
+		case acp.PlanInProgress:
+			glyph, style = "▸", toolRunningStyle
+		}
+		lines = append(lines, style.Render(truncate("  "+glyph+" "+e.Content, width)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // bulleted hangs a coloured mark off the agent's first line and indents the

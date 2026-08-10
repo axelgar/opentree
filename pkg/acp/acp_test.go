@@ -591,6 +591,40 @@ func TestInitialize_RefusesAVersionItDoesNotSpeak(t *testing.T) {
 	}
 }
 
+// All three captured from a live claude-agent-acp 0.66.0 session. opencode
+// emits none of them, which is why they went unmodelled for so long.
+func TestSessionUpdate_DecodesTheAdaptersOwnKinds(t *testing.T) {
+	var plan SessionUpdate
+	if err := json.Unmarshal([]byte(`{"sessionUpdate":"plan","entries":[
+		{"content":"Extract the print into greet.go","status":"pending","priority":"medium"},
+		{"content":"Reduce main.go to the entrypoint","status":"in_progress","priority":"medium"}]}`),
+		&plan); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.Plan) != 2 || plan.Plan[1].Status != PlanInProgress {
+		t.Errorf("Plan = %+v, want both entries with their statuses", plan.Plan)
+	}
+
+	var mode SessionUpdate
+	if err := json.Unmarshal([]byte(
+		`{"sessionUpdate":"current_mode_update","currentModeId":"plan"}`), &mode); err != nil {
+		t.Fatalf("mode: %v", err)
+	}
+	if mode.CurrentModeID != "plan" {
+		t.Errorf("CurrentModeID = %q, want plan", mode.CurrentModeID)
+	}
+
+	var cfg SessionUpdate
+	if err := json.Unmarshal([]byte(
+		`{"sessionUpdate":"config_option_update","configOptions":[
+		  {"id":"mode","category":"mode","currentValue":"auto"}]}`), &cfg); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	if len(cfg.ConfigOptions) != 1 || cfg.ConfigOptions[0].CurrentValue != "auto" {
+		t.Errorf("ConfigOptions = %+v", cfg.ConfigOptions)
+	}
+}
+
 func TestContentBlock_Audience(t *testing.T) {
 	// Captured from a live session/load: opencode marks the blocks the agent
 	// wrote to itself, and a client that ignores the mark replays them at the

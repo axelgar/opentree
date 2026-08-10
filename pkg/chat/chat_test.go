@@ -375,6 +375,77 @@ func TestSessionFailure_OffersARestart(t *testing.T) {
 	}
 }
 
+func planUpdate(entries ...acp.PlanEntry) acpUpdateMsg {
+	return acpUpdateMsg(acp.SessionUpdate{Type: acp.UpdatePlan, Plan: entries})
+}
+
+// The whole plan arrives on every change — a live claude-agent-acp session sent
+// six updates building a three-item list — so appending each would bury the
+// conversation under its own table of contents.
+func TestPlan_IsOneEntryPatchedInPlace(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, planUpdate(
+		acp.PlanEntry{Content: "Extract the print into greet.go", Status: acp.PlanPending}))
+	m, _ = applyUpdate(m, planUpdate(
+		acp.PlanEntry{Content: "Extract the print into greet.go", Status: acp.PlanCompleted},
+		acp.PlanEntry{Content: "Reduce main.go to the entrypoint", Status: acp.PlanInProgress}))
+
+	var plans int
+	for _, e := range m.entries {
+		if e.kind == entryPlan {
+			plans++
+		}
+	}
+	if plans != 1 {
+		t.Fatalf("got %d plan entries, want one kept up to date", plans)
+	}
+
+	view := m.viewport.View()
+	for _, want := range []string{"☑ Extract the print", "▸ Reduce main.go"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("plan missing %q\ngot:\n%s", want, view)
+		}
+	}
+}
+
+// The agent changes its own mode — answering its plan-mode dialog does it —
+// and nothing comes back through the call that would normally report it. Left
+// unread, the flag beside the input still said "plan" after the agent had
+// switched to accepting edits without asking.
+func TestCurrentModeUpdate_MovesTheFlag(t *testing.T) {
+	m := newTestModel()
+	m.configOptions = []acp.ConfigOption{{
+		ID: "mode", Name: "Mode", Category: "mode", Type: "select", CurrentValue: "plan",
+		Options: []acp.ConfigOptionValue{{Value: "plan", Name: "Plan"}, {Value: "auto", Name: "Auto"}},
+	}}
+
+	m, _ = applyUpdate(m, acpUpdateMsg(acp.SessionUpdate{
+		Type: acp.UpdateMode, CurrentModeID: "auto",
+	}))
+
+	if got := m.configOptions[0].CurrentValue; got != "auto" {
+		t.Errorf("mode = %q, want the agent's own change to have landed", got)
+	}
+	if !strings.Contains(strings.Join(m.flagsSummary(), " "), "auto") {
+		t.Errorf("flags = %v, want them to follow the agent", m.flagsSummary())
+	}
+}
+
+func TestConfigOptionUpdate_ReplacesTheSet(t *testing.T) {
+	m := newTestModel()
+	m.configOptions = []acp.ConfigOption{{ID: "mode", Category: "mode", CurrentValue: "plan"}}
+	m, _ = applyUpdate(m, acpUpdateMsg(acp.SessionUpdate{
+		Type: acp.UpdateConfigOptions,
+		ConfigOptions: []acp.ConfigOption{
+			{ID: "mode", Category: "mode", CurrentValue: "auto"},
+			{ID: "effort", Category: "effort", CurrentValue: "high"},
+		},
+	}))
+	if len(m.configOptions) != 2 || m.configOptions[0].CurrentValue != "auto" {
+		t.Errorf("configOptions = %+v, want the agent's set", m.configOptions)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------

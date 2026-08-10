@@ -258,11 +258,15 @@ func (m Model) openSettingsAt(configID string) (tea.Model, tea.Cmd) {
 	return m.relayout(), nil
 }
 
+// categoryMode is the agent-declared category holding the session mode. The
+// agent can change it on its own, so more than one place needs to name it.
+const categoryMode = "mode"
+
 // nextMode is the mode that follows the current one, or ok=false when the agent
 // declares no mode to cycle.
 func nextMode(options []acp.ConfigOption) (configID, value string, ok bool) {
 	for _, o := range options {
-		if o.Category != "mode" || len(o.Options) < 2 {
+		if o.Category != categoryMode || len(o.Options) < 2 {
 			continue
 		}
 		next := 0

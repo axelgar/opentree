@@ -232,6 +232,25 @@ const (
 	UpdateToolCallUpdate = "tool_call_update"
 	UpdateCommands       = "available_commands_update"
 	UpdateUsage          = "usage_update"
+	UpdatePlan           = "plan"
+	UpdateMode           = "current_mode_update"
+	UpdateConfigOptions  = "config_option_update"
+)
+
+// PlanEntry is one step of the agent's plan. Captured from claude-agent-acp
+// 0.66.0: the whole list arrives on every change, not a delta, so a client
+// replaces its copy rather than appending to it.
+type PlanEntry struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority,omitempty"`
+}
+
+// Plan entry statuses.
+const (
+	PlanPending    = "pending"
+	PlanInProgress = "in_progress"
+	PlanCompleted  = "completed"
 )
 
 // SessionUpdate is one notification from the agent. At most one of the pointer
@@ -244,6 +263,13 @@ type SessionUpdate struct {
 	ToolCall *ToolCall
 	Commands []Command
 	Usage    *ContextUsage
+	Plan     []PlanEntry
+
+	// CurrentModeID and ConfigOptions carry a change the agent made itself
+	// rather than one the client asked for — answering its own plan-mode
+	// dialog, or narrowing the effort levels after a model switch.
+	CurrentModeID string
+	ConfigOptions []ConfigOption
 }
 
 // sessionNotification is the params object wrapping every update.
@@ -291,6 +317,30 @@ func (u *SessionUpdate) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		u.Usage = &g
+	case UpdatePlan:
+		var p struct {
+			Entries []PlanEntry `json:"entries"`
+		}
+		if err := json.Unmarshal(data, &p); err != nil {
+			return err
+		}
+		u.Plan = p.Entries
+	case UpdateMode:
+		var mode struct {
+			CurrentModeID string `json:"currentModeId"`
+		}
+		if err := json.Unmarshal(data, &mode); err != nil {
+			return err
+		}
+		u.CurrentModeID = mode.CurrentModeID
+	case UpdateConfigOptions:
+		var cfg struct {
+			ConfigOptions []ConfigOption `json:"configOptions"`
+		}
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return err
+		}
+		u.ConfigOptions = cfg.ConfigOptions
 	}
 	return nil
 }

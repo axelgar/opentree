@@ -256,6 +256,7 @@ const (
 	entryThought
 	entryTool
 	entryNotice
+	entryPlan
 )
 
 // entry is one renderable item in the conversation log. Message entries
@@ -265,6 +266,7 @@ type entry struct {
 	kind entryKind
 	text string
 	tool acp.ToolCall
+	plan []acp.PlanEntry
 }
 
 type Model struct {
