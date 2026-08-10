@@ -168,8 +168,9 @@ agent's own logo, in its own colours:
 | `?` | every key |
 
 The agent's live model, mode and effort sit on the right of the input, next to
-the running context and cost. `ctrl+c` closes the chat and its tmux window; the
-conversation is saved and resumes where it left off next time you attach.
+the running context and cost. `ctrl+c` takes you back to the workspace list and
+leaves the chat running: the agent keeps working, its row keeps reporting, and
+attaching again drops you straight back into the conversation.
 
 **From the dashboard.** You don't have to attach to drive a chat. With a
 workspace selected, `m` sends it a prompt, `a` answers a pending permission

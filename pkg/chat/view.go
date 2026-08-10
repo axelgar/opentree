@@ -232,7 +232,7 @@ func (m Model) stoppedLines() []string {
 	} else {
 		actions = append(actions, permKeyStyle.Render("[r]")+" "+permLabelStyle.Render("restart agent"))
 	}
-	actions = append(actions, permKeyStyle.Render("[ctrl+c]")+" "+permLabelStyle.Render("quit"))
+	actions = append(actions, permKeyStyle.Render("[ctrl+c]")+" "+permLabelStyle.Render("back to opentree"))
 	return append(lines, strings.Join(actions, "   "))
 }
 

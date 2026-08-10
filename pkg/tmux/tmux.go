@@ -259,11 +259,81 @@ func isTerminal(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
+// returnOption is left on a window opentree attaches to, naming how a
+// full-screen program running there hands the terminal back to the workspace
+// list. Only the attaching client knows the answer — the list may be outside
+// tmux, in another window of this session, or in another session entirely —
+// and tmux's own "last" targets cover the two inside cases, so the value never
+// has to name a target.
+const returnOption = "@opentree-return"
+
+const (
+	returnDetach  = "detach"
+	returnWindow  = "window"
+	returnSession = "session"
+)
+
+// recordReturn stamps name's window with the way back, best effort: failing to
+// record it costs a nicer exit, not the attach that is about to happen.
+func (c *Controller) recordReturn(name string, env tmuxEnv) {
+	var value string
+	switch env {
+	case envOutsideTmux:
+		value = returnDetach
+	case envInsideSameSession:
+		value = returnWindow
+	case envInsideDifferentSession:
+		value = returnSession
+	default:
+		return
+	}
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-w", "-t", windowID, returnOption, value).Run()
+}
+
+// ReturnToList sends the client viewing the current pane back to opentree's
+// workspace list, and reports whether it could. It is for the programs opentree
+// runs as a tmux window's own process: exiting drops the user in whatever
+// window tmux picks next, which is not where they came from.
+func ReturnToList() bool {
+	if os.Getenv("TMUX") == "" {
+		return false
+	}
+	out, err := exec.Command("tmux", "show-options", "-wqv", returnOption).Output()
+	if err != nil {
+		return false
+	}
+	args := returnArgs(strings.TrimSpace(string(out)))
+	if args == nil {
+		return false
+	}
+	return exec.Command("tmux", args...).Run() == nil
+}
+
+// returnArgs maps a recorded return to the tmux command that performs it. A
+// missing or unknown value returns nil: a window opentree never attached to is
+// one whose caller has to decide for itself what leaving means.
+func returnArgs(value string) []string {
+	switch value {
+	case returnDetach:
+		return []string{"detach-client"}
+	case returnWindow:
+		return []string{"select-window", "-l"}
+	case returnSession:
+		return []string{"switch-client", "-l"}
+	}
+	return nil
+}
+
 // AttachWindow attaches to a specific tmux window using the correct
 // strategy based on the current environment.
 func (c *Controller) AttachWindow(name string) error {
 	env := c.detectEnv()
 	sessionName := c.getSessionName()
+	c.recordReturn(name, env)
 
 	switch env {
 	case envNoTTY:
@@ -315,6 +385,7 @@ func (c *Controller) AttachWindow(name string) error {
 func (c *Controller) AttachCmd(name string) (*exec.Cmd, error) {
 	env := c.detectEnv()
 	sessionName := c.getSessionName()
+	c.recordReturn(name, env)
 
 	switch env {
 	case envNoTTY:

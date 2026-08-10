@@ -686,6 +686,33 @@ func TestSessionExactMatch(t *testing.T) {
 	}
 }
 
+// The three ways back, plus the one that matters most: a window with nothing
+// recorded must return nil, or a chat opened by hand would detach a tmux
+// session opentree never attached to.
+func TestReturnArgs(t *testing.T) {
+	tests := map[string][]string{
+		returnDetach:  {"detach-client"},
+		returnWindow:  {"select-window", "-l"},
+		returnSession: {"switch-client", "-l"},
+		"":            nil,
+		"nonsense":    nil,
+	}
+
+	for value, want := range tests {
+		got := returnArgs(value)
+		if len(got) != len(want) {
+			t.Errorf("returnArgs(%q) = %v, want %v", value, got, want)
+			continue
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("returnArgs(%q) = %v, want %v", value, got, want)
+				break
+			}
+		}
+	}
+}
+
 func isTmuxAvailable() bool {
 	cmd := exec.Command("tmux", "-V")
 	return cmd.Run() == nil

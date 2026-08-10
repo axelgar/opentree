@@ -197,10 +197,11 @@ func chatCommand(name, agentCommand string) (string, []string, []string) {
 }
 
 // EnsureWindow reopens a workspace's agent window when it no longer serves one,
-// and reports whether it had to. Quitting the chat is an ordinary thing to do —
-// it is the window's process, so ctrl+c takes the window with it — and the
-// worktree plus its resumable conversation both outlive that. Attaching should
-// bring the workspace back rather than refuse.
+// and reports whether it had to. Losing the window is an ordinary thing: the
+// chat is its window's process, so anything that ends it — a killed window, a
+// restarted tmux server, a chat run outside opentree and quit — takes the
+// window too, while the worktree and its resumable conversation both outlive
+// that. Attaching should bring the workspace back rather than refuse.
 func (s *Service) EnsureWindow(name string) (bool, error) {
 	ws, err := s.state.GetWorkspace(name)
 	if err != nil {

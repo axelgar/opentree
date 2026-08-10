@@ -1662,13 +1662,17 @@ func TestHelp_AnyKeyCloses(t *testing.T) {
 	}
 }
 
-func TestHelp_CtrlCStillQuits(t *testing.T) {
+// ctrl+c leaves the chat rather than being swallowed by "any key closes the
+// key list". Outside tmux there is no list to go back to, so leaving is
+// quitting — which is also what keeps this test from touching a real server.
+func TestHelp_CtrlCLeaves(t *testing.T) {
+	t.Setenv("TMUX", "")
 	m := newTestModel()
 	m.showHelp = true
 	_, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlC})
 
 	if cmd == nil {
-		t.Fatal("ctrl+c from the key list did not quit")
+		t.Fatal("ctrl+c from the key list did nothing")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Errorf("ctrl+c produced %T, want tea.QuitMsg", cmd())

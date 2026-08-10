@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/tmux"
 )
 
 // Update handles one message and republishes the session's status. Publishing
@@ -228,6 +229,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// leave hands the terminal back to opentree's workspace list without stopping
+// the chat: the conversation, the agent and the status the list reads all
+// outlive looking away, and the window stays there to come back to. Quitting is
+// the fallback for a chat nobody attached to — run by hand, or in a window from
+// before opentree recorded the way back — where there is nowhere to return to.
+func leave() tea.Msg {
+	if tmux.ReturnToList() {
+		return nil
+	}
+	return tea.Quit()
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Whichever panel the footer drew is the one the keys drive. A stopped
 	// agent takes over the keyboard because r and l would otherwise be
@@ -242,8 +255,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case overlayHelp:
 		// The key list is read-only, so anything at all dismisses it rather
 		// than making people hunt for the one key that closes it.
-		if key.Matches(msg, m.keys.Quit) {
-			return m, tea.Quit
+		if key.Matches(msg, m.keys.Back) {
+			return m, leave
 		}
 		m.showHelp = false
 		return m.relayout(), nil
@@ -258,8 +271,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
-	case key.Matches(msg, m.keys.Quit):
-		return m, tea.Quit
+	case key.Matches(msg, m.keys.Back):
+		return m, leave
 
 	case key.Matches(msg, m.keys.Settings):
 		return m.openSettings()
@@ -432,8 +445,8 @@ func (m Model) stopped() bool { return m.dead || m.authNeed }
 
 func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, m.keys.Quit):
-		return m, tea.Quit
+	case key.Matches(msg, m.keys.Back):
+		return m, leave
 
 	case key.Matches(msg, m.keys.Login) && m.canLogIn():
 		return m, m.authCmd()

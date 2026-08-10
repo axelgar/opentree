@@ -16,7 +16,7 @@ type keyMap struct {
 	Help      key.Binding
 	Restart   key.Binding
 	Login     key.Binding
-	Quit      key.Binding
+	Back      key.Binding
 
 	// Commands and Mentions open the completion palette by being typed into
 	// the message rather than by being intercepted, so they are never passed
@@ -30,7 +30,7 @@ type keyMap struct {
 // status line drops from the end. ? outranks esc and ctrl+c: it is the one
 // binding that leads to the others.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Help, k.Cancel, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Help, k.Cancel, k.Back}
 }
 
 // FullHelp is every key, grouped by what it is for.
@@ -38,7 +38,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts},
-		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Quit},
+		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
 	}
 }
 
@@ -48,9 +48,9 @@ func (k keyMap) FullHelp() [][]key.Binding {
 // agent crashed is advice that cannot help.
 func (k keyMap) StoppedHelp(login bool) []key.Binding {
 	if login {
-		return []key.Binding{k.Restart, k.Login, k.Quit}
+		return []key.Binding{k.Restart, k.Login, k.Back}
 	}
-	return []key.Binding{k.Restart, k.Quit}
+	return []key.Binding{k.Restart, k.Back}
 }
 
 var keys = keyMap{
@@ -116,9 +116,9 @@ var keys = keyMap{
 		key.WithKeys("l"),
 		key.WithHelp("l", "log in"),
 	),
-	Quit: key.NewBinding(
+	Back: key.NewBinding(
 		key.WithKeys("ctrl+c"),
-		key.WithHelp("ctrl+c", "quit"),
+		key.WithHelp("ctrl+c", "back to opentree"),
 	),
 	// Both carry their key as well as their help text: bubbles drops a binding
 	// with no keys from the help entirely.
