@@ -221,12 +221,20 @@ func (m Model) View() string {
 		sb.WriteString("\n")
 		if len(m.filteredBranches) > 0 {
 			sb.WriteString("\n")
-			for i, b := range m.filteredBranches {
+			// A repo with hundreds of remote branches would otherwise render one
+			// line each and push the input box being typed into off the top of
+			// the screen, since an over-tall frame loses its first lines.
+			start, end := branchWindow(len(m.filteredBranches), m.branchSuggestionCursor, m.height-branchDialogChrome)
+			for i := start; i < end; i++ {
 				if i == m.branchSuggestionCursor {
-					sb.WriteString(selectedItemStyle.Render("▶ " + b))
+					sb.WriteString(selectedItemStyle.Render("▶ " + m.filteredBranches[i]))
 				} else {
-					sb.WriteString(itemStyle.Render("  " + b))
+					sb.WriteString(itemStyle.Render("  " + m.filteredBranches[i]))
 				}
+				sb.WriteString("\n")
+			}
+			if hidden := len(m.filteredBranches) - end + start; hidden > 0 {
+				sb.WriteString(scrollHintStyle.Render(fmt.Sprintf("  … %d more, keep typing to narrow", hidden)))
 				sb.WriteString("\n")
 			}
 		} else if len(m.remoteBranches) == 0 {
@@ -666,4 +674,19 @@ func (m Model) selectionPanels(visible []WorkspaceItem) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// branchDialogChrome is everything the suggestion list shares its screen with:
+// the title, the input, the "n more" line, the help, and the blanks between.
+const branchDialogChrome = 11
+
+// branchWindow is the slice of suggestions that fits, scrolled to keep the
+// highlighted one inside it.
+func branchWindow(total, cursor, budget int) (start, end int) {
+	rows := max(budget, 1)
+	if rows >= total {
+		return 0, total
+	}
+	start = min(max(cursor-rows/2, 0), total-rows)
+	return start, start + rows
 }

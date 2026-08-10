@@ -849,3 +849,26 @@ func TestView_SaysHowManyRowsAreHidden(t *testing.T) {
 		t.Errorf("no marker for the rows below:\n%s", view)
 	}
 }
+
+// A long branch list must not push the input box being typed into off screen.
+func TestRemoteBranchDialog_StaysInsideTheTerminal(t *testing.T) {
+	m := newTestModel()
+	m.height, m.width = 24, 100
+	m.creating, m.remoteBranchMode = true, true
+	for i := 0; i < 300; i++ {
+		m.remoteBranches = append(m.remoteBranches, fmt.Sprintf("origin/feature-%03d", i))
+	}
+	m.filteredBranches = m.remoteBranches
+	m.branchSuggestionCursor = 250
+
+	view := m.View()
+	if got := lipgloss.Height(view); got > m.height {
+		t.Errorf("dialog is %d lines tall in a %d-line terminal", got, m.height)
+	}
+	if !strings.Contains(view, "feature-250") {
+		t.Error("the highlighted branch is off screen")
+	}
+	if !strings.Contains(view, "Create Workspace from Remote Branch") {
+		t.Error("the title was pushed off the top")
+	}
+}
