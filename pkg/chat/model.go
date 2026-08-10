@@ -18,8 +18,10 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 // Options configure one chat session.
@@ -293,6 +295,7 @@ type Model struct {
 
 	perm         *permissionMsg
 	turn         bool
+	turnStart    time.Time
 	spinnerFrame int
 	usage        *acp.ContextUsage
 
@@ -334,6 +337,41 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 		keys:    keys,
 	}
 	return m.withAgentInfo(info)
+}
+
+// brand is an agent's identity on screen: its glyph, its colour, the name it
+// prefers over whatever the workspace recorded ("claude" is stored, "Claude
+// Code" is shown), and its drawing.
+type brand struct {
+	mark, colour, name string
+	logo               []string
+}
+
+// brand resolves the agent's identity on demand rather than caching it on the
+// Model. The lookup is a six-entry scan, and a cached copy would be one more
+// field every path that builds a Model has to remember to fill.
+func (m Model) brand() brand {
+	var b brand
+	b.mark, b.colour, b.name = config.Brand(m.opts.Agent)
+	if a := config.FindAgent(m.opts.Agent); a != nil {
+		b.logo = a.Logo
+	}
+	if len(b.logo) == 0 {
+		// An agent with no drawing falls back to its one glyph, so the opening
+		// screen's layout never has a hole where the logo goes.
+		b.logo = []string{"", "  " + b.mark, ""}
+	}
+	return b
+}
+
+// paint applies the agent's colour, and leaves the style alone for an agent
+// opentree does not know — inventing a colour for one would make the colours
+// stop meaning anything.
+func (b brand) paint(s lipgloss.Style) lipgloss.Style {
+	if b.colour == "" {
+		return s
+	}
+	return s.Foreground(lipgloss.Color(b.colour))
 }
 
 // adapterMissing reports whether the agent has never started, which for an

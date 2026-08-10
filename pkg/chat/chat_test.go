@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/acp"
 )
@@ -248,8 +249,8 @@ func TestPromptDone_EndsTurnAndSummarizes(t *testing.T) {
 		t.Error("turn should be over")
 	}
 	last := m.entries[len(m.entries)-1]
-	if last.kind != entryNotice || !strings.Contains(last.text, "end_turn") {
-		t.Errorf("last entry = %+v, want a notice naming the stop reason", last)
+	if last.kind != entryNotice || !strings.Contains(last.text, "10 in / 20 out") {
+		t.Errorf("last entry = %+v, want a notice summarising the turn", last)
 	}
 }
 
@@ -504,26 +505,79 @@ func TestShortPath_LeavesOutsidePathsAlone(t *testing.T) {
 	}
 }
 
-func TestPadToBottom(t *testing.T) {
-	if got := padToBottom("a\nb\n", 5); !strings.HasPrefix(got, "\n\n\n") {
-		t.Errorf("padToBottom() = %q, want leading blank lines", got)
+// The conversation starts at the top of the screen and grows downward, the way
+// anything printed to a terminal does — not pinned to the bottom above the
+// input with a void over it.
+func TestConversation_StartsAtTheTop(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, "first thing said"))
+
+	first := strings.SplitN(m.viewport.View(), "\n", 2)[0]
+	if strings.TrimSpace(first) == "" {
+		t.Errorf("conversation does not start on the viewport's first line:\n%s", m.viewport.View())
 	}
-	long := strings.Repeat("x\n", 10)
-	if got := padToBottom(long, 3); got != long {
-		t.Error("content taller than the viewport should not be padded")
+}
+
+// Once the conversation outgrows the viewport the oldest lines scroll off the
+// top and the newest stay in view, without the reader having to chase them.
+func TestConversation_NewestStaysInViewOnceItOverflows(t *testing.T) {
+	m := newTestModel()
+	// User messages, because consecutive chunks of the same kind merge into one
+	// entry and would give us a single wrapped blob instead of 60 lines.
+	for i := range 60 {
+		m, _ = applyUpdate(m, textUpdate(acp.UpdateUserMessage, fmt.Sprintf("line %d", i)))
+	}
+	view := m.viewport.View()
+	if !strings.Contains(view, "line 59") {
+		t.Errorf("newest line scrolled out of view:\n%s", view)
+	}
+	if strings.Contains(view, "line 0 ") {
+		t.Errorf("oldest line should have scrolled off the top:\n%s", view)
+	}
+}
+
+// Reading back through history must survive an arriving chunk: an agent that
+// yanks you to the bottom mid-sentence is unusable during a long turn.
+func TestConversation_ScrollbackIsNotYankedAway(t *testing.T) {
+	m := newTestModel()
+	// User messages, because consecutive chunks of the same kind merge into one
+	// entry and would give us a single wrapped blob instead of 60 lines.
+	for i := range 60 {
+		m, _ = applyUpdate(m, textUpdate(acp.UpdateUserMessage, fmt.Sprintf("line %d", i)))
+	}
+	m.viewport.GotoTop()
+	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, "and one more"))
+
+	if m.viewport.YOffset != 0 {
+		t.Errorf("YOffset = %d, want the reader left where they were", m.viewport.YOffset)
 	}
 }
 
 func TestTurnSummary(t *testing.T) {
-	if got := turnSummary(nil); got != "" {
+	if got := turnSummary(nil, time.Second); got != "" {
 		t.Errorf("turnSummary(nil) = %q, want empty", got)
 	}
 	got := turnSummary(&acp.PromptResponse{
 		StopReason: acp.StopCancelled,
 		Usage:      &acp.TokenUsage{InputTokens: 3, OutputTokens: 4},
-	})
+	}, 2500*time.Millisecond)
 	if !strings.Contains(got, acp.StopCancelled) || !strings.Contains(got, "3 in / 4 out") {
 		t.Errorf("turnSummary() = %q", got)
+	}
+	if !strings.Contains(got, "2.5s") {
+		t.Errorf("turnSummary() = %q, want the turn's duration", got)
+	}
+}
+
+// A turn that ends the ordinary way says how long it took, not "end_turn":
+// the stop reason is protocol vocabulary and is only news when it is unusual.
+func TestTurnSummary_HidesTheOrdinaryStopReason(t *testing.T) {
+	got := turnSummary(&acp.PromptResponse{StopReason: acp.StopEndTurn}, 1200*time.Millisecond)
+	if strings.Contains(got, acp.StopEndTurn) {
+		t.Errorf("turnSummary() = %q, want no stop reason", got)
+	}
+	if !strings.Contains(got, "1.2s") {
+		t.Errorf("turnSummary() = %q, want the turn's duration", got)
 	}
 }
 
@@ -950,6 +1004,33 @@ func TestEmptyChat_ShowsWhatToDo(t *testing.T) {
 	}
 }
 
+// The opening screen is the one place with room to draw the agent, and a
+// worktree you attached to without opening should say what it is running.
+func TestEmptyChat_DrawsTheAgent(t *testing.T) {
+	m := newTestModel()
+	m.opts.Agent = "claude" // as a workspace records it, not as it is shown
+	m = m.relayout()
+
+	view := m.View()
+	for _, want := range []string{"Claude Code", "▝▜█████▛▘"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("opening screen is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// An agent outside the registry still gets the layout, just without a drawing
+// or a colour to call its own.
+func TestEmptyChat_UnknownAgentStillNamed(t *testing.T) {
+	m := newTestModel()
+	m.opts.Agent = "aider"
+	m = m.relayout()
+
+	if !strings.Contains(m.View(), "aider") {
+		t.Errorf("opening screen dropped an unregistered agent:\n%s", m.View())
+	}
+}
+
 // ACP reports the version of whatever serves the protocol, which for an agent
 // behind an adapter is the adapter's — a number that does not belong to the
 // agent it is named after.
@@ -1157,5 +1238,18 @@ func TestWheel_ClicksAreIgnored(t *testing.T) {
 
 	if got := m.input.Value(); got != "half a sentence" {
 		t.Errorf("input = %q, want a click to leave it alone", got)
+	}
+}
+
+// The band behind your own message has to run the whole column. Stopping at
+// the end of the text turns a block into a highlight, and a one-word question
+// stops looking like a question at all.
+func TestUserMessage_BandRunsTheFullColumn(t *testing.T) {
+	m := newTestModel()
+	for _, width := range []int{40, 60, 98} {
+		got := lipgloss.Width(m.renderEntry(entry{kind: entryUser, text: "hi"}, width))
+		if got != width {
+			t.Errorf("user message at width %d rendered %d cells wide", width, got)
+		}
 	}
 }

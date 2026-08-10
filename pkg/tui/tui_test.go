@@ -791,6 +791,28 @@ func TestView_MainScreen_ShowsWorkspaceName(t *testing.T) {
 	}
 }
 
+// Which agent a worktree runs decides how you talk to it, and the row used to
+// be the one place that never said.
+func TestView_MainScreen_NamesTheAgent(t *testing.T) {
+	claude, opencode := testWS("a"), testWS("b")
+	claude.Agent, opencode.Agent = "claude", "opencode"
+	view := newTestModel(claude, opencode).View()
+
+	for _, want := range []string{"Claude Code", "OpenCode"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() does not name %q\ngot: %s", want, view)
+		}
+	}
+}
+
+// A workspace created before opentree recorded the agent has no name to show,
+// and must not leave a bullet with nothing in front of it.
+func TestView_MainScreen_NoAgentRecorded(t *testing.T) {
+	if view := newTestModel(testWS("legacy")).View(); strings.Contains(view, "• feature/legacy") {
+		t.Errorf("View() left a separator with no agent before it:\n%s", view)
+	}
+}
+
 func TestView_MainScreen_ShowsMergedBadge(t *testing.T) {
 	ws := testWSWithPR("feat/done", "https://github.com/example/repo/pull/1")
 	ws.PRStatus = "merged"

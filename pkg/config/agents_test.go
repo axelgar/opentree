@@ -177,3 +177,33 @@ func TestResolveACPCommand_PrefersOpentreesOwnCopy(t *testing.T) {
 		t.Errorf("with a managed copy = %q, want opentree's own", got)
 	}
 }
+
+func TestBrand_ResolvesHoweverTheAgentWasRecorded(t *testing.T) {
+	// A workspace stores whatever the user configured, which may be the binary
+	// rather than the display name.
+	mark, colour, display := Brand("claude")
+	if display != "Claude Code" || mark == "" || colour == "" {
+		t.Errorf("Brand(claude) = %q %q %q, want Claude Code fully branded", mark, colour, display)
+	}
+
+	mark, colour, display = Brand("aider")
+	if display != "aider" || colour != "" {
+		t.Errorf("Brand(aider) = %q %q %q, want the name back and no invented colour", mark, colour, display)
+	}
+	if mark == "" {
+		t.Error("an unregistered agent still needs a mark, or its row loses a column")
+	}
+}
+
+// Every agent needs a mark and a colour or the list is inconsistent; only the
+// agents opentree draws a chat for need a drawing.
+func TestPredefinedAgents_AllBranded(t *testing.T) {
+	for _, a := range PredefinedAgents {
+		if a.Mark == "" || a.Colour == "" {
+			t.Errorf("%s has no mark or colour", a.Name)
+		}
+		if a.ACP != nil && len(a.Logo) == 0 {
+			t.Errorf("%s opens a chat but has no logo to open it with", a.Name)
+		}
+	}
+}

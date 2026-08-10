@@ -10,6 +10,21 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 )
 
+// agentBrand names the agent running in a workspace, in its own colour.
+// Colourless for an agent outside the registry, because inventing a colour for
+// one would make the colours mean nothing.
+func agentBrand(name string) string {
+	if name == "" {
+		return ""
+	}
+	mark, colour, display := config.Brand(name)
+	label := mark + " " + display
+	if colour == "" {
+		return label
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colour)).Render(label)
+}
+
 const (
 	headerFooterHeight  = 8
 	minDiffHeight       = 5
@@ -428,7 +443,12 @@ func (m Model) View() string {
 			if ws.BaseBranch != "" {
 				branchDisplay += " ← " + ws.BaseBranch
 			}
+			// The agent leads the line: which agent a worktree runs is the one
+			// thing the row never said, and it decides how you talk to it.
 			descParts := []string{branchDisplay, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
+			if brand := agentBrand(ws.Agent); brand != "" {
+				descParts = append([]string{brand}, descParts...)
+			}
 
 			if ws.UncommittedCount > 0 {
 				descParts = append(descParts, uncommittedStyle.Render(fmt.Sprintf("~%d uncommitted", ws.UncommittedCount)))

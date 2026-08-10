@@ -2,6 +2,7 @@ package chat
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,10 @@ const (
 	headerHeight = 2  // title line plus the blank beneath it
 	inputHeight  = 3  // textarea rows
 	diffMaxLines = 12 // per tool call, so one large edit cannot bury the log
+
+	// compactLogoWidth separates a mark, which can stand beside the agent's
+	// name, from a wordmark, which cannot.
+	compactLogoWidth = 12
 )
 
 func newViewport(width, height int) viewport.Model {
@@ -53,7 +58,12 @@ func (m Model) View() string {
 }
 
 func (m Model) header() string {
-	left := headerStyle.Render(fmt.Sprintf("%s · %s", m.opts.Workspace, m.opts.Agent))
+	// The workspace keeps the banner — it is what distinguishes this window
+	// from the one next to it — and the agent sits beside it in its own colour
+	// rather than inside the banner, where a second colour would fight it.
+	b := m.brand()
+	left := headerStyle.Render(m.opts.Workspace) + " " +
+		b.paint(lipgloss.NewStyle()).Render(b.mark+" "+b.name)
 
 	meta := m.settingsSummary()
 	if m.usage != nil {
@@ -306,16 +316,45 @@ func (m Model) conversationStarted() bool {
 // whatever serves the protocol, which for Claude Code is the adapter — so
 // "Claude Code 0.66.0" would name a release of Claude Code that does not exist.
 func (m Model) emptyState() string {
-	lines := []string{
-		noticeStyle.Render(fmt.Sprintf("%s, working in %s.", m.opts.Agent, m.opts.Workspace)),
-		"",
+	// Logo left, three lines of identity right: what you are talking to, where
+	// it is standing, and which worktree that is. Someone attaching to a window
+	// they did not open learns all three without typing.
+	b := m.brand()
+	logo := b.paint(logoStyle).Render(strings.Join(b.logo, "\n"))
+	who := strings.Join([]string{
+		b.paint(agentNameStyle).Render(b.name),
+		cwdStyle.Render(m.opts.Workspace),
+		cwdStyle.Render(shortHome(m.opts.Cwd)),
+	}, "\n")
+
+	// A compact mark stands beside the identity, the way Claude Code's own
+	// banner does. A wordmark takes its own line and lets the identity sit
+	// underneath — which is how opencode shows its own, and it would read
+	// oddly beside the name it already spells.
+	banner := lipgloss.JoinVertical(lipgloss.Left, logo, "", who)
+	if w := lipgloss.Width(logo); w <= compactLogoWidth && w+3+lipgloss.Width(who) <= m.width {
+		banner = lipgloss.JoinHorizontal(lipgloss.Top, logo, "   ", who)
+	}
+
+	hints := []string{
 		hintLine("/", "the agent's own commands"),
 		hintLine("@", "point it at a file in this worktree"),
 		hintLine("?", "every key"),
 	}
 	// Trailing blank line: a notice can follow the hint, and the two run
 	// together otherwise.
-	return "\n" + strings.Join(lines, "\n") + "\n\n"
+	return "\n" + banner + "\n\n" + strings.Join(hints, "\n") + "\n\n"
+}
+
+// shortHome keeps the worktree path readable by trimming the part of it that is
+// the same for everything the user owns.
+func shortHome(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rel := strings.TrimPrefix(path, home); rel != path {
+			return "~" + rel
+		}
+	}
+	return path
 }
 
 func hintLine(sigil, desc string) string {
@@ -327,9 +366,12 @@ func (m Model) renderEntry(e entry, width int) string {
 
 	switch e.kind {
 	case entryUser:
-		return "\n" + promptMarkStyle.Render("› ") + wrap.Inherit(userTextStyle).Render(e.text)
+		// Width is set on the box so the band runs the full column rather than
+		// stopping at the end of the text, where it would read as a highlight.
+		// Less one for the border, which lipgloss adds outside the width.
+		return "\n" + userBoxStyle.Width(width-1).Render(e.text) + "\n"
 	case entryAgent:
-		return wrap.Inherit(agentTextStyle).Render(e.text)
+		return m.bulleted(wrap.Width(width - 2).Inherit(agentTextStyle).Render(e.text))
 	case entryThought:
 		return wrap.Inherit(thoughtStyle).Render(e.text)
 	case entryNotice:
@@ -338,6 +380,19 @@ func (m Model) renderEntry(e entry, width int) string {
 		return m.renderTool(e.tool, width)
 	}
 	return ""
+}
+
+// bulleted hangs a coloured mark off the agent's first line and indents the
+// rest to clear it, so a wrapped paragraph stays one visual block instead of
+// dissolving into the tool rows around it.
+func (m Model) bulleted(body string) string {
+	b := m.brand()
+	lines := strings.Split(body, "\n")
+	out := b.paint(agentMarkStyle).Render(b.mark) + " " + lines[0]
+	for _, l := range lines[1:] {
+		out += "\n  " + l
+	}
+	return out
 }
 
 func (m Model) renderTool(call acp.ToolCall, width int) string {

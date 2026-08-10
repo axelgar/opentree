@@ -14,12 +14,30 @@ var (
 	metaStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262"))
 
-	promptMarkStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F4A261")).
+	// What you said is a block, not a line: an accent rule down the left and a
+	// band a shade off the background. Scrolling a long conversation is mostly
+	// hunting for your own last question, and a marker glyph alone does not
+	// survive that at a glance.
+	userBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.ThickBorder(), false, false, false, true).
+			BorderForeground(lipgloss.Color("#F4A261")).
+			Background(lipgloss.Color("#26262B")).
+			Foreground(lipgloss.Color("#EEE")).
+			PaddingLeft(1)
+
+	// Brand styles for an agent outside the registry, or one that named no
+	// colour. Both still get the layout; they just get it in grey.
+	agentMarkStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888"))
+
+	logoStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888"))
+
+	agentNameStyle = lipgloss.NewStyle().
 			Bold(true)
 
-	userTextStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#DDD"))
+	cwdStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262"))
 
 	agentTextStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EEE"))

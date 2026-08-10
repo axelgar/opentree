@@ -124,10 +124,11 @@ without scraping its output.
 Press `Enter` on a workspace to attach to its chat:
 
 ```
- fix-auth · OpenCode                              claude-sonnet-4.6 · plan · 12% ctx · $0.0431
+ fix-auth  ◆ OpenCode                             claude-sonnet-4.6 · plan · 12% ctx · $0.0431
 
- › add a rate limiter to the login handler
+┃ add a rate limiter to the login handler
 
+◆ Adding one keyed by client IP, and a test for the burst case.
    ✓ pkg/auth/login.go  +18 -2
      + limiter := rate.NewLimiter(rate.Every(time.Second), 5)
    ⠹ go test ./pkg/auth/
@@ -139,6 +140,17 @@ Press `Enter` on a workspace to attach to its chat:
  │ [d] Reject                           │
  ╰──────────────────────────────────────╯
  permission needed · esc to cancel
+```
+
+Each agent has its own mark and colour — `◆` for OpenCode, `✻` for Claude Code —
+so the chat header and every workspace row in the dashboard say which agent you
+are dealing with without being read word by word. An empty chat opens on the
+agent's own logo, in its own colours:
+
+```
+ ▐▛███▜▌    Claude Code
+▝▜█████▛▘   fix-auth
+  ▘▘ ▝▝     ~/src/myrepo/.opentree/fix-auth
 ```
 
 | Key | |

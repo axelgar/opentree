@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -115,7 +116,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queued = "" // a queued prompt must not fire into a broken session
 			return m, nil
 		}
-		m = m.appendNotice(turnSummary(msg.resp))
+		// A turn that began before this model existed — a resumed session, or a
+		// test — has no start, and time.Since(zero) would report decades.
+		var elapsed time.Duration
+		if !m.turnStart.IsZero() {
+			elapsed = time.Since(m.turnStart)
+		}
+		m = m.appendNotice(turnSummary(msg.resp, elapsed))
 		m = m.relayout()
 		return m.flushQueued()
 
@@ -295,14 +302,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.turn || m.sessionID == "" {
 			return m, nil
 		}
-		cmd := m.promptCmd(text)
 		m.input.Reset()
 		m.completion = completionState{}
-		m.entries = append(m.entries, entry{kind: entryUser, text: text})
-		m.turn = true
-		m.err = nil
-		m = m.relayout()
-		return m, tea.Batch(cmd, spinnerTick())
+		return m.startTurn(text)
 	}
 
 	var cmd tea.Cmd
@@ -399,6 +401,7 @@ func (m Model) startTurn(text string) (Model, tea.Cmd) {
 	cmd := m.promptCmd(text)
 	m.entries = append(m.entries, entry{kind: entryUser, text: text})
 	m.turn = true
+	m.turnStart = time.Now()
 	m.err = nil
 	return m.relayout(), tea.Batch(cmd, spinnerTick())
 }
@@ -552,9 +555,13 @@ func (m Model) appendNotice(text string) Model {
 }
 
 // relayout re-renders the log into the viewport, sizing it around whatever the
-// footer currently needs. Scroll position is only forced to the bottom when the
-// reader was already there, so scrolling back through history is not yanked
-// away by an arriving chunk.
+// footer currently needs.
+//
+// The conversation is anchored to the top and grows downward, the way anything
+// printed to a terminal does; once it outgrows the viewport the oldest lines
+// scroll off the top on their own. Scroll position is only forced to the bottom
+// when the reader was already there, so reading back through history is not
+// yanked away by an arriving chunk.
 func (m Model) relayout() Model {
 	if !m.ready {
 		return m
@@ -570,28 +577,27 @@ func (m Model) relayout() Model {
 		atBottom = true
 	}
 	m.viewport.Width, m.viewport.Height = m.width, height
-	m.viewport.SetContent(padToBottom(m.renderLog(), height))
+	m.viewport.SetContent(m.renderLog())
 	if atBottom {
 		m.viewport.GotoBottom()
 	}
 	return m
 }
 
-// padToBottom pushes a short conversation down against the input box. Without
-// it a new session renders its first exchange at the top of the screen with a
-// growing void beneath, which reads as broken rather than empty.
-func padToBottom(content string, height int) string {
-	if pad := height - strings.Count(content, "\n"); pad > 0 {
-		return strings.Repeat("\n", pad) + content
-	}
-	return content
-}
-
-func turnSummary(resp *acp.PromptResponse) string {
+// turnSummary is the line under a finished turn. The stop reason only earns a
+// place when it is not the ordinary one: "end_turn" printed under every answer
+// is protocol vocabulary sitting where "how long did that take" should be.
+func turnSummary(resp *acp.PromptResponse, elapsed time.Duration) string {
 	if resp == nil {
 		return ""
 	}
-	parts := []string{resp.StopReason}
+	var parts []string
+	if resp.StopReason != acp.StopEndTurn && resp.StopReason != "" {
+		parts = append(parts, resp.StopReason)
+	}
+	if elapsed > 0 {
+		parts = append(parts, elapsed.Truncate(100*time.Millisecond).String())
+	}
 	if resp.Usage != nil {
 		parts = append(parts, fmt.Sprintf("%d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens))
 	}

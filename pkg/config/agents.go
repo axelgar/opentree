@@ -12,6 +12,21 @@ type PredefinedAgent struct {
 	Args        []string // default args
 	Description string   // short description for list display
 	ACP         *ACPSpec // how to run it as an ACP server; nil means no ACP mode
+
+	// Colour and Mark are the agent's identity in a crowded line. A worktree
+	// row has no space for a drawing, but it has space for one glyph, and a
+	// colour tells the eye which agent it is before the name is read.
+	//
+	// The glyphs are deliberately plain geometry: anything from the emoji
+	// range renders double-width in some terminals and single in others, which
+	// shifts every column after it.
+	Colour string
+	Mark   string
+
+	// Logo is the agent's mark drawn large, for the one screen with room for
+	// it: the opening of a chat. Only agents opentree draws a chat for need
+	// one, so the plain-launch agents leave it empty.
+	Logo []string
 }
 
 // ACPSpec describes how to start an agent as an Agent Client Protocol server on
@@ -47,8 +62,25 @@ type ACPSpec struct {
 // PredefinedAgents is the built-in registry of known agents.
 var PredefinedAgents = []PredefinedAgent{
 	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
+		// opencode's own wordmark and its brand grey, transcribed from its
+		// splash screen. The stray ▄ is the ascender on the d.
+		Colour: "#CFCECD", Mark: "◆",
+		Logo: []string{
+			"                                 ▄",
+			"█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█",
+			"█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀",
+			"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
+		},
 		ACP: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
+		// Claude Code's own mark, transcribed from its welcome banner, in
+		// Anthropic's clay.
+		Colour: "#D97757", Mark: "✻",
+		Logo: []string{
+			" ▐▛███▜▌",
+			"▝▜█████▛▘",
+			"  ▘▘ ▝▝",
+		},
 		// Claude Code has no ACP mode of its own; claude-agent-acp bridges it,
 		// reusing the same login. Install with
 		// `npm i -g @agentclientprotocol/claude-agent-acp`.
@@ -58,10 +90,25 @@ var PredefinedAgents = []PredefinedAgent{
 			InstallSize: "303MB",
 			AuthCommand: []string{"auth", "login"},
 		}},
-	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},
-	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI"},
-	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent"},
-	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent"},
+	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent",
+		Colour: "#10A37F", Mark: "◈"},
+	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI",
+		Colour: "#A371F7", Mark: "◉"},
+	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent",
+		Colour: "#4285F4", Mark: "✦"},
+	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent",
+		Colour: "#2A9D8F", Mark: "π"},
+}
+
+// Brand is the agent's mark and colour, resolved from whatever name a
+// workspace recorded — which may be a command, a display name, or an agent
+// opentree has never heard of. The fallback is deliberately unstyled rather
+// than absent: an unknown agent should still be named in the list.
+func Brand(name string) (mark, colour, display string) {
+	if a := FindAgent(name); a != nil {
+		return a.Mark, a.Colour, a.Name
+	}
+	return "·", "", name
 }
 
 // ACPCommand is the binary that serves ACP for this agent: its own, unless the
