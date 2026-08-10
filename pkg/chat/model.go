@@ -168,7 +168,14 @@ func Run(ctx context.Context, opts Options) error {
 	return err
 }
 
-func p(m Model) *tea.Program { return tea.NewProgram(m, tea.WithAltScreen()) }
+// Mouse cell motion is not about clicking — it is what makes the terminal hand
+// scroll events to the program instead of scrolling its own buffer. Without it
+// the wheel walks back out of the alt screen into whatever the shell printed
+// before opentree started, which is the opposite of feeling like an app. The
+// dashboard captures the mouse for the same reason.
+func p(m Model) *tea.Program {
+	return tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+}
 
 // ---------------------------------------------------------------------------
 // Messages

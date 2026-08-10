@@ -316,6 +316,12 @@ func (m Model) View() string {
 
 	visible := m.visibleWorkspaces()
 
+	// Everything below the list is built first so its height is known: the list
+	// gets whatever is left, rather than overflowing and having the renderer
+	// drop lines off the top of the screen.
+	panels := m.selectionPanels(visible)
+	start, end := m.listWindow(visible, m.height-lipgloss.Height(s.String())-lipgloss.Height(panels)-listChromeLines)
+
 	// Workspace list
 	if len(visible) == 0 {
 		if m.filterQuery != "" {
@@ -325,7 +331,12 @@ func (m Model) View() string {
 		}
 		s.WriteString("\n")
 	} else {
-		for i, ws := range visible {
+		if start > 0 {
+			s.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+			s.WriteString("\n")
+		}
+		for i := start; i < end; i++ {
+			ws := visible[i]
 			// Inline deleting state
 			isDeleting := m.workspaceDeletingName == ws.Name || m.workspaceDeletingNames[ws.Name]
 			if isDeleting {
@@ -438,27 +449,11 @@ func (m Model) View() string {
 				s.WriteString("\n")
 			}
 		}
-
-		// Per-file changes panel for selected workspace
-		if m.cursor < len(visible) {
-			ws := visible[m.cursor]
-			if len(ws.FileChanges) > 0 {
-				previewWidth := m.panelWidth()
-				content := m.renderFileChanges(ws.FileChanges, previewWidth)
-				s.WriteString(fileChangesBoxStyle.Width(previewWidth).Render(content))
-				s.WriteString("\n")
-			}
-		}
-
-		// Agent output preview for selected workspace
-		if m.agentPreview != "" && m.cursor < len(visible) {
-			wsName := visible[m.cursor].Name
-			previewWidth := m.panelWidth()
-			content := previewTitleStyle.Render("Agent Output: "+wsName) + "\n" +
-				previewLineStyle.Render(m.agentPreview)
-			s.WriteString(previewBoxStyle.Width(previewWidth).Render(content))
+		if end < len(visible) {
+			s.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↓ %d more", len(visible)-end)))
 			s.WriteString("\n")
 		}
+		s.WriteString(panels)
 	}
 
 	// Creating ghost entry (non-selectable, rendered outside the list)
@@ -619,4 +614,56 @@ func renderCIBadge(ci string) string {
 		return " " + ciPendingStyle.Render("⟳ CI")
 	}
 	return ""
+}
+
+// listChromeLines is what the list must leave for the status bar, the help
+// line, the blank between them and a possible "creating…" ghost.
+const listChromeLines = 5
+
+// listRowLines is the height of one workspace row: its title and its detail
+// line. The merged-workspace hint adds one more, which the budget absorbs.
+const listRowLines = 2
+
+// listWindow is the slice of workspaces that fits, scrolled to keep the cursor
+// inside it. Without this the list renders every workspace and overflows the
+// terminal, and bubbletea's renderer resolves an over-tall frame by dropping
+// lines from the *top* — silently eating the header, the error banner and the
+// first rows, with no key able to bring them back.
+func (m Model) listWindow(visible []WorkspaceItem, budget int) (start, end int) {
+	rows := budget / listRowLines
+	if rows < 1 {
+		rows = 1
+	}
+	if rows >= len(visible) {
+		return 0, len(visible)
+	}
+
+	// Keep the cursor in view, and prefer to scroll no further than needed so
+	// the selection stays where the eye left it.
+	start = m.cursor - rows/2
+	start = min(max(start, 0), len(visible)-rows)
+	return start, start + rows
+}
+
+// selectionPanels are the detail panels for the selected workspace. Built
+// separately from the list so their height can be subtracted from its budget.
+func (m Model) selectionPanels(visible []WorkspaceItem) string {
+	if m.cursor >= len(visible) {
+		return ""
+	}
+	var b strings.Builder
+	ws := visible[m.cursor]
+	width := m.panelWidth()
+
+	if len(ws.FileChanges) > 0 {
+		b.WriteString(fileChangesBoxStyle.Width(width).Render(m.renderFileChanges(ws.FileChanges, width)))
+		b.WriteString("\n")
+	}
+	if m.agentPreview != "" {
+		content := previewTitleStyle.Render("Agent Output: "+ws.Name) + "\n" +
+			previewLineStyle.Render(m.agentPreview)
+		b.WriteString(previewBoxStyle.Width(width).Render(content))
+		b.WriteString("\n")
+	}
+	return b.String()
 }

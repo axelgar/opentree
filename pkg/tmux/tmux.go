@@ -31,55 +31,21 @@ func New(sessionPrefix string) *Controller {
 	}
 }
 
-// CreateWindow creates a new tmux window and runs a command in it. env holds
-// KEY=value pairs set in the window's environment (tmux new-window -e, ≥3.0)
-// rather than typed into the shell, keeping the visible command line clean.
+// CreateWindow creates a new tmux window and types a command into its shell.
+// The shell is the window's process and outlives the command, so the window
+// stays open — and the worktree stays a place you can work — after an agent
+// that draws its own TUI exits.
+//
+// env holds KEY=value pairs set in the window's environment (tmux new-window
+// -e, ≥3.0) rather than typed into the shell, keeping the visible line clean.
 func (c *Controller) CreateWindow(name, workdir, command string, env []string, args ...string) error {
-	// Fail with a clear message before creating a session: on tmux <3.0 the
-	// new-window -e flag below would die with an opaque usage error.
-	if err := c.checkVersion(); err != nil {
+	windowID, err := c.newWindow(name, workdir, env)
+	if err != nil {
 		return err
 	}
 
-	sessionName := c.getSessionName()
-
-	// Ensure tmux session exists
-	if !c.sessionExists(sessionName) {
-		if err := c.createSession(sessionName); err != nil {
-			return fmt.Errorf("failed to create tmux session: %w", err)
-		}
-	}
-
-	// Create new window, capturing its unique window ID so later commands
-	// target exactly this window (names would prefix-match and "." or digits
-	// in a name are parsed specially by tmux target syntax).
-	windowName := c.sanitizeWindowName(name)
-	newWindowArgs := []string{"new-window", "-t", exactSession(sessionName) + ":",
-		"-n", windowName, "-c", workdir, "-P", "-F", "#{window_id}"}
-	for _, e := range env {
-		newWindowArgs = append(newWindowArgs, "-e", e)
-	}
-	cmd := exec.Command("tmux", newWindowArgs...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
-	}
-	windowID := strings.TrimSpace(string(output))
-
-	// Send command to the window, raising the file descriptor limit first
-	// so that tools like claude and opencode don't hit the default macOS limit.
-	fullCmd := command
-	if len(args) > 0 {
-		quoted := make([]string, len(args))
-		for i, a := range args {
-			quoted[i] = shellQuote(a)
-		}
-		fullCmd = command + " " + strings.Join(quoted, " ")
-	}
-	fullCmd = fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", fullCmd)
-
 	// -l types the command line literally so tmux never interprets it as key names.
-	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", windowID, "--", fullCmd)
+	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", windowID, "--", launchLine(command, args))
 	if output, err := sendCmd.CombinedOutput(); err != nil {
 		// Don't leave a dead window behind for the retry to collide with.
 		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
@@ -92,6 +58,69 @@ func (c *Controller) CreateWindow(name, workdir, command string, env []string, a
 	}
 
 	return nil
+}
+
+// CreateAppWindow creates a window whose process *is* the command. Nothing is
+// typed into a shell, which is the difference that matters for a full-screen
+// program: tmux's alternate screen preserves whatever the pane held before the
+// program started and puts it back when it exits, so a shell launched first
+// leaves its startup output, its prompt and the launch line sitting behind the
+// program — reachable by scrolling, and revealed the moment it quits.
+//
+// Running the program directly leaves the pane with nothing behind it, and the
+// window closes when the program does.
+func (c *Controller) CreateAppWindow(name, workdir, command string, env []string, args ...string) error {
+	// exec so the program replaces the shell rather than being its child;
+	// otherwise the pane's process is sh and nothing has really changed.
+	_, err := c.newWindow(name, workdir, env, "--", "sh", "-c", launchLine(command, args, "exec"))
+	return err
+}
+
+// newWindow creates the window and returns its unique tmux id. Commands target
+// the id rather than the name: names prefix-match, and "." or digits in one are
+// parsed specially by tmux's target syntax.
+func (c *Controller) newWindow(name, workdir string, env []string, trailing ...string) (string, error) {
+	// Fail with a clear message before creating a session: on tmux <3.0 the
+	// new-window -e flag below would die with an opaque usage error.
+	if err := c.checkVersion(); err != nil {
+		return "", err
+	}
+
+	sessionName := c.getSessionName()
+	if !c.sessionExists(sessionName) {
+		if err := c.createSession(sessionName); err != nil {
+			return "", fmt.Errorf("failed to create tmux session: %w", err)
+		}
+	} else {
+		// Sessions predating this option, or made by hand, get it too — setting
+		// it is idempotent and cheaper than explaining why one repo's windows
+		// scroll and another's do not.
+		c.enableMouse(sessionName)
+	}
+
+	args := []string{"new-window", "-t", exactSession(sessionName) + ":",
+		"-n", c.sanitizeWindowName(name), "-c", workdir, "-P", "-F", "#{window_id}"}
+	for _, e := range env {
+		args = append(args, "-e", e)
+	}
+	args = append(args, trailing...)
+
+	output, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// launchLine is the shell line that starts an agent. The file descriptor limit
+// is raised first so tools like claude and opencode do not hit the default
+// macOS limit. prefix is "exec" when the program should replace the shell.
+func launchLine(command string, args []string, prefix ...string) string {
+	parts := append(append([]string{}, prefix...), command)
+	for _, a := range args {
+		parts = append(parts, shellQuote(a))
+	}
+	return fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", strings.Join(parts, " "))
 }
 
 // checkVersion fails when the installed tmux predates 3.0, which CreateWindow
@@ -473,7 +502,28 @@ func (c *Controller) createSession(name string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create session: %w\nOutput: %s", err, output)
 	}
+	c.enableMouse(name)
 	return nil
+}
+
+// enableMouse makes tmux report mouse events to the program in the pane. tmux
+// defaults to mouse off, which does not mean "no mouse" — it means tmux never
+// asks the outer terminal for mouse reporting, so the wheel is handled by the
+// terminal itself and scrolls its scrollback, walking straight out of whatever
+// full-screen view opentree is drawing and into the shell history behind it.
+// Both of opentree's views capture the mouse; this is what lets the events
+// reach them.
+//
+// Scoped to opentree's own session with -t rather than -g: the user's global
+// tmux preference is theirs, and opentree only speaks for the session it made.
+// Best-effort — a tmux too old to know the option is not a reason to fail
+// creating the session.
+//
+// The target needs the trailing colon. set-option rejects a bare "=name" with
+// "no such session"; "=name:" is the form that both resolves exactly and is
+// accepted, which is why it is what new-window uses too.
+func (c *Controller) enableMouse(session string) {
+	_ = exec.Command("tmux", "set-option", "-t", exactSession(session)+":", "mouse", "on").Run()
 }
 
 // sanitizeWindowName converts a branch name to a valid tmux window name

@@ -16,8 +16,14 @@ type Window struct {
 // is not coupled to a specific backend (tmux, terminal tabs, etc.).
 type ProcessManager interface {
 	// CreateWindow creates a new window running command in workdir, with
-	// env (KEY=value pairs) set in the window's environment.
+	// env (KEY=value pairs) set in the window's environment. A shell owns the
+	// window, so it survives the command exiting.
 	CreateWindow(name, workdir, command string, env []string, args ...string) error
+
+	// CreateAppWindow is CreateWindow for a program that owns the whole
+	// screen: the command becomes the window's process, so nothing of the
+	// shell sits behind it and the window closes when it exits.
+	CreateAppWindow(name, workdir, command string, env []string, args ...string) error
 
 	// ListWindows returns all windows in the current session.
 	ListWindows() ([]Window, error)

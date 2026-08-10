@@ -24,6 +24,7 @@ type mockProcessManager struct {
 	createWindowCommands []string
 	createWindowArgs     [][]string
 	createWindowErr      error
+	appWindowCalls       []string // names passed to CreateAppWindow
 	killWindowCalls      []string
 	killSessionCalled    bool
 	sendMessageCalls     []sendMessageCall
@@ -33,6 +34,17 @@ type mockProcessManager struct {
 }
 
 func (m *mockProcessManager) CreateWindow(name, workdir, command string, env []string, args ...string) error {
+	m.createWindowCalls = append(m.createWindowCalls, name)
+	m.createWindowEnvs = append(m.createWindowEnvs, env)
+	m.createWindowCommands = append(m.createWindowCommands, command)
+	m.createWindowArgs = append(m.createWindowArgs, args)
+	return m.createWindowErr
+}
+
+// CreateAppWindow records separately so a test can tell which launch path was
+// taken: the chat owns its window, an agent with its own TUI gets a shell.
+func (m *mockProcessManager) CreateAppWindow(name, workdir, command string, env []string, args ...string) error {
+	m.appWindowCalls = append(m.appWindowCalls, name)
 	m.createWindowCalls = append(m.createWindowCalls, name)
 	m.createWindowEnvs = append(m.createWindowEnvs, env)
 	m.createWindowCommands = append(m.createWindowCommands, command)
@@ -1178,5 +1190,108 @@ func TestChatCommand_UsesTheRunningBinary(t *testing.T) {
 	want := []string{"chat", "fix-auth", "--agent", "opencode"}
 	if strings.Join(args, " ") != strings.Join(want, " ") {
 		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+// The chat owns its window, so a shell sitting in its place means the chat is
+// gone — attaching would drop the user at a prompt instead of the conversation.
+func TestEnsureWindow_TreatsAShellInPlaceOfTheChatAsGone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode"
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("shelled", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mock.paneCommand = "zsh"
+	reopened, err := svc.EnsureWindow("shelled")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if !reopened {
+		t.Fatal("a window sitting at a shell was reported healthy")
+	}
+}
+
+// An agent that draws its own TUI is launched into a shell on purpose, and that
+// shell is where the user lands when the agent exits. It is not a dead window.
+func TestEnsureWindow_LeavesAPlainAgentsShellAlone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "codex")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "codex" // no ACP mode
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("plain", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mock.paneCommand = "zsh"
+	reopened, err := svc.EnsureWindow("plain")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if reopened {
+		t.Error("relaunched a shell that was meant to be there")
+	}
+}
+
+// The chat is the window's process; an agent with its own TUI is typed into a
+// shell that outlives it.
+func TestCreate_ChatOwnsItsWindow(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	for _, tt := range []struct {
+		agent string
+		owns  bool
+	}{
+		{"opencode", true},
+		{"codex", false},
+	} {
+		t.Run(tt.agent, func(t *testing.T) {
+			repoDir := initGitRepo(t)
+			binDir := t.TempDir()
+			fakeBinary(t, binDir, tt.agent)
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			cfg := config.Default()
+			cfg.Agent.Command = tt.agent
+			mock := &mockProcessManager{}
+			svc, err := newWithMock(repoDir, cfg, mock)
+			if err != nil {
+				t.Fatalf("newWithMock: %v", err)
+			}
+			if _, err := svc.Create("ws", "main"); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			if got := len(mock.appWindowCalls) == 1; got != tt.owns {
+				t.Errorf("%s took the owning launch = %v, want %v", tt.agent, got, tt.owns)
+			}
+		})
 	}
 }

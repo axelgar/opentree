@@ -80,6 +80,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
+	// Having captured the mouse, the wheel has to do something: the viewport
+	// scrolls itself, three lines at a time, whatever panel the footer shows.
+	case tea.MouseMsg:
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+
 	case acpUpdateMsg:
 		m = m.applyUpdate(acp.SessionUpdate(msg))
 		m = m.relayout()
@@ -175,12 +182,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, tea.Batch(cmd, waitForMsg(m.msgs))
 
 	case authDoneMsg:
+		// ExecProcess's RestoreTerminal re-enters the alt screen but drops mouse
+		// mode, so coming back from the login flow leaves the wheel scrolling the
+		// host terminal again until it is turned back on (see commit ebc72b9,
+		// which found this on the dashboard's attach path).
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
+			return m, tea.EnableMouseCellMotion
 		}
 		// Credentials are read at startup, so a fresh login needs a fresh agent.
-		return m, m.restartCmd()
+		return m, tea.Batch(tea.EnableMouseCellMotion, m.restartCmd())
 
 	case errMsg:
 		m.err = msg.err

@@ -138,18 +138,43 @@ func agentEnv(worktreePath string) []string {
 func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, error) {
 	worktreePath := s.WorktreePath(name)
 
-	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
-	if agent := config.FindAgent(s.cfg.Agent.Command); agent != nil && agent.ACP != nil {
-		command, env, args = chatCommand(name, agent.Command)
-	} else {
+	launch := s.agentLaunch(name, s.cfg.Agent.Command, worktreePath)
+	if !launch.ownsWindow {
 		s.worktrees.EnsureExcluded(StatusFileName)
 	}
 
-	if err := s.process.CreateWindow(name, worktreePath, command, env, args...); err != nil {
+	if err := launch.run(); err != nil {
 		_ = s.worktrees.Delete(name, deleteBranch)
 		return "", fmt.Errorf("failed to create tmux window: %w", err)
 	}
 	return worktreePath, nil
+}
+
+// windowLaunch is a decided, not-yet-run window creation.
+type windowLaunch struct {
+	run func() error
+
+	// ownsWindow distinguishes opentree's own chat, which is the window's
+	// process, from an agent typed into a shell that outlives it. It decides
+	// more than how to start: only the shell path needs the status file, and
+	// only the chat path can be assumed dead when the window is gone.
+	ownsWindow bool
+}
+
+// agentLaunch decides how a workspace's window starts. Both callers go through
+// it so the choice cannot drift between creating a workspace and reopening one.
+func (s *Service) agentLaunch(name, agentName, worktreePath string) windowLaunch {
+	if agent := config.FindAgent(agentName); agent != nil && agent.ACP != nil {
+		command, env, args := chatCommand(name, agent.Command)
+		return windowLaunch{
+			run:        func() error { return s.process.CreateAppWindow(name, worktreePath, command, env, args...) },
+			ownsWindow: true,
+		}
+	}
+	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
+	return windowLaunch{
+		run: func() error { return s.process.CreateWindow(name, worktreePath, command, env, args...) },
+	}
 }
 
 // chatCommand is how a tmux window runs opentree's own chat view.
@@ -171,33 +196,45 @@ func chatCommand(name, agentCommand string) (string, []string, []string) {
 	return exe, nil, []string{"chat", name, "--agent", agentCommand}
 }
 
-// EnsureWindow reopens a workspace's agent window when it no longer exists,
-// and reports whether it had to. Closing the window is now an ordinary thing to
-// do — the chat view runs as the window's command, so quitting it takes the
-// window with it — and the worktree plus its resumable conversation both
-// outlive that. Attaching should bring the workspace back rather than refuse.
+// EnsureWindow reopens a workspace's agent window when it no longer serves one,
+// and reports whether it had to. Quitting the chat is an ordinary thing to do —
+// it is the window's process, so ctrl+c takes the window with it — and the
+// worktree plus its resumable conversation both outlive that. Attaching should
+// bring the workspace back rather than refuse.
 func (s *Service) EnsureWindow(name string) (bool, error) {
 	ws, err := s.state.GetWorkspace(name)
 	if err != nil {
 		return false, err
 	}
-	if _, err := s.process.PaneCurrentCommand(name); err == nil {
+
+	worktreePath := s.WorktreePath(name)
+	launch := s.agentLaunch(name, ws.Agent, worktreePath)
+	if !launch.needsWindow(s.process, name) {
 		return false, nil
 	}
 
-	worktreePath := s.WorktreePath(name)
 	if _, err := os.Stat(worktreePath); err != nil {
 		return false, fmt.Errorf("worktree for %q is missing: %w", name, err)
 	}
-
-	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
-	if agent := config.FindAgent(ws.Agent); agent != nil && agent.ACP != nil {
-		command, env, args = chatCommand(name, agent.Command)
-	}
-	if err := s.process.CreateWindow(name, worktreePath, command, env, args...); err != nil {
+	if err := launch.run(); err != nil {
 		return false, fmt.Errorf("failed to reopen window for %q: %w", name, err)
 	}
 	return true, nil
+}
+
+// needsWindow reports whether the workspace has no usable window.
+//
+// A missing window is the easy case. A window sitting at a bare shell is the
+// one worth naming: the chat owns its window, so a shell in its place means the
+// chat is gone and attaching would land the user at a prompt rather than in the
+// conversation. Windows that were always a shell — an agent drawing its own TUI
+// — are left alone, because there the shell is the point.
+func (l windowLaunch) needsWindow(p ProcessManager, name string) bool {
+	cmd, err := p.PaneCurrentCommand(name)
+	if err != nil {
+		return true // no window at all
+	}
+	return l.ownsWindow && isShell(cmd)
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.

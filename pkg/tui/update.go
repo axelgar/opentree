@@ -56,6 +56,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampDiffScroll()
 		}
 
+	case tea.MouseMsg:
+		return m.handleWheel(msg)
+
 	case tea.KeyMsg:
 		// ctrl+c always quits, even inside dialogs and text inputs where
 		// other keys are captured as text.
@@ -144,15 +147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.diffScrollOffset--
 				}
 			case "down", "j":
-				availHeight := m.height - 8
-				if availHeight < 5 {
-					availHeight = 5
-				}
-				maxScroll := len(strings.Split(m.diffContent, "\n")) - availHeight
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.diffScrollOffset < maxScroll {
+				if m.diffScrollOffset < m.maxDiffScroll() {
 					m.diffScrollOffset++
 				}
 			}
@@ -798,15 +793,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendErrLog(fmt.Sprintf("PR status check: %v", msg.err))
 
 	case attachFinishedMsg:
-		// ExecProcess's RestoreTerminal re-enters the alt screen but drops mouse
-		// mode, which is what keeps the terminal's own scrollback suppressed. Turn
-		// it back on so returning from a worktree still feels fullscreen.
 		if msg.err != nil {
 			m.err = msg.err
 			m.appendErrLog(msg.err.Error())
-			return m, tea.Batch(tea.EnableMouseCellMotion, m.scheduleErrClear())
+			return m, afterExec(m.scheduleErrClear())
 		}
-		return m, tea.Batch(tea.EnableMouseCellMotion, m.loadWorkspacesCmd)
+		return m, afterExec(m.loadWorkspacesCmd)
 
 	case errMsg:
 		m.workspaceCreating = false
@@ -841,22 +833,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		pending := m.agentPendingSelect
 		m.agentPendingSelect = nil
 		if msg.err != nil {
-			return m, m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err))
+			return m, afterExec(m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err)))
 		}
 		m.notice = fmt.Sprintf("installed %s", msg.adapter)
 		// Enter meant "use this agent"; the install was only what stood in the
 		// way, so finish the job.
 		if pending != nil {
 			if errMsg := m.selectAgent(*pending); errMsg != "" {
-				return m, m.transientErrCmd(errMsg)
+				return m, afterExec(m.transientErrCmd(errMsg))
 			}
 			m.notice += ", now using " + pending.Name
 		}
 		m.noticeSeq++
 		seq := m.noticeSeq
-		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return m, afterExec(tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 			return clearNoticeMsg{seq: seq}
-		})
+		}))
 
 	case agentCommandSentMsg:
 		m.notice = fmt.Sprintf("%s: %s", msg.wsName, msg.action)
@@ -888,17 +880,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// afterExec wraps whatever a tea.ExecProcess callback wants to do next with the
+// one thing every such callback must do. ExecProcess's RestoreTerminal re-enters
+// the alt screen but drops mouse mode, and mouse mode is what keeps the wheel
+// inside the app instead of scrolling the terminal's own scrollback. Getting
+// this wrong is invisible until someone scrolls, so it is a helper rather than a
+// rule to remember at each of the handler's return paths.
+func afterExec(cmds ...tea.Cmd) tea.Cmd {
+	return tea.Batch(append([]tea.Cmd{tea.EnableMouseCellMotion}, cmds...)...)
+}
+
+// wheelLines is how far one notch moves a body of text. Matches the viewport's
+// own default so the chat and the diff scroll at the same rate.
+const wheelLines = 3
+
+// busyWithDialog reports whether something in front of the list owns the
+// keyboard. The wheel stays out of those: the cursor it would move is not
+// visible, so the change would only be discovered later as a surprise.
+func (m Model) busyWithDialog() bool {
+	return m.creating || m.deleting || m.filtering || m.prCreating || m.prGenerating ||
+		m.agentSelecting || m.agentInstallConfirm != nil || m.answering || m.prompting ||
+		m.showErrLog
+}
+
+// handleWheel drives whatever is scrollable underneath the pointer. The mouse
+// is captured so the terminal stops scrolling its own scrollback out from under
+// the alt screen; having taken it, the wheel owes the user a response, or the
+// dashboard reads as frozen rather than as focused.
+//
+// Only the wheel is acted on. Clicks and motion arrive too — cell motion is the
+// mode that suppresses the terminal's scrollback — and the list has nothing to
+// do with them.
+func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	var delta int
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		delta = -1
+	case tea.MouseButtonWheelDown:
+		delta = 1
+	default:
+		return m, nil
+	}
+
+	if m.diffViewing {
+		m.diffScrollOffset = min(max(m.diffScrollOffset+delta*wheelLines, 0), m.maxDiffScroll())
+		return m, nil
+	}
+	if m.busyWithDialog() {
+		return m, nil
+	}
+
+	// Anywhere else the wheel walks the selection, which is the only thing the
+	// list has to move.
+	next := min(max(m.cursor+delta, 0), max(len(m.visibleWorkspaces())-1, 0))
+	if next == m.cursor {
+		return m, nil
+	}
+	m.cursor = next
+	return m, m.capturePreviewCmd()
+}
+
+// maxDiffScroll is the furthest the diff can scroll before the last line is on
+// screen. Shared so the keys, the wheel and the resize clamp cannot disagree.
+func (m Model) maxDiffScroll() int {
+	availHeight := max(m.height-8, 5)
+	return max(len(strings.Split(m.diffContent, "\n"))-availHeight, 0)
+}
+
 func (m *Model) clampDiffScroll() {
-	lines := len(strings.Split(m.diffContent, "\n"))
-	availHeight := m.height - 8
-	if availHeight < 5 {
-		availHeight = 5
-	}
-	maxScroll := lines - availHeight
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.diffScrollOffset > maxScroll {
+	if maxScroll := m.maxDiffScroll(); m.diffScrollOffset > maxScroll {
 		m.diffScrollOffset = maxScroll
 	}
 }

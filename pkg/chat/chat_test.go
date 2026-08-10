@@ -1,8 +1,10 @@
 package chat
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -751,8 +753,72 @@ func TestAuthDone_TriggersRestart(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a successful login should restart the agent")
 	}
-	if _, ok := cmd().(clientReadyMsg); !ok {
-		t.Errorf("produced %T, want clientReadyMsg", cmd())
+	if !hasMsgType(batchMsgs(cmd), "chat.clientReadyMsg") {
+		t.Error("no clientReadyMsg: the agent was not restarted")
+	}
+}
+
+// batchMsgs flattens every message a cmd produces, descending into tea.Batch.
+// Each command runs under a deadline because a batch routinely carries a
+// tea.Tick alongside the message under test, and blocking on a three-second
+// timer nobody asked about would make this the slowest test in the package.
+func batchMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+
+	select {
+	case msg := <-done:
+		batch, ok := msg.(tea.BatchMsg)
+		if !ok {
+			return []tea.Msg{msg}
+		}
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, batchMsgs(c)...)
+		}
+		return out
+	case <-time.After(100 * time.Millisecond):
+		return nil // a timer, not a message
+	}
+}
+
+// hasMsgType matches on the type's name because the one that matters here,
+// bubbletea's enableMouseCellMotionMsg, is unexported and cannot be named.
+func hasMsgType(msgs []tea.Msg, want string) bool {
+	for _, msg := range msgs {
+		if fmt.Sprintf("%T", msg) == want {
+			return true
+		}
+	}
+	return false
+}
+
+const mouseCaptureMsg = "tea.enableMouseCellMotionMsg"
+
+// The login runs through tea.ExecProcess, whose terminal restore drops mouse
+// mode — and mouse mode is what stops the wheel escaping the alt screen into
+// the shell's scrollback.
+func TestAuthDone_RestoresMouseCapture(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		msg  authDoneMsg
+	}{
+		{"success", authDoneMsg{}},
+		{"failure", authDoneMsg{err: errString("login cancelled")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel()
+			m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
+				return nil, nil, 3, nil
+			}
+			_, cmd := applyUpdate(m, tt.msg)
+			if !hasMsgType(batchMsgs(cmd), mouseCaptureMsg) {
+				t.Error("mouse capture was not restored after the login exec")
+			}
+		})
 	}
 }
 
@@ -1046,5 +1112,50 @@ func TestEmptyChat_HintSurvivesANotice(t *testing.T) {
 
 	if !strings.Contains(m.View(), "point it at a file") {
 		t.Errorf("a notice suppressed the opening hint:\n%s", m.View())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mouse
+// ---------------------------------------------------------------------------
+
+func wheel(button tea.MouseButton) tea.MouseMsg {
+	return tea.MouseMsg{Action: tea.MouseActionPress, Button: button}
+}
+
+// The chat captures the mouse so the terminal stops scrolling its own buffer
+// out from under the alt screen. Having taken it, the wheel has to move the
+// conversation, or scrolling looks broken instead of contained.
+func TestWheel_ScrollsTheConversation(t *testing.T) {
+	m := newTestModel()
+	for i := 0; i < 200; i++ {
+		m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, fmt.Sprintf("line %d", i)))
+		m, _ = applyUpdate(m, textUpdate(acp.UpdateUserMessage, "next"))
+	}
+	if m.viewport.YOffset == 0 {
+		t.Fatal("the log is too short to scroll, so this proves nothing")
+	}
+
+	bottom := m.viewport.YOffset
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelUp))
+	if m.viewport.YOffset >= bottom {
+		t.Errorf("YOffset = %d after wheel up, want less than %d", m.viewport.YOffset, bottom)
+	}
+
+	up := m.viewport.YOffset
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
+	if m.viewport.YOffset <= up {
+		t.Errorf("YOffset = %d after wheel down, want more than %d", m.viewport.YOffset, up)
+	}
+}
+
+// A click is not a scroll, and the chat has nothing to do with it.
+func TestWheel_ClicksAreIgnored(t *testing.T) {
+	m := newTestModel()
+	m.input.SetValue("half a sentence")
+	m, _ = applyUpdate(m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+
+	if got := m.input.Value(); got != "half a sentence" {
+		t.Errorf("input = %q, want a click to leave it alone", got)
 	}
 }

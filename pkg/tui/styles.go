@@ -123,6 +123,10 @@ var (
 			Foreground(lipgloss.Color("#555")).
 			Italic(true)
 
+	// "n more" markers when the list is taller than the terminal
+	scrollHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666"))
+
 	// error log
 	errLogTitleStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("196")).

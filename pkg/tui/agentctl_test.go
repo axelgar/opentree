@@ -1,10 +1,15 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
@@ -586,5 +591,261 @@ func TestInstallFailed_DoesNotSwitchAgent(t *testing.T) {
 	}
 	if m.agentPendingSelect != nil {
 		t.Error("the pending selection should not survive a failed install")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mouse
+// ---------------------------------------------------------------------------
+
+func wheel(button tea.MouseButton) tea.MouseMsg {
+	return tea.MouseMsg{Action: tea.MouseActionPress, Button: button}
+}
+
+// The dashboard captures the mouse so the terminal stops scrolling its own
+// buffer behind the alt screen. Having taken it, the wheel has to move
+// something, or the list reads as frozen rather than as focused.
+func TestWheel_MovesTheSelection(t *testing.T) {
+	m := newTestModel(testWS("a"), testWS("b"), testWS("c"))
+
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
+	if m.cursor != 1 {
+		t.Errorf("cursor = %d after wheel down, want 1", m.cursor)
+	}
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelUp))
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d after wheel up, want 0", m.cursor)
+	}
+}
+
+func TestWheel_StopsAtTheEnds(t *testing.T) {
+	m := newTestModel(testWS("a"), testWS("b"))
+
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelUp))
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d, want it clamped at 0", m.cursor)
+	}
+	for i := 0; i < 5; i++ {
+		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
+	}
+	if m.cursor != 1 {
+		t.Errorf("cursor = %d, want it clamped at the last row", m.cursor)
+	}
+}
+
+func TestWheel_ScrollsTheDiff(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.diffViewing = true
+	m.diffContent = strings.Repeat("a line\n", 300)
+
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
+	if m.diffScrollOffset != wheelLines {
+		t.Errorf("diffScrollOffset = %d, want %d", m.diffScrollOffset, wheelLines)
+	}
+	if m.cursor != 0 {
+		t.Error("scrolling the diff moved the list behind it")
+	}
+
+	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelUp))
+	if m.diffScrollOffset != 0 {
+		t.Errorf("diffScrollOffset = %d, want it back at 0", m.diffScrollOffset)
+	}
+}
+
+func TestWheel_DiffStopsAtTheLastLine(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.diffViewing = true
+	m.diffContent = strings.Repeat("a line\n", 300)
+
+	for i := 0; i < 200; i++ {
+		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
+	}
+	if got, want := m.diffScrollOffset, m.maxDiffScroll(); got != want {
+		t.Errorf("diffScrollOffset = %d, want it clamped to %d", got, want)
+	}
+}
+
+// A dialog owns the keyboard and hides the list, so a stray scroll must not
+// move a cursor nobody can see.
+func TestWheel_LeavesDialogsAlone(t *testing.T) {
+	dialogs := map[string]func(*Model){
+		"creating":       func(m *Model) { m.creating = true },
+		"deleting":       func(m *Model) { m.deleting = true },
+		"filtering":      func(m *Model) { m.filtering = true },
+		"agent picker":   func(m *Model) { m.agentSelecting = true },
+		"answering":      func(m *Model) { m.answering = true },
+		"prompting":      func(m *Model) { m.prompting = true },
+		"error log":      func(m *Model) { m.showErrLog = true },
+		"install prompt": func(m *Model) { m.agentInstallConfirm = &config.PredefinedAgents[0] },
+	}
+	for name, open := range dialogs {
+		t.Run(name, func(t *testing.T) {
+			m := newTestModel(testWS("a"), testWS("b"), testWS("c"))
+			open(&m)
+			m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
+			if m.cursor != 0 {
+				t.Errorf("cursor = %d, want the wheel to leave it alone", m.cursor)
+			}
+		})
+	}
+}
+
+// The install hands the terminal to npm through ExecProcess, whose restore
+// drops mouse mode — the leak commit ebc72b9 fixed on the attach path.
+func TestAdapterInstalled_RestoresMouseCapture(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		msg  adapterInstalledMsg
+	}{
+		{"success", adapterInstalledMsg{adapter: "claude-agent-acp"}},
+		{"failure", adapterInstalledMsg{adapter: "claude-agent-acp", err: fmt.Errorf("npm exploded")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(testWS("a"))
+			_, cmd := applyUpdate(m, tt.msg)
+			if !hasMsgType(batchMsgs(cmd), mouseCaptureMsg) {
+				t.Error("mouse capture was not restored after the install exec")
+			}
+		})
+	}
+}
+
+// The third return path: npm succeeded, enter meant "use this agent", and
+// writing the choice to opentree.toml failed. It went unguarded because the
+// table above never set a pending selection, so it could not reach this branch.
+func TestAdapterInstalled_RestoresMouseCaptureWhenTheSelectionFails(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.agentPendingSelect = &config.PredefinedAgents[0]
+	// A directory in place of the config file makes the write fail without
+	// depending on permissions, which vary by how the tests are run.
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "opentree.toml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	next, cmd := applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp"})
+	if next.err == nil {
+		t.Fatal("the selection did not fail, so this proves nothing")
+	}
+	if !hasMsgType(batchMsgs(cmd), mouseCaptureMsg) {
+		t.Error("mouse capture was not restored when the selection failed")
+	}
+}
+
+const mouseCaptureMsg = "tea.enableMouseCellMotionMsg"
+
+// batchMsgs flattens every message a cmd produces, descending into tea.Batch.
+// Each command runs under a deadline because a batch routinely carries a
+// tea.Tick alongside the message under test, and blocking on a three-second
+// timer nobody asked about would make this the slowest test in the package.
+func batchMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+
+	select {
+	case msg := <-done:
+		batch, ok := msg.(tea.BatchMsg)
+		if !ok {
+			return []tea.Msg{msg}
+		}
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, batchMsgs(c)...)
+		}
+		return out
+	case <-time.After(100 * time.Millisecond):
+		return nil // a timer, not a message
+	}
+}
+
+// hasMsgType matches on the type name because bubbletea's
+// enableMouseCellMotionMsg is unexported and cannot be named.
+func hasMsgType(msgs []tea.Msg, want string) bool {
+	for _, msg := range msgs {
+		if fmt.Sprintf("%T", msg) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// List windowing
+// ---------------------------------------------------------------------------
+
+// bubbletea resolves a frame taller than the terminal by dropping lines from
+// the TOP, so an unwindowed list silently eats the header, the error banner and
+// the first rows — with no key able to bring them back.
+func TestView_NeverRendersTallerThanTheTerminal(t *testing.T) {
+	for _, height := range []int{24, 40, 60} {
+		t.Run(fmt.Sprintf("h%d", height), func(t *testing.T) {
+			many := make([]WorkspaceItem, 40)
+			for i := range many {
+				many[i] = testWS(fmt.Sprintf("workspace-%02d", i))
+			}
+			m := newTestModel(many...)
+			m.height, m.width = height, 120
+
+			if got := lipgloss.Height(m.View()); got > height {
+				t.Errorf("View() is %d lines tall in a %d-line terminal", got, height)
+			}
+		})
+	}
+}
+
+// A cursor outside the window is a cursor the user cannot see moving.
+func TestListWindow_KeepsTheCursorVisible(t *testing.T) {
+	many := make([]WorkspaceItem, 40)
+	for i := range many {
+		many[i] = testWS(fmt.Sprintf("workspace-%02d", i))
+	}
+	m := newTestModel(many...)
+	m.height, m.width = 24, 120
+
+	for _, cursor := range []int{0, 1, 19, 20, 38, 39} {
+		m.cursor = cursor
+		start, end := m.listWindow(many, 20)
+		if cursor < start || cursor >= end {
+			t.Errorf("cursor %d is outside the window [%d,%d)", cursor, start, end)
+		}
+		if !strings.Contains(m.View(), fmt.Sprintf("workspace-%02d", cursor)) {
+			t.Errorf("the selected workspace-%02d is not on screen", cursor)
+		}
+	}
+}
+
+func TestListWindow_ShowsEverythingWhenItFits(t *testing.T) {
+	few := []WorkspaceItem{testWS("a"), testWS("b"), testWS("c")}
+	m := newTestModel(few...)
+
+	start, end := m.listWindow(few, 40)
+	if start != 0 || end != len(few) {
+		t.Errorf("window = [%d,%d), want the whole list", start, end)
+	}
+	if strings.Contains(m.View(), "more") {
+		t.Error("a list that fits should not advertise hidden rows")
+	}
+}
+
+// Truncation that says nothing reads as a list that ends there.
+func TestView_SaysHowManyRowsAreHidden(t *testing.T) {
+	many := make([]WorkspaceItem, 40)
+	for i := range many {
+		many[i] = testWS(fmt.Sprintf("workspace-%02d", i))
+	}
+	m := newTestModel(many...)
+	m.height, m.width = 24, 120
+	m.cursor = 20
+
+	view := m.View()
+	if !strings.Contains(view, "↑") || !strings.Contains(view, "more") {
+		t.Errorf("no marker for the rows above:\n%s", view)
+	}
+	if !strings.Contains(view, "↓") {
+		t.Errorf("no marker for the rows below:\n%s", view)
 	}
 }
