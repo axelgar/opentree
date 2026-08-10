@@ -117,9 +117,9 @@ The TUI also shows a live **agent output preview** for the selected workspace an
 Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
 (ACP) don't get their own TUI in the tmux window — opentree talks to them
 directly and draws the conversation itself. You get the same worktree-per-branch
-flow, but the agent's turns, tool calls, diffs and permission prompts are
-rendered by opentree, which means the dashboard knows what every agent is doing
-without scraping its output.
+flow, but the agent's turns, tool calls, diffs, what each tool printed, and
+permission prompts are rendered by opentree, which means the dashboard knows
+what every agent is doing without scraping its output.
 
 Press `Enter` on a workspace to attach to its chat:
 
@@ -129,6 +129,8 @@ Press `Enter` on a workspace to attach to its chat:
 ┃ add a rate limiter to the login handler
 
 ◆ Adding one keyed by client IP, and a test for the burst case.
+   ✓ grep -rn rate.Limiter pkg/
+     pkg/api/throttle.go:14: var limiter = rate.NewLimiter(rate.Every(time.Minute), 60)
    ✓ pkg/auth/login.go  +18 -2
      + limiter := rate.NewLimiter(rate.Every(time.Second), 5)
    ⠹ go test ./pkg/auth/

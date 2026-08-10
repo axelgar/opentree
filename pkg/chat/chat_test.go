@@ -638,18 +638,89 @@ func TestRenderDiffs_TruncatesLargeEdits(t *testing.T) {
 	}
 }
 
-func TestRenderTool_ShowsFailureReason(t *testing.T) {
-	m := newTestModel()
-	call := acp.ToolCall{
-		ToolCallID: "t1", Title: "rm -rf dist", Kind: "execute", Status: acp.StatusFailed,
+// outputCall is a call that produced text, which is how agents return a
+// command's stdout, a file preview, or an explanation of a failure.
+func outputCall(status, text string) acp.ToolCall {
+	return acp.ToolCall{
+		ToolCallID: "t1", Title: "go test ./...", Kind: "execute", Status: status,
 		Content: []acp.ToolCallContent{
-			{Type: "content", Content: &acp.ContentBlock{Type: "text",
-				Text: "The user rejected permission to use this specific tool call."}},
+			{Type: "content", Content: &acp.ContentBlock{Type: "text", Text: text}},
 		},
 	}
+}
+
+func TestRenderTool_ShowsFailureReason(t *testing.T) {
+	m := newTestModel()
+	call := outputCall(acp.StatusFailed, "The user rejected permission to use this specific tool call.")
 	out := m.renderTool(call, 80)
 	if !strings.Contains(out, "rejected permission") {
 		t.Errorf("renderTool() should explain a failure\ngot:\n%s", out)
+	}
+}
+
+// A tool that succeeded still produced something, and until this the log threw
+// it away — the row said a command ran and nothing said what it printed.
+func TestRenderTool_ShowsOutputOnSuccess(t *testing.T) {
+	m := newTestModel()
+	out := m.renderTool(outputCall(acp.StatusCompleted, "ok  \tgithub.com/axelgar/opentree/pkg/acp\t0.4s"), 80)
+	if !strings.Contains(out, "github.com/axelgar/opentree/pkg/acp") {
+		t.Errorf("renderTool() should show what the tool produced\ngot:\n%s", out)
+	}
+}
+
+// The whole of a failure is shown too, not just its first line: a stack trace
+// truncated to "panic: runtime error:" names the category and hides the cause.
+func TestRenderTool_ShowsEveryLineOfAFailure(t *testing.T) {
+	m := newTestModel()
+	out := m.renderTool(outputCall(acp.StatusFailed, "panic: runtime error\n\tat main.go:12\nexit status 2"), 80)
+	for _, want := range []string{"panic: runtime error", "at main.go:12", "exit status 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderTool() missing %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderOutput_CapsLongOutput(t *testing.T) {
+	body := strings.TrimSuffix(strings.Repeat("line\n", 30), "\n")
+	lines := renderOutput(outputCall(acp.StatusCompleted, body), 80, toolOutputStyle)
+
+	if len(lines) != outputMaxLines+1 {
+		t.Fatalf("rendered %d lines, want %d plus a count of what was held back", len(lines), outputMaxLines)
+	}
+	if want := "22 more lines"; !strings.Contains(lines[len(lines)-1], want) {
+		t.Errorf("last line = %q, want %q", lines[len(lines)-1], want)
+	}
+}
+
+// The Claude Code adapter fences command output in markdown whenever the client
+// has not asked for streamed terminals, which opentree never does. Rendered
+// literally, the first line of a failed command reads "```console".
+func TestRenderTool_StripsTheAdaptersCodeFence(t *testing.T) {
+	m := newTestModel()
+	out := m.renderTool(outputCall(acp.StatusFailed, "```console\nno such file or directory\n```"), 80)
+	if strings.Contains(out, "```") {
+		t.Errorf("renderTool() should not render the fence\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "no such file or directory") {
+		t.Errorf("renderTool() lost the output inside the fence\ngot:\n%s", out)
+	}
+}
+
+// A call that drew a diff has already shown what it did; opencode's content
+// block beside it is a receipt reading "Edit applied successfully.".
+func TestRenderTool_DiffCallDoesNotAlsoPrintItsReceipt(t *testing.T) {
+	m := newTestModel()
+	call := diffCall(acp.StatusCompleted, "old line", "new line")
+	call.Content = append(call.Content, acp.ToolCallContent{
+		Type: "content", Content: &acp.ContentBlock{Type: "text", Text: "Edit applied successfully."},
+	})
+
+	out := m.renderTool(call, 80)
+	if strings.Contains(out, "Edit applied successfully") {
+		t.Errorf("the diff is the output; the receipt says it twice\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "+ new line") {
+		t.Errorf("renderTool() lost the diff\ngot:\n%s", out)
 	}
 }
 

@@ -17,6 +17,11 @@ const (
 	inputHeight  = 3  // textarea rows
 	diffMaxLines = 12 // per tool call, so one large edit cannot bury the log
 
+	// outputMaxLines caps what one tool prints into the log, for the same
+	// reason: a build log runs to thousands of lines and the conversation has
+	// to stay readable around it.
+	outputMaxLines = 8
+
 	// compactLogoWidth separates a mark, which can stand beside the agent's
 	// name, from a wordmark, which cannot.
 	compactLogoWidth = 12
@@ -414,13 +419,75 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 	}
 
 	lines := []string{row}
-	lines = append(lines, renderDiffs(call, width)...)
-	if call.Status == acp.StatusFailed {
-		if reason := toolFailure(call); reason != "" {
-			lines = append(lines, toolFailedStyle.Render("    "+reason))
+	diffs := renderDiffs(call, width)
+	lines = append(lines, diffs...)
+
+	// ponytail: a call that drew a diff has already shown what it did, and its
+	// content block is a receipt — opencode sends "Edit applied successfully."
+	// beside the diff of the edit it applied. Printing both says it twice.
+	if len(diffs) == 0 {
+		out := toolOutputStyle
+		if call.Status == acp.StatusFailed {
+			out = toolFailedStyle
 		}
+		lines = append(lines, renderOutput(call, width, out)...)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderOutput shows what a tool produced. Agents put it in content blocks on
+// every status, not only on failures: a command's stdout, a file preview, a
+// subagent's report all arrive this way.
+//
+// ponytail: capped, with no key to expand. Expanding wants a cursor in a
+// viewport that has none plus per-entry state; the count says how much was
+// held back, and the agent still has all of it.
+func renderOutput(call acp.ToolCall, width int, style lipgloss.Style) []string {
+	lines := splitLines(unfence(toolOutput(call)))
+	if len(lines) == 0 {
+		return nil
+	}
+
+	shown := lines
+	if len(shown) > outputMaxLines {
+		shown = shown[:outputMaxLines]
+	}
+	out := make([]string, 0, len(shown)+1)
+	for _, line := range shown {
+		out = append(out, style.Render(truncate("    "+line, width)))
+	}
+	if hidden := len(lines) - len(shown); hidden > 0 {
+		out = append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", hidden)))
+	}
+	return out
+}
+
+// toolOutput joins a call's content blocks. The wrapping is real: a text block
+// arrives as {"type":"content","content":{"type":"text","text":"…"}}.
+func toolOutput(call acp.ToolCall) string {
+	var parts []string
+	for _, c := range call.Content {
+		if c.Type == "content" && c.Content != nil && c.Content.Text != "" {
+			parts = append(parts, strings.TrimRight(c.Content.Text, "\n"))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// unfence strips a markdown code fence wrapping the whole block. The Claude
+// Code adapter fences command output whenever the client has not asked for
+// streamed terminals, which opentree never does — so without this the first
+// line a failed command shows is "```console" and the reason itself is what
+// gets cut.
+func unfence(s string) string {
+	lines := splitLines(s)
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "```") {
+		return s
+	}
+	if last := len(lines) - 1; strings.TrimSpace(lines[last]) == "```" {
+		lines = lines[:last]
+	}
+	return strings.Join(lines[1:], "\n")
 }
 
 // renderDiffs expands a call's diff blocks into coloured lines. ACP gives the
@@ -461,17 +528,6 @@ func diffStat(call acp.ToolCall) (added, removed int) {
 		removed += len(splitLines(c.OldText))
 	}
 	return added, removed
-}
-
-// toolFailure pulls the agent's explanation out of a failed call so a rejected
-// permission or a failing command says why on screen.
-func toolFailure(call acp.ToolCall) string {
-	for _, c := range call.Content {
-		if c.Type == "content" && c.Content != nil && c.Content.Text != "" {
-			return strings.SplitN(strings.TrimSpace(c.Content.Text), "\n", 2)[0]
-		}
-	}
-	return ""
 }
 
 func splitLines(s string) []string {

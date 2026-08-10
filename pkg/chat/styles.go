@@ -58,6 +58,12 @@ var (
 	toolTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#AAA"))
 
+	// A tool's own output hangs off the row that ran it, quieter than the row
+	// itself: it is evidence, not narration, and it must not compete with what
+	// the agent says about it.
+	toolOutputStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#7A7A7A"))
+
 	noticeStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888")).
 			Italic(true)
