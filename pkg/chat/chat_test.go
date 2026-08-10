@@ -658,10 +658,14 @@ func TestDiffStat(t *testing.T) {
 		old, updated     string
 		wantAdd, wantRem int
 	}{
-		{"replacement", "a\nb", "a\nb\nc", 3, 2},
+		{"one line appended to a region", "a\nb", "a\nb\nc", 1, 0},
 		{"pure insertion", "", "new line", 1, 0},
 		{"pure deletion", "gone\naway", "", 0, 2},
 		{"trailing newline is not a line", "a\n", "b\n", 1, 1},
+		{"context on both sides is not a change", "a\nb\nc", "a\nB\nc", 1, 1},
+		{"an unchanged region changed nothing", "a\nb\nc", "a\nb\nc", 0, 0},
+		{"two changes twenty apart", "x\n" + strings.Repeat("k\n", 20) + "y",
+			"X\n" + strings.Repeat("k\n", 20) + "Y", 2, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -685,14 +689,52 @@ func TestRenderTool_ShowsDiffLinesAndStat(t *testing.T) {
 }
 
 func TestRenderDiffs_TruncatesLargeEdits(t *testing.T) {
-	big := strings.TrimSuffix(strings.Repeat("line\n", 50), "\n")
-	lines := renderDiffs(diffCall(acp.StatusCompleted, big, big), 80)
+	old := strings.TrimSuffix(strings.Repeat("was\n", 50), "\n")
+	updated := strings.TrimSuffix(strings.Repeat("now\n", 50), "\n")
+	lines := renderDiffs(diffCall(acp.StatusCompleted, old, updated), 80)
 
 	if len(lines) > diffMaxLines+1 {
 		t.Errorf("rendered %d lines, want at most %d plus a truncation marker", len(lines), diffMaxLines)
 	}
-	if !strings.Contains(lines[len(lines)-1], "truncated") {
-		t.Errorf("last line = %q, want a truncation marker", lines[len(lines)-1])
+	if !strings.Contains(lines[len(lines)-1], "more lines") {
+		t.Errorf("last line = %q, want a count of what was held back", lines[len(lines)-1])
+	}
+}
+
+// The display budget is twelve lines, and the Claude Code adapter pads every
+// hunk with context on both sides — so a one-line edit used to render as seven
+// removals and seven additions and never reach the line that changed.
+func TestRenderDiffs_SpendsTheBudgetOnChangesNotContext(t *testing.T) {
+	ctx := strings.Repeat("unchanged\n", 3)
+	call := diffCall(acp.StatusCompleted, ctx+"before\n"+ctx, ctx+"after\n"+ctx)
+	lines := renderDiffs(call, 80)
+
+	if len(lines) != 2 {
+		t.Fatalf("rendered %d lines, want just the removal and the addition:\n%s",
+			len(lines), strings.Join(lines, "\n"))
+	}
+	for _, want := range []string{"- before", "+ after"} {
+		if !strings.Contains(strings.Join(lines, "\n"), want) {
+			t.Errorf("renderDiffs() missing %q\ngot:\n%s", want, strings.Join(lines, "\n"))
+		}
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "unchanged") {
+		t.Error("context the agent did not touch must not be rendered as a change")
+	}
+}
+
+// A region big enough to defeat the matching table still renders, and still
+// says so in the direction that overstates rather than hides.
+func TestDiffLines_HugeRegionFallsBackWholesale(t *testing.T) {
+	n := 400 // 400*400 = 160k cells, past maxDiffCells
+	old := make([]string, n)
+	updated := make([]string, n)
+	for i := range old {
+		old[i] = fmt.Sprintf("old %d", i)
+		updated[i] = fmt.Sprintf("new %d", i)
+	}
+	if got := len(diffLines(old, updated)); got != 2*n {
+		t.Errorf("diffLines() = %d changes, want the whole region reported as %d", got, 2*n)
 	}
 }
 

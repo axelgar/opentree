@@ -504,44 +504,121 @@ func unfence(s string) string {
 	return strings.Join(lines[1:], "\n")
 }
 
-// renderDiffs expands a call's diff blocks into coloured lines. ACP gives the
-// changed region as old and new text rather than a patch, so the region's old
-// lines are the removals and its new lines the additions.
+// renderDiffs expands a call's changed lines into coloured ones.
 func renderDiffs(call acp.ToolCall, width int) []string {
-	var out []string
-	budget := diffMaxLines
-
-	for _, c := range call.Content {
-		if c.Type != "diff" {
-			continue
+	changes := callDiff(call)
+	out := make([]string, 0, len(changes))
+	for i, ch := range changes {
+		if i == diffMaxLines {
+			return append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", len(changes)-i)))
 		}
-		for _, line := range splitLines(c.OldText) {
-			if budget == 0 {
-				return append(out, noticeStyle.Render("    … truncated"))
-			}
-			out = append(out, diffRemoveStyle.Render(truncate("    - "+line, width)))
-			budget--
+		style, sign := diffRemoveStyle, "-"
+		if ch.add {
+			style, sign = diffAddStyle, "+"
 		}
-		for _, line := range splitLines(c.NewText) {
-			if budget == 0 {
-				return append(out, noticeStyle.Render("    … truncated"))
-			}
-			out = append(out, diffAddStyle.Render(truncate("    + "+line, width)))
-			budget--
-		}
+		out = append(out, style.Render(truncate("    "+sign+" "+ch.text, width)))
 	}
 	return out
 }
 
 func diffStat(call acp.ToolCall) (added, removed int) {
+	for _, ch := range callDiff(call) {
+		if ch.add {
+			added++
+		} else {
+			removed++
+		}
+	}
+	return added, removed
+}
+
+// change is one line the agent added or removed.
+type change struct {
+	add  bool
+	text string
+}
+
+// callDiff is every changed line across a call's diff blocks.
+func callDiff(call acp.ToolCall) []change {
+	var out []change
 	for _, c := range call.Content {
 		if c.Type != "diff" {
 			continue
 		}
-		added += len(splitLines(c.NewText))
-		removed += len(splitLines(c.OldText))
+		out = append(out, diffLines(splitLines(c.OldText), splitLines(c.NewText))...)
 	}
-	return added, removed
+	return out
+}
+
+// maxDiffCells bounds the matching table. Past it the region already dwarfs the
+// dozen lines that will be shown, so exact matching stops paying for itself.
+//
+// ponytail: the fallback is the old behaviour — the whole region reported as
+// changed. It overstates a big edit, which is the harmless direction.
+const maxDiffCells = 1 << 16
+
+// diffLines matches two versions of a region line by line.
+//
+// ACP hands over the before and after text rather than a patch, so the client
+// does the diffing. Not doing it at all was a lie in both directions: a
+// one-line insertion into a two-line region reported "+3 -2", and the Claude
+// Code adapter pads every hunk with context on both sides, so a single changed
+// line rendered as seven removals and seven additions and blew the display
+// budget before reaching the change.
+func diffLines(old, updated []string) []change {
+	// Lines shared at either end are context the agent did not touch.
+	for len(old) > 0 && len(updated) > 0 && old[0] == updated[0] {
+		old, updated = old[1:], updated[1:]
+	}
+	for len(old) > 0 && len(updated) > 0 && old[len(old)-1] == updated[len(updated)-1] {
+		old, updated = old[:len(old)-1], updated[:len(updated)-1]
+	}
+	if len(old)*len(updated) > maxDiffCells {
+		return append(changes(false, old), changes(true, updated)...)
+	}
+
+	// common[i][j] is the length of the longest common subsequence of old[i:]
+	// and updated[j:], which is what says whether a line was replaced or merely
+	// moved past.
+	common := make([][]int, len(old)+1)
+	for i := range common {
+		common[i] = make([]int, len(updated)+1)
+	}
+	for i := len(old) - 1; i >= 0; i-- {
+		for j := len(updated) - 1; j >= 0; j-- {
+			if old[i] == updated[j] {
+				common[i][j] = common[i+1][j+1] + 1
+			} else {
+				common[i][j] = max(common[i+1][j], common[i][j+1])
+			}
+		}
+	}
+
+	var out []change
+	i, j := 0, 0
+	for i < len(old) && j < len(updated) {
+		switch {
+		case old[i] == updated[j]:
+			// Unchanged, and unchanged lines are not what the row is reporting.
+			i, j = i+1, j+1
+		case common[i+1][j] >= common[i][j+1]:
+			out = append(out, change{text: old[i]})
+			i++
+		default:
+			out = append(out, change{add: true, text: updated[j]})
+			j++
+		}
+	}
+	out = append(out, changes(false, old[i:])...)
+	return append(out, changes(true, updated[j:])...)
+}
+
+func changes(add bool, lines []string) []change {
+	out := make([]change, len(lines))
+	for i, l := range lines {
+		out[i] = change{add: add, text: l}
+	}
+	return out
 }
 
 func splitLines(s string) []string {
