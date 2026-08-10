@@ -30,11 +30,11 @@ func (m Model) status() Status {
 	switch {
 	case m.dead || m.authNeed:
 		st.State = StateStopped
-	case m.perm != nil:
+	case m.perm() != nil:
 		st.State = StateAwaiting
 		st.Permission = &Permission{
-			Title:   toolLabel(m.perm.req.ToolCall, m.opts.Cwd),
-			Options: m.perm.req.Options,
+			Title:   toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
+			Options: m.perm().req.Options,
 		}
 	case m.turn:
 		st.State = StateWorking
@@ -95,8 +95,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case permissionMsg:
 		// Hold the escalation; the agent stays blocked on its reply channel
-		// until a key answers it.
-		m.perm = &msg
+		// until a key answers it. A second one that arrives while the first is
+		// on screen queues behind it rather than taking its place: both are
+		// blocked on channels of their own, and the one overwritten would never
+		// be answered — its turn would never end.
+		m.perms = append(m.perms, msg)
 		m = m.relayout()
 		return m, waitForMsg(m.msgs)
 
@@ -214,7 +217,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.perm != nil {
+	if m.perm() != nil {
 		return m.handlePermissionKey(msg)
 	}
 	// A stopped agent takes over the keyboard: r and l would otherwise be
@@ -359,12 +362,10 @@ func (m Model) handleCompletionKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 	switch cmd.Type {
 	case CommandPermission:
-		if m.perm == nil {
+		if m.perm() == nil {
 			return m, nil, Result{Reason: "nothing is waiting on permission"}
 		}
-		m.perm.reply <- cmd.OptionID
-		m.perm = nil
-		return m.relayout(), nil, Result{OK: true}
+		return m.answerPerm(cmd.OptionID), nil, Result{OK: true}
 
 	case CommandInterrupt:
 		if !m.turn {
@@ -447,23 +448,24 @@ func (m Model) authCmd() tea.Cmd {
 // against what the agent actually offered rather than a fixed set, because
 // agents disagree on which kinds they present.
 func (m Model) handlePermissionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	perm := m.perm
-	answer := func(optionID string) (tea.Model, tea.Cmd) {
-		perm.reply <- optionID
-		m.perm = nil
-		m = m.relayout()
-		return m, nil
-	}
-
 	switch msg.String() {
 	case "esc", "ctrl+c":
-		return answer("")
+		return m.answerPerm(""), nil
 	}
 
-	if id, ok := optionForKey(msg.String(), perm.req.Options); ok {
-		return answer(id)
+	if id, ok := optionForKey(msg.String(), m.perm().req.Options); ok {
+		return m.answerPerm(id), nil
 	}
 	return m, nil
+}
+
+// answerPerm replies to the escalation on screen and brings up whatever queued
+// behind it. Exactly one value reaches each reply channel, which is the whole
+// contract: the agent's request is blocked on it.
+func (m Model) answerPerm(optionID string) Model {
+	m.perms[0].reply <- optionID
+	m.perms = m.perms[1:]
+	return m.relayout()
 }
 
 // optionForKey maps a keystroke to a permission option: a digit picks by

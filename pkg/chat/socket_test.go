@@ -450,7 +450,7 @@ func TestRemoteCommand_AnswersPermission(t *testing.T) {
 	m, _ = applyUpdate(m, perm)
 	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPermission, OptionID: "reject"}})
 
-	if m.perm != nil {
+	if m.perm() != nil {
 		t.Error("permission should be cleared")
 	}
 	select {
@@ -468,7 +468,7 @@ func TestRemoteCommand_StalePermissionIsIgnored(t *testing.T) {
 	// that was already handled in the chat window.
 	m := newTestModel()
 	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPermission, OptionID: "once"}})
-	if m.perm != nil {
+	if m.perm() != nil {
 		t.Error("nothing should have changed")
 	}
 }

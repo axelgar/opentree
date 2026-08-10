@@ -39,8 +39,8 @@ func (m Model) footerHeight() int {
 		return m.settingsHeight()
 	case m.stopped():
 		return len(m.stoppedLines()) + 4
-	case m.perm != nil:
-		return len(m.perm.req.Options) + 5
+	case m.perm() != nil:
+		return len(m.perm().req.Options) + 5
 	case m.showHelp:
 		return lipgloss.Height(m.helpView())
 	default:
@@ -94,7 +94,7 @@ func (m Model) footer() string {
 		return m.settingsView()
 	case m.stopped():
 		return m.stoppedView()
-	case m.perm != nil:
+	case m.perm() != nil:
 		return m.permissionView()
 	case m.showHelp:
 		return m.helpView()
@@ -246,7 +246,7 @@ func (m Model) authHint() string {
 // permissionView renders the escalation. The options come from the wire, so an
 // agent that offers three choices gets three rows and no phantom fourth.
 func (m Model) permissionView() string {
-	req := m.perm.req
+	req := m.perm().req
 
 	// The dialog is a fixed box, so a long command or path is trimmed rather
 	// than allowed to blow the border out past the terminal edge.
@@ -257,11 +257,19 @@ func (m Model) permissionView() string {
 			permLabelStyle.Render(o.Name)))
 	}
 
+	// Anything queued behind this one is said on the hint line rather than in
+	// the box, which would change the footer's height as escalations arrive and
+	// resize the conversation under the reader.
+	hint := "permission needed · esc to cancel"
+	if waiting := len(m.perms) - 1; waiting > 0 {
+		hint = fmt.Sprintf("permission needed · %d more waiting · esc to cancel", waiting)
+	}
+
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(permBoxStyle.Render(strings.Join(lines, "\n")))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("permission needed · esc to cancel"))
+	b.WriteString(helpStyle.Render(hint))
 	return b.String()
 }
 

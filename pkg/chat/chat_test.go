@@ -92,6 +92,14 @@ func permission(options ...acp.PermissionOption) permissionMsg {
 	}
 }
 
+// permissionTitled is permission() with a distinguishable call, for the tests
+// that need two escalations in flight at once.
+func permissionTitled(title string, options ...acp.PermissionOption) permissionMsg {
+	p := permission(options...)
+	p.req.ToolCall.Title = title
+	return p
+}
+
 var (
 	allowOnce   = acp.PermissionOption{OptionID: "once", Kind: acp.PermissionAllowOnce, Name: "Allow once"}
 	allowAlways = acp.PermissionOption{OptionID: "always", Kind: acp.PermissionAllowAlways, Name: "Always allow"}
@@ -278,7 +286,7 @@ func TestPermission_HeldUntilAnswered(t *testing.T) {
 	m := newTestModel()
 	perm := permission(allowOnce, rejectOnce)
 	m, cmd := applyUpdate(m, perm)
-	if m.perm == nil {
+	if m.perm() == nil {
 		t.Fatal("permission was not held")
 	}
 	if cmd == nil {
@@ -307,7 +315,7 @@ func TestPermission_AnswerByKind(t *testing.T) {
 			m, _ = applyUpdate(m, perm)
 			m, _ = applyUpdate(m, keyMsg(tt.key))
 
-			if m.perm != nil {
+			if m.perm() != nil {
 				t.Error("permission should be cleared once answered")
 			}
 			select {
@@ -327,7 +335,7 @@ func TestPermission_EscCancels(t *testing.T) {
 	perm := permission(allowOnce, rejectOnce)
 	m, _ = applyUpdate(m, perm)
 	m, _ = applyUpdate(m, keyMsg("esc"))
-	if m.perm != nil {
+	if m.perm() != nil {
 		t.Error("permission should be cleared after esc")
 	}
 
@@ -349,11 +357,58 @@ func TestPermission_UnofferedKindIsIgnored(t *testing.T) {
 	m, _ = applyUpdate(m, perm)
 	m, _ = applyUpdate(m, keyMsg("d"))
 
-	if m.perm == nil {
+	if m.perm() == nil {
 		t.Error("permission should still be pending")
 	}
 	if len(perm.reply) != 0 {
 		t.Error("no answer should have been sent")
+	}
+}
+
+// An agent can have two tools waiting at once — a subagent asks independently
+// of the turn that spawned it. Each request is blocked on its own reply channel,
+// so a second escalation must not displace the first: whichever one is dropped
+// is never answered, its prompt never returns, and the chat hangs with no way
+// out but killing the window.
+func TestPermission_SecondQueuesBehindTheFirst(t *testing.T) {
+	m := newTestModel()
+	first := permissionTitled("rm -rf dist", allowOnce, rejectOnce)
+	second := permissionTitled("git push --force", allowOnce, rejectOnce)
+	m, _ = applyUpdate(m, first)
+	m, _ = applyUpdate(m, second)
+
+	if got := m.perm().req.ToolCall.Title; got != "rm -rf dist" {
+		t.Errorf("on screen = %q, want the first escalation to keep the dialog", got)
+	}
+	if !strings.Contains(m.permissionView(), "1 more waiting") {
+		t.Errorf("the dialog must say one is queued behind it\ngot: %s", m.permissionView())
+	}
+
+	m, _ = applyUpdate(m, keyMsg("d"))
+	select {
+	case got := <-first.reply:
+		if got != "reject" {
+			t.Errorf("first reply = %q, want reject", got)
+		}
+	default:
+		t.Fatal("the first request was never answered")
+	}
+
+	if got := m.perm().req.ToolCall.Title; got != "git push --force" {
+		t.Errorf("on screen = %q, want the queued escalation promoted", got)
+	}
+
+	m, _ = applyUpdate(m, keyMsg("a"))
+	select {
+	case got := <-second.reply:
+		if got != "once" {
+			t.Errorf("second reply = %q, want once", got)
+		}
+	default:
+		t.Fatal("the queued request was never answered")
+	}
+	if m.perm() != nil {
+		t.Error("the queue should be empty once both are answered")
 	}
 }
 
@@ -375,6 +430,9 @@ func TestPermissionView_RendersOfferedOptionsOnly(t *testing.T) {
 	}
 	if strings.Contains(view, "Always allow") {
 		t.Error("an option the agent did not offer must not be rendered")
+	}
+	if strings.Contains(view, "waiting") {
+		t.Errorf("a lone escalation must not claim others are queued\ngot: %s", view)
 	}
 }
 

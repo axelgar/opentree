@@ -293,7 +293,13 @@ type Model struct {
 	// agent was busy or still starting. At most one waits at a time.
 	queued string
 
-	perm         *permissionMsg
+	// perms holds escalations in arrival order; the first is the one on screen.
+	// More than one can be in flight — a subagent asks independently of the turn
+	// that spawned it — and each is a separate request blocked on its own reply
+	// channel, so a second must not replace the first. A dropped one is never
+	// answered, and ACP has no outcome meaning "lost".
+	perms []permissionMsg
+
 	turn         bool
 	turnStart    time.Time
 	spinnerFrame int
@@ -382,6 +388,14 @@ func (m Model) adapterMissing() bool { return m.client == nil }
 // canLogIn reports whether logging in is a remedy for the current state, which
 // takes both an agent asking for credentials and a command to give them with.
 func (m Model) canLogIn() bool { return m.authNeed && len(m.opts.AuthCommand) > 0 }
+
+// perm is the escalation on screen: the oldest one still unanswered.
+func (m Model) perm() *permissionMsg {
+	if len(m.perms) == 0 {
+		return nil
+	}
+	return &m.perms[0]
+}
 
 func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 	if info == nil {
