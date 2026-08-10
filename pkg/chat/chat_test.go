@@ -877,6 +877,70 @@ func TestStopped_RestartKey(t *testing.T) {
 	}
 }
 
+// A dead agent cannot act on an answer, so leaving its dialog up offers to
+// allow a tool call that will never run — and leaves its request blocked.
+func TestAgentGone_ReleasesPendingPermissions(t *testing.T) {
+	m := newTestModel()
+	perm := permission(allowOnce, rejectOnce)
+	m, _ = applyUpdate(m, perm)
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+	if m.perm() != nil {
+		t.Error("a dead agent's escalation must not stay on screen")
+	}
+	select {
+	case got := <-perm.reply:
+		if got != "" {
+			t.Errorf("reply = %q, want an empty id to decline", got)
+		}
+	default:
+		t.Fatal("the blocked request was never released")
+	}
+}
+
+// The panel the footer draws and the panel the keyboard drives were decided
+// separately, in different orders. With the settings picker open when an
+// escalation arrived the picker stayed on screen while the keys answered the
+// permission — so a digit, which is how you pick a setting, silently allowed a
+// tool call nobody was shown.
+func TestOverlay_ScreenAndKeyboardAgree(t *testing.T) {
+	t.Run("a permission outranks the settings picker", func(t *testing.T) {
+		m := newTestModel()
+		m.settings.open = true
+		perm := permission(allowOnce, rejectOnce)
+		m, _ = applyUpdate(m, perm)
+
+		if !strings.Contains(m.footer(), "Allow once") {
+			t.Errorf("the footer must show the dialog its keys answer\ngot:\n%s", m.footer())
+		}
+		m, _ = applyUpdate(m, keyMsg("1"))
+		select {
+		case got := <-perm.reply:
+			if got != "once" {
+				t.Errorf("reply = %q, want once", got)
+			}
+		default:
+			t.Fatal("the digit did not reach the dialog on screen")
+		}
+	})
+
+	t.Run("a stopped agent outranks the settings picker", func(t *testing.T) {
+		m := newTestModel()
+		m.settings.open = true
+		m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
+			return nil, nil, 2, nil
+		}
+		m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+		if !strings.Contains(m.footer(), "restart agent") {
+			t.Errorf("the footer must show the panel its keys drive\ngot:\n%s", m.footer())
+		}
+		if _, cmd := applyUpdate(m, keyMsg("r")); cmd == nil {
+			t.Error("r should restart, since the stopped panel is what is drawn")
+		}
+	})
+}
+
 func TestStopped_TypingDoesNotReachTheInput(t *testing.T) {
 	m := newTestModel()
 	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})

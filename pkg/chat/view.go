@@ -34,14 +34,14 @@ func newViewport(width, height int) viewport.Model {
 // footerHeight is how many lines the footer occupies, which is what the
 // viewport has to give back.
 func (m Model) footerHeight() int {
-	switch {
-	case m.settings.open:
+	switch m.overlay() {
+	case overlaySettings:
 		return m.settingsHeight()
-	case m.stopped():
+	case overlayStopped:
 		return len(m.stoppedLines()) + 4
-	case m.perm() != nil:
+	case overlayPermission:
 		return len(m.perm().req.Options) + 5
-	case m.showHelp:
+	case overlayHelp:
 		return lipgloss.Height(m.helpView())
 	default:
 		return inputHeight + 2 + len(m.completion.items)
@@ -89,14 +89,14 @@ func (m Model) header() string {
 }
 
 func (m Model) footer() string {
-	switch {
-	case m.settings.open:
+	switch m.overlay() {
+	case overlaySettings:
 		return m.settingsView()
-	case m.stopped():
+	case overlayStopped:
 		return m.stoppedView()
-	case m.perm() != nil:
+	case overlayPermission:
 		return m.permissionView()
-	case m.showHelp:
+	case overlayHelp:
 		return m.helpView()
 	}
 

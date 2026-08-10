@@ -397,6 +397,39 @@ func (m Model) perm() *permissionMsg {
 	return &m.perms[0]
 }
 
+// overlay is the panel that owns both the footer and the keyboard.
+type overlay int
+
+const (
+	overlayNone overlay = iota
+	overlayPermission
+	overlayStopped
+	overlaySettings
+	overlayHelp
+)
+
+// overlay decides which panel is up. It exists because the view and the key
+// handler each used to decide for themselves, in different orders: with the
+// settings picker open when an escalation arrived, the picker stayed on screen
+// while the keyboard answered the permission — so a digit, which is how you
+// pick a setting, silently allowed a tool call nobody was shown.
+//
+// A permission outranks everything: an agent is blocked on the answer, and the
+// dialog says how to say no.
+func (m Model) overlay() overlay {
+	switch {
+	case m.perm() != nil:
+		return overlayPermission
+	case m.stopped():
+		return overlayStopped
+	case m.settings.open:
+		return overlaySettings
+	case m.showHelp:
+		return overlayHelp
+	}
+	return overlayNone
+}
+
 func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 	if info == nil {
 		return m

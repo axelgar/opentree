@@ -26,16 +26,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // status is the view of this session the workspace list sees.
 func (m Model) status() Status {
+	// Ordered like the chat's own overlays, so the badge in the list names the
+	// panel the window is actually showing.
 	st := Status{Workspace: m.opts.Workspace, State: StateIdle}
 	switch {
-	case m.dead || m.authNeed:
-		st.State = StateStopped
 	case m.perm() != nil:
 		st.State = StateAwaiting
 		st.Permission = &Permission{
 			Title:   toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
 			Options: m.perm().req.Options,
 		}
+	case m.dead || m.authNeed:
+		st.State = StateStopped
 	case m.turn:
 		st.State = StateWorking
 	case m.sessionID == "":
@@ -148,6 +150,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dead = true
 		m.turn = false
+		// Nothing can act on an answer now, so release whatever was blocked on
+		// one rather than leaving a dialog up that offers to allow a tool call
+		// which will never run.
+		m = m.cancelPerms()
 		if m.err == nil {
 			m.err = fmt.Errorf("%s exited", m.opts.Command)
 		}
@@ -217,22 +223,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.perm() != nil {
-		return m.handlePermissionKey(msg)
-	}
-	// A stopped agent takes over the keyboard: r and l would otherwise be
+	// Whichever panel the footer drew is the one the keys drive. A stopped
+	// agent takes over the keyboard because r and l would otherwise be
 	// swallowed by the textarea, which is useless with nothing to send to.
-	if m.stopped() {
+	switch m.overlay() {
+	case overlayPermission:
+		return m.handlePermissionKey(msg)
+	case overlayStopped:
 		return m.handleStoppedKey(msg)
-	}
-
-	if m.settings.open {
+	case overlaySettings:
 		return m.handleSettingsKey(msg)
-	}
-
-	// The key list is a read-only overlay, so anything at all dismisses it
-	// rather than making people hunt for the one key that closes it.
-	if m.showHelp {
+	case overlayHelp:
+		// The key list is read-only, so anything at all dismisses it rather
+		// than making people hunt for the one key that closes it.
 		if key.Matches(msg, m.keys.Quit) {
 			return m, tea.Quit
 		}
@@ -466,6 +469,17 @@ func (m Model) answerPerm(optionID string) Model {
 	m.perms[0].reply <- optionID
 	m.perms = m.perms[1:]
 	return m.relayout()
+}
+
+// cancelPerms declines everything still waiting, for when the agent that asked
+// is gone. Each reply channel is buffered, so this never blocks on a reader
+// that has already given up.
+func (m Model) cancelPerms() Model {
+	for _, p := range m.perms {
+		p.reply <- ""
+	}
+	m.perms = nil
+	return m
 }
 
 // optionForKey maps a keystroke to a permission option: a digit picks by
