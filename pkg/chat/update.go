@@ -164,7 +164,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.client = msg.client
 		m.generation = msg.generation
 		m = m.withAgentInfo(msg.info)
-		m.dead, m.authNeed, m.err = false, false, nil
+		m.dead, m.authNeed, m.err, m.restarting = false, false, nil, false
 		// The replay rebuilds the log from scratch, so drop what is on screen
 		// rather than rendering the conversation twice.
 		m.entries, m.toolIdx = nil, make(map[string]int)
@@ -207,12 +207,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.EnableMouseCellMotion
 		}
 		// Credentials are read at startup, so a fresh login needs a fresh agent.
+		m.restarting = true
 		return m, tea.Batch(tea.EnableMouseCellMotion, m.restartCmd())
 
 	case errMsg:
 		m.err = msg.err
 		m.authNeed = msg.auth
 		m.turn = false
+		// A restart that failed is over; r has to work again.
+		m.restarting = false
 		m = m.relayout()
 		return m, nil
 	}
@@ -433,7 +436,11 @@ func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.authCmd()
 
 	case key.Matches(msg, m.keys.Restart):
-		return m, m.restartCmd()
+		if m.restarting {
+			return m, nil
+		}
+		m.restarting = true
+		return m.relayout(), m.restartCmd()
 	}
 	return m, nil
 }

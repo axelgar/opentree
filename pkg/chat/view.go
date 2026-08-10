@@ -191,9 +191,15 @@ func (m Model) stoppedLines() []string {
 		actions = append(actions, permKeyStyle.Render("[l]")+" "+
 			permLabelStyle.Render(m.opts.Command+" "+strings.Join(m.opts.AuthCommand, " ")))
 	}
-	actions = append(actions,
-		permKeyStyle.Render("[r]")+" "+permLabelStyle.Render("restart agent"),
-		permKeyStyle.Render("[ctrl+c]")+" "+permLabelStyle.Render("quit"))
+	// A restart already under way says so instead of offering itself again: the
+	// panel is otherwise identical before and after the key, which is what made
+	// pressing it twice look like the first press had not registered.
+	if m.restarting {
+		actions = append(actions, noticeStyle.Render("restarting…"))
+	} else {
+		actions = append(actions, permKeyStyle.Render("[r]")+" "+permLabelStyle.Render("restart agent"))
+	}
+	actions = append(actions, permKeyStyle.Render("[ctrl+c]")+" "+permLabelStyle.Render("quit"))
 	return append(lines, strings.Join(actions, "   "))
 }
 

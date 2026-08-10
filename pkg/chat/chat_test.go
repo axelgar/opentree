@@ -877,6 +877,29 @@ func TestStopped_RestartKey(t *testing.T) {
 	}
 }
 
+// Bubble Tea runs every command on its own goroutine, and the stopped panel
+// looks identical before and after r — which is exactly what makes someone
+// press it again. Twice used to mean two agents in one chat, both replaying
+// history into one log and both loading a session that allows one client.
+func TestStopped_SecondRestartIsIgnoredWhileOneIsUnderWay(t *testing.T) {
+	m := newTestModel()
+	m.launch = func() (*acp.Client, *acp.InitializeResponse, int, error) {
+		return nil, nil, 2, nil
+	}
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+	m, first := applyUpdate(m, keyMsg("r"))
+	if first == nil {
+		t.Fatal("expected r to issue a restart")
+	}
+	if _, second := applyUpdate(m, keyMsg("r")); second != nil {
+		t.Error("a second r must not launch a second agent")
+	}
+	if !strings.Contains(m.stoppedView(), "restarting") {
+		t.Errorf("the panel should say a restart is under way\ngot:\n%s", m.stoppedView())
+	}
+}
+
 // A dead agent cannot act on an answer, so leaving its dialog up offers to
 // allow a tool call that will never run — and leaves its request blocked.
 func TestAgentGone_ReleasesPendingPermissions(t *testing.T) {

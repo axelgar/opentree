@@ -316,6 +316,12 @@ type Model struct {
 	dead     bool
 	authNeed bool
 
+	// restarting is set between asking for a new agent and getting one. Bubble
+	// Tea runs every command on its own goroutine, so without it a second press
+	// of r launches a second agent into this same chat — both replaying history
+	// into one log, and both loading a session that allows exactly one client.
+	restarting bool
+
 	width, height int
 	ready         bool
 	err           error
