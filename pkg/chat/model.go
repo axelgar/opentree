@@ -236,6 +236,12 @@ type spinnerTickMsg struct{}
 type errMsg struct {
 	err  error
 	auth bool
+
+	// fatal means no session was ever created, so there is nothing to send to
+	// and only a fresh agent can change that. Without it the chat sat on
+	// "starting…" forever with the restart key unreachable, because the panel
+	// offering it only appears for an agent that is stopped.
+	fatal bool
 }
 
 // ---------------------------------------------------------------------------
@@ -515,11 +521,11 @@ func (m Model) resumeID() string {
 func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
 	resp, err := client.NewSession(m.ctx, cwd)
 	if err != nil {
-		return errMsg{err: err, auth: acp.IsAuthRequired(err)}
+		return errMsg{err: err, auth: acp.IsAuthRequired(err), fatal: true}
 	}
 	if m.opts.SaveSession != nil {
 		if err := m.opts.SaveSession(resp.SessionID); err != nil {
-			return errMsg{err: fmt.Errorf("failed to record session id: %w", err)}
+			return errMsg{err: fmt.Errorf("failed to record session id: %w", err), fatal: true}
 		}
 	}
 	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, note: note}

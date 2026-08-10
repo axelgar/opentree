@@ -216,6 +216,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = false
 		// A restart that failed is over; r has to work again.
 		m.restarting = false
+		if msg.fatal {
+			m.dead = true
+		}
 		m = m.relayout()
 		return m, nil
 	}
@@ -641,14 +644,40 @@ func turnSummary(resp *acp.PromptResponse, elapsed time.Duration) string {
 		return ""
 	}
 	var parts []string
-	if resp.StopReason != acp.StopEndTurn && resp.StopReason != "" {
-		parts = append(parts, resp.StopReason)
+	if why := stopReasonText(resp.StopReason); why != "" {
+		parts = append(parts, why)
 	}
 	if elapsed > 0 {
 		parts = append(parts, elapsed.Truncate(100*time.Millisecond).String())
 	}
-	if resp.Usage != nil {
-		parts = append(parts, fmt.Sprintf("%d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens))
+	if u := resp.Usage; u != nil {
+		tokens := fmt.Sprintf("%d in / %d out", u.InputTokens, u.OutputTokens)
+		// Cache traffic is most of a real turn and neither of the other two
+		// counts it: a live opencode turn reported 1 in and 19 out against
+		// 12,056 written to cache, which read as a turn that did nothing.
+		if cached := u.CachedReadTokens + u.CachedWriteTokens; cached > 0 {
+			tokens += fmt.Sprintf(" / %d cached", cached)
+		}
+		parts = append(parts, tokens)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// stopReasonText says why a turn ended short, in words. The protocol's own
+// vocabulary printed raw is no help: "max_turn_requests" also covers running
+// out of budget, which is not what the phrase suggests.
+func stopReasonText(reason string) string {
+	switch reason {
+	case acp.StopEndTurn, "":
+		return "" // the ordinary one, and saying it every time says nothing
+	case acp.StopCancelled:
+		return "interrupted"
+	case acp.StopMaxTokens:
+		return "stopped: the reply hit its token limit"
+	case acp.StopMaxTurnRequests:
+		return "stopped: hit the turn or budget limit"
+	case acp.StopRefusal:
+		return "the agent declined to continue"
+	}
+	return reason
 }

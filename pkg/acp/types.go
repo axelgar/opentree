@@ -153,10 +153,13 @@ type PromptResponse struct {
 	Usage      *TokenUsage `json:"usage,omitempty"`
 }
 
-// Stop reasons the UI branches on. Others pass through as opaque strings.
+// Stop reasons. Others pass through as opaque strings.
 const (
-	StopEndTurn   = "end_turn"
-	StopCancelled = "cancelled"
+	StopEndTurn         = "end_turn"
+	StopCancelled       = "cancelled"
+	StopMaxTokens       = "max_tokens"
+	StopMaxTurnRequests = "max_turn_requests"
+	StopRefusal         = "refusal"
 )
 
 type TokenUsage struct {

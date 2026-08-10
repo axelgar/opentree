@@ -44,8 +44,18 @@ func (m Model) footerHeight() int {
 	case overlayHelp:
 		return lipgloss.Height(m.helpView())
 	default:
-		return inputHeight + 2 + len(m.completion.items)
+		return inputHeight + 2 + m.completionHeight()
 	}
+}
+
+// completionHeight is how many lines the palette occupies: its items, plus the
+// line saying how many more matched.
+func (m Model) completionHeight() int {
+	n := len(m.completion.items)
+	if m.completion.total > n {
+		n++
+	}
+	return n
 }
 
 func (m Model) View() string {
@@ -125,6 +135,13 @@ func (m Model) completionView() string {
 			row += "  " + item.desc
 		}
 		lines = append(lines, style.Render(truncate(row, m.width-2)))
+	}
+	// opencode advertises thirty-five commands and this shows six. Six with
+	// nothing under them reads as "that is all there is", which sent people
+	// looking for a command list that was already on screen.
+	if hidden := m.completion.total - len(m.completion.items); hidden > 0 {
+		lines = append(lines, helpStyle.Render(fmt.Sprintf("  %d of %d — keep typing to narrow",
+			len(m.completion.items), m.completion.total)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -260,7 +277,7 @@ func (m Model) permissionView() string {
 	lines = append(lines, m.permDetail()...)
 	for i, o := range req.Options {
 		lines = append(lines, fmt.Sprintf("%s %s",
-			permKeyStyle.Render("["+optionHint(o, i)+"]"),
+			permKeyStyle.Render("["+optionHint(req.Options, i)+"]"),
 			permLabelStyle.Render(o.Name)))
 	}
 
@@ -305,8 +322,27 @@ func (m Model) permDetail() []string {
 
 // optionHint is the key that selects an option: a stable letter for the kinds
 // users answer by reflex, and the position for anything else.
-func optionHint(o acp.PermissionOption, i int) string {
-	switch o.Kind {
+//
+// The letter only belongs to the first option of its kind. Agents do offer two
+// ways to allow always — the Claude Code adapter's plan dialog offers "yes" and
+// "yes, and auto-accept edits" — and labelling both [A] pointed both rows at
+// the first, which is the more permissive one.
+func optionHint(options []acp.PermissionOption, i int) string {
+	key := kindKey(options[i].Kind)
+	if key == "" {
+		return strconv.Itoa(i + 1)
+	}
+	for j := range i {
+		if options[j].Kind == options[i].Kind {
+			return strconv.Itoa(i + 1)
+		}
+	}
+	return key
+}
+
+// kindKey is the reflex key for a permission kind, empty for a kind with none.
+func kindKey(kind string) string {
+	switch kind {
 	case acp.PermissionAllowOnce:
 		return "a"
 	case acp.PermissionAllowAlways:
@@ -314,7 +350,7 @@ func optionHint(o acp.PermissionOption, i int) string {
 	case acp.PermissionRejectOnce:
 		return "d"
 	}
-	return strconv.Itoa(i + 1)
+	return ""
 }
 
 func (m Model) renderLog() string {

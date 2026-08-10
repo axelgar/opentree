@@ -320,6 +320,41 @@ func TestReplayedUserMessage_KeepsOnlyWhatWasTyped(t *testing.T) {
 	}
 }
 
+// The palette shows six, and opencode advertises thirty-five commands. Six with
+// nothing under them reads as "that is all there is", which sends people
+// looking elsewhere for a list that was already on screen.
+func TestCompletionView_SaysWhatItIsNotShowing(t *testing.T) {
+	m := newTestModel()
+	for i := range 12 {
+		m.commands = append(m.commands, acp.Command{Name: fmt.Sprintf("cmd%02d", i)})
+	}
+	m.input.SetValue("/cmd")
+	m = m.refreshCompletion()
+
+	if view := m.completionView(); !strings.Contains(view, "6 of 12") {
+		t.Errorf("completionView() = %q, want it to say how many matched", view)
+	}
+	if got, want := m.completionHeight(), len(m.completion.items)+1; got != want {
+		t.Errorf("completionHeight = %d, want %d — the footer has to fit the line", got, want)
+	}
+}
+
+// A session that was never created leaves nothing to send to, and the panel
+// carrying the restart key only appears for an agent that is stopped — so the
+// chat used to sit on "starting…" with no way forward but closing the window.
+func TestSessionFailure_OffersARestart(t *testing.T) {
+	m := newTestModel()
+	m.sessionID = ""
+	m, _ = applyUpdate(m, errMsg{err: errString("session/new: refused"), fatal: true})
+
+	if !m.stopped() {
+		t.Error("a chat that never got a session has to offer a way out")
+	}
+	if !strings.Contains(m.footer(), "restart agent") {
+		t.Errorf("footer = %q, want the restart key", m.footer())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
@@ -457,6 +492,32 @@ func TestPermission_SecondQueuesBehindTheFirst(t *testing.T) {
 func TestOptionForKey_OutOfRangeDigit(t *testing.T) {
 	if _, ok := optionForKey("9", []acp.PermissionOption{allowOnce}); ok {
 		t.Error("digit beyond the option count should not match")
+	}
+}
+
+// The Claude Code adapter's plan dialog offers two ways to allow always — "yes"
+// and "yes, and auto-accept edits". Labelling both [A] pointed both rows at the
+// first one optionForKey finds, so the key meant something other than the row
+// it sat on, and silently picked the more permissive of the two.
+func TestOptionHint_LetterBelongsToOneRow(t *testing.T) {
+	auto := acp.PermissionOption{OptionID: "auto", Kind: acp.PermissionAllowAlways, Name: "Allow always, auto-accept"}
+	options := []acp.PermissionOption{allowOnce, allowAlways, auto, rejectOnce}
+
+	var hints []string
+	for i := range options {
+		hints = append(hints, optionHint(options, i))
+	}
+	seen := map[string]bool{}
+	for i, h := range hints {
+		if seen[h] {
+			t.Errorf("hint %q labels more than one row: %v", h, hints)
+		}
+		seen[h] = true
+
+		// Whatever key a row shows has to select that row.
+		if id, ok := optionForKey(h, options); !ok || id != options[i].OptionID {
+			t.Errorf("[%s] selects %q, want %q", h, id, options[i].OptionID)
+		}
 	}
 }
 
@@ -706,11 +767,43 @@ func TestTurnSummary(t *testing.T) {
 		StopReason: acp.StopCancelled,
 		Usage:      &acp.TokenUsage{InputTokens: 3, OutputTokens: 4},
 	}, 2500*time.Millisecond)
-	if !strings.Contains(got, acp.StopCancelled) || !strings.Contains(got, "3 in / 4 out") {
+	if !strings.Contains(got, "interrupted") || !strings.Contains(got, "3 in / 4 out") {
 		t.Errorf("turnSummary() = %q", got)
 	}
 	if !strings.Contains(got, "2.5s") {
 		t.Errorf("turnSummary() = %q, want the turn's duration", got)
+	}
+}
+
+// Every stop reason but the ordinary one is the agent giving up early, and the
+// protocol's own words for that do not say so — "max_turn_requests" also covers
+// running out of budget.
+func TestTurnSummary_ExplainsWhyItStoppedShort(t *testing.T) {
+	for reason, want := range map[string]string{
+		acp.StopMaxTokens:       "token limit",
+		acp.StopMaxTurnRequests: "budget limit",
+		acp.StopRefusal:         "declined",
+		"something_new":         "something_new", // an unknown reason still surfaces
+	} {
+		got := turnSummary(&acp.PromptResponse{StopReason: reason}, time.Second)
+		if !strings.Contains(got, want) {
+			t.Errorf("turnSummary(%q) = %q, want it to mention %q", reason, got, want)
+		}
+	}
+}
+
+// Cache traffic is most of a real turn and neither of the counts beside it
+// includes any of it: a live opencode turn reported 1 in and 19 out against
+// 12,056 tokens written to cache, which read as a turn that did nothing.
+func TestTurnSummary_CountsCachedTokens(t *testing.T) {
+	got := turnSummary(&acp.PromptResponse{
+		StopReason: acp.StopEndTurn,
+		Usage: &acp.TokenUsage{
+			InputTokens: 1, OutputTokens: 19, TotalTokens: 12076, CachedWriteTokens: 12056,
+		},
+	}, time.Second)
+	if !strings.Contains(got, "12056 cached") {
+		t.Errorf("turnSummary() = %q, want the cache traffic counted", got)
 	}
 }
 

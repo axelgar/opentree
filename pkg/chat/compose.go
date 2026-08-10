@@ -88,6 +88,11 @@ type completionState struct {
 	token  string // the word being completed, sigil included
 	items  []completionItem
 	cursor int
+
+	// total is how many matched before the cap. opencode advertises 35
+	// commands and the palette shows six of them, which read as "that is all
+	// there is" — so the palette says what it is holding back.
+	total int
 }
 
 func (c completionState) active() bool { return c.kind != completionNone && len(c.items) > 0 }
@@ -107,50 +112,55 @@ func completionFor(input string, commands []acp.Command, files []string) complet
 	switch {
 	case strings.HasPrefix(token, "/") && token == input:
 		// A slash command is only a command when it opens the message.
-		return completionState{kind: completionCommand, token: token,
-			items: matchCommands(strings.TrimPrefix(token, "/"), commands)}
+		items, total := matchCommands(strings.TrimPrefix(token, "/"), commands)
+		return completionState{kind: completionCommand, token: token, items: items, total: total}
 
 	case strings.HasPrefix(token, "@"):
-		return completionState{kind: completionFile, token: token,
-			items: matchFiles(strings.TrimPrefix(token, "@"), files)}
+		items, total := matchFiles(strings.TrimPrefix(token, "@"), files)
+		return completionState{kind: completionFile, token: token, items: items, total: total}
 	}
 	return completionState{}
 }
 
-func matchCommands(prefix string, commands []acp.Command) []completionItem {
+func matchCommands(prefix string, commands []acp.Command) ([]completionItem, int) {
 	var items []completionItem
+	var total int
 	for _, c := range commands {
 		if !strings.HasPrefix(c.Name, prefix) {
 			continue
 		}
-		items = append(items, completionItem{value: "/" + c.Name, desc: firstLine(c.Description)})
-		if len(items) == maxCompletionItems {
-			break
+		total++
+		if len(items) < maxCompletionItems {
+			items = append(items, completionItem{value: "/" + c.Name, desc: firstLine(c.Description)})
 		}
 	}
-	return items
+	return items, total
 }
 
 // matchFiles prefers a path prefix match but falls back to a substring, so
 // "@session" finds pkg/auth/session.go without typing the directories.
-func matchFiles(prefix string, files []string) []completionItem {
+func matchFiles(prefix string, files []string) ([]completionItem, int) {
 	var prefixed, contained []completionItem
+	var total int
 	for _, f := range files {
 		switch {
 		case strings.HasPrefix(f, prefix):
-			prefixed = append(prefixed, completionItem{value: "@" + f})
+			total++
+			if len(prefixed) < maxCompletionItems {
+				prefixed = append(prefixed, completionItem{value: "@" + f})
+			}
 		case prefix != "" && strings.Contains(f, prefix):
-			contained = append(contained, completionItem{value: "@" + f})
-		}
-		if len(prefixed) >= maxCompletionItems {
-			break
+			total++
+			if len(contained) < maxCompletionItems {
+				contained = append(contained, completionItem{value: "@" + f})
+			}
 		}
 	}
 	items := append(prefixed, contained...)
 	if len(items) > maxCompletionItems {
 		items = items[:maxCompletionItems]
 	}
-	return items
+	return items, total
 }
 
 // applyCompletion replaces the trailing word with the chosen value.
