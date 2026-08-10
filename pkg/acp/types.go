@@ -1,6 +1,9 @@
 package acp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // ProtocolVersion is the ACP major version this client speaks.
 const ProtocolVersion = 1
@@ -177,6 +180,28 @@ type ContentBlock struct {
 	// resource_link
 	URI  string `json:"uri,omitempty"`
 	Name string `json:"name,omitempty"`
+
+	Annotations *Annotations `json:"annotations,omitempty"`
+}
+
+// Annotations qualify a block. Audience is the one a client has to obey: a
+// replayed conversation carries blocks the agent addressed to itself — the
+// input it handed a tool, whole files it inlined — and showing those hands the
+// reader a conversation nobody had.
+type Annotations struct {
+	Audience []string `json:"audience,omitempty"`
+}
+
+// RoleUser is the audience meaning "the person reading".
+const RoleUser = "user"
+
+// ForUser reports whether a block is meant for the reader. A block with no
+// audience is for everyone, which is every block outside a replay.
+func (c ContentBlock) ForUser() bool {
+	if c.Annotations == nil || len(c.Annotations.Audience) == 0 {
+		return true
+	}
+	return slices.Contains(c.Annotations.Audience, RoleUser)
 }
 
 func TextBlock(text string) ContentBlock {

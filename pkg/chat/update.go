@@ -521,7 +521,7 @@ func (m Model) applyUpdate(u acp.SessionUpdate) Model {
 	case acp.UpdateUserMessage:
 		// Only seen during history replay; live user turns are appended on send.
 		if u.Message != nil {
-			m.entries = append(m.entries, entry{kind: entryUser, text: u.Message.Content.Text})
+			m = m.replayUserChunk(u.Message.Content)
 		}
 
 	case acp.UpdateAgentMessage:
@@ -546,6 +546,32 @@ func (m Model) applyUpdate(u acp.SessionUpdate) Model {
 		m.usage = u.Usage
 	}
 	return m
+}
+
+// replayUserChunk folds one chunk of a replayed message back into the log.
+//
+// A replay is not what was typed. opencode splits one message into several
+// chunks under a single messageId, and the ones the agent wrote to itself
+// arrive here too: the input it handed a tool, and whole files it inlined,
+// both addressed to the assistant. Appending each as its own message handed
+// back a conversation nobody had, with the file quoted inside it — on every
+// reopen, since a chat loads its session on every attach.
+func (m Model) replayUserChunk(c acp.ContentBlock) Model {
+	if !c.ForUser() {
+		return m
+	}
+	text := c.Text
+	if c.Type == "resource_link" {
+		// An @mention leaves as a link and its sigil leaves with it, so putting
+		// the sigil back is what makes the replayed line read as it was typed.
+		text = "@" + c.Name
+	}
+	if text == "" {
+		// A block opentree does not render still arrived, and an entry with no
+		// text draws a full-width band with nothing in it.
+		return m
+	}
+	return m.appendChunk(entryUser, text)
 }
 
 // appendChunk grows the trailing entry when it is the same kind, so a streamed

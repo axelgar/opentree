@@ -567,6 +567,32 @@ func TestPermission_HandlerDeclines(t *testing.T) {
 	}
 }
 
+func TestContentBlock_Audience(t *testing.T) {
+	// Captured from a live session/load: opencode marks the blocks the agent
+	// wrote to itself, and a client that ignores the mark replays them at the
+	// reader as things they said.
+	var forAgent ContentBlock
+	if err := json.Unmarshal([]byte(
+		`{"type":"text","text":"Called the Read tool","annotations":{"audience":["assistant"]}}`),
+		&forAgent); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if forAgent.ForUser() {
+		t.Error("a block addressed to the assistant is not for the reader")
+	}
+
+	var plain ContentBlock
+	if err := json.Unmarshal([]byte(`{"type":"text","text":"hello"}`), &plain); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !plain.ForUser() {
+		t.Error("a block with no audience is for everyone")
+	}
+	if !(ContentBlock{Annotations: &Annotations{Audience: []string{"user", "assistant"}}}).ForUser() {
+		t.Error("a block addressed to both is still for the reader")
+	}
+}
+
 func TestUnsupportedRequest_IsAnswered(t *testing.T) {
 	// We declare no fs capability, but an agent asking anyway must not be left
 	// blocked forever.

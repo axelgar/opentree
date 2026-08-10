@@ -78,6 +78,13 @@ func textUpdate(kind, text string) acpUpdateMsg {
 	})
 }
 
+func userChunk(c acp.ContentBlock) acpUpdateMsg {
+	return acpUpdateMsg(acp.SessionUpdate{
+		Type:    acp.UpdateUserMessage,
+		Message: &acp.MessageChunk{MessageID: "m1", Content: c},
+	})
+}
+
 func toolUpdate(kind string, call acp.ToolCall) acpUpdateMsg {
 	return acpUpdateMsg(acp.SessionUpdate{Type: kind, ToolCall: &call})
 }
@@ -277,6 +284,41 @@ func TestPromptError_Surfaces(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// The four chunks below are a real session/load, captured from opencode 1.18.16
+// replaying one prompt that mentioned a file: what was typed, the input the
+// agent handed its Read tool, the whole file it inlined, and the mention as a
+// link. All four share one messageId, and the middle two are addressed to the
+// assistant. Replaying them verbatim handed back a conversation nobody had —
+// on every attach, since a chat loads its session each time.
+func TestReplayedUserMessage_KeepsOnlyWhatWasTyped(t *testing.T) {
+	m := newTestModel()
+	forAgent := &acp.Annotations{Audience: []string{"assistant"}}
+	for _, c := range []acp.ContentBlock{
+		{Type: "text", Text: "summarise "},
+		{Type: "text", Text: `Called the Read tool with the following input: {"filePath":"/repo/NOTES.md"}`, Annotations: forAgent},
+		{Type: "text", Text: "<path>/repo/NOTES.md</path>\n<content>\nthe whole file, quoted\n</content>", Annotations: forAgent},
+		{Type: "resource_link", URI: "file:///repo/NOTES.md", Name: "NOTES.md"},
+	} {
+		m, _ = applyUpdate(m, userChunk(c))
+	}
+
+	var said []entry
+	for _, e := range m.entries {
+		if e.kind == entryUser {
+			said = append(said, e)
+		}
+	}
+	if len(said) != 1 {
+		t.Fatalf("got %d user messages, want the one that was sent: %+v", len(said), said)
+	}
+	if said[0].text != "summarise @NOTES.md" {
+		t.Errorf("replayed = %q, want the typed message with its mention intact", said[0].text)
+	}
+	if strings.Contains(m.viewport.View(), "the whole file, quoted") {
+		t.Error("a file the agent inlined for itself must not come back as something you said")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Permissions
