@@ -567,6 +567,30 @@ func TestPermission_HandlerDeclines(t *testing.T) {
 	}
 }
 
+// The agent answers initialize with the version it will actually speak, which
+// may be older than the one asked for. opentree speaks exactly one, and going
+// on regardless would mean reading a protocol nobody agreed to — failing later
+// in ways that look like bugs rather than like a version mismatch.
+func TestInitialize_RefusesAVersionItDoesNotSpeak(t *testing.T) {
+	f := newFakeAgent(t, Handlers{})
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := f.client.Initialize(context.Background(), "opentree", "test")
+		errc <- err
+	}()
+
+	f.reply(f.next(), `{"protocolVersion":99,"agentCapabilities":{"loadSession":true},"authMethods":[]}`)
+
+	err := <-errc
+	if err == nil {
+		t.Fatal("expected a version mismatch to be refused")
+	}
+	if !strings.Contains(err.Error(), "v99") {
+		t.Errorf("err = %v, want it to name the version the agent offered", err)
+	}
+}
+
 func TestContentBlock_Audience(t *testing.T) {
 	// Captured from a live session/load: opencode marks the blocks the agent
 	// wrote to itself, and a client that ignores the mark replays them at the

@@ -339,6 +339,26 @@ func TestCompletionView_SaysWhatItIsNotShowing(t *testing.T) {
 	}
 }
 
+// ACP says a client must not call session/load unless the agent advertised
+// loadSession. Both agents opentree ships with do, so this is for the next one:
+// asking anyway costs a round trip and comes back as a failure that reads like
+// a lost conversation rather than an agent that never kept one.
+func TestResume_NotAttemptedWithoutTheCapability(t *testing.T) {
+	m := newTestModel()
+	m.opts.SessionID = "ses_old"
+	m.canResume = false
+	if cmd := m.startSession(); cmd != nil {
+		t.Error("with no client there is nothing to ask, so nothing should be issued")
+	}
+
+	m = m.withAgentInfo(&acp.InitializeResponse{
+		AgentCapabilities: acp.AgentCapabilities{LoadSession: true},
+	})
+	if !m.canResume {
+		t.Error("the capability the agent advertised was dropped")
+	}
+}
+
 // A session that was never created leaves nothing to send to, and the panel
 // carrying the restart key only appears for an agent that is stopped — so the
 // chat used to sit on "starting…" with no way forward but closing the window.

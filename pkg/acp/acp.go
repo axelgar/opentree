@@ -193,6 +193,14 @@ func (c *Client) Initialize(ctx context.Context, clientName, version string) (*I
 	if err := c.call(ctx, methodInitialize, req, &resp); err != nil {
 		return nil, err
 	}
+	// The agent answers with the version it will actually speak, which may be
+	// older than the one asked for. opentree speaks exactly one, so anything
+	// else has to be refused here — carrying on would mean reading a protocol
+	// nobody agreed to, and failing later in ways that look like bugs.
+	if resp.ProtocolVersion != ProtocolVersion {
+		return nil, fmt.Errorf("agent speaks ACP v%d, opentree speaks v%d",
+			resp.ProtocolVersion, ProtocolVersion)
+	}
 	return &resp, nil
 }
 

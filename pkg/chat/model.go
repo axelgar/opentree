@@ -279,6 +279,11 @@ type Model struct {
 	agentVersion string
 	authMethods  []acp.AuthMethod
 
+	// canResume is the agent's loadSession capability. ACP says a client must
+	// not call session/load without it, and an agent that cannot reopen a
+	// conversation should be told so rather than asked and refused.
+	canResume bool
+
 	sessionID     string
 	configOptions []acp.ConfigOption
 	settings      settings
@@ -447,6 +452,7 @@ func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 		return m
 	}
 	m.authMethods = info.AuthMethods
+	m.canResume = info.AgentCapabilities.LoadSession
 	if info.AgentInfo != nil {
 		m.agentVersion = info.AgentInfo.Version
 	}
@@ -491,6 +497,12 @@ func (m Model) startSession() tea.Cmd {
 		return nil // nothing started; the stopped panel is already showing why
 	}
 	return func() tea.Msg {
+		if want != "" && !m.canResume {
+			// Both agents opentree ships with advertise loadSession, so this is
+			// for the next one. Saying so beats a round trip that fails.
+			return m.freshSession(client, cwd,
+				"this agent cannot reopen a conversation — starting a new one")
+		}
 		if want != "" {
 			resp, err := client.LoadSession(m.ctx, want, cwd)
 			if err == nil {
