@@ -8,8 +8,10 @@ import (
 	"github.com/axelgar/opentree/pkg/acp"
 )
 
-// maxCompletionItems caps the palette so it cannot swallow the conversation.
-const maxCompletionItems = 6
+// completionWindow is how many palette rows are on screen at once, so the
+// palette cannot swallow the conversation. Every match is kept — the rest
+// scroll past under the cursor.
+const completionWindow = 6
 
 // composePrompt turns typed input into ACP content blocks, promoting @mentions
 // of known files into resource links. A link points the agent at the file
@@ -88,11 +90,6 @@ type completionState struct {
 	token  string // the word being completed, sigil included
 	items  []completionItem
 	cursor int
-
-	// total is how many matched before the cap. opencode advertises 35
-	// commands and the palette shows six of them, which read as "that is all
-	// there is" — so the palette says what it is holding back.
-	total int
 }
 
 func (c completionState) active() bool { return c.kind != completionNone && len(c.items) > 0 }
@@ -112,55 +109,39 @@ func completionFor(input string, commands []acp.Command, files []string) complet
 	switch {
 	case strings.HasPrefix(token, "/") && token == input:
 		// A slash command is only a command when it opens the message.
-		items, total := matchCommands(strings.TrimPrefix(token, "/"), commands)
-		return completionState{kind: completionCommand, token: token, items: items, total: total}
+		return completionState{kind: completionCommand, token: token,
+			items: matchCommands(strings.TrimPrefix(token, "/"), commands)}
 
 	case strings.HasPrefix(token, "@"):
-		items, total := matchFiles(strings.TrimPrefix(token, "@"), files)
-		return completionState{kind: completionFile, token: token, items: items, total: total}
+		return completionState{kind: completionFile, token: token,
+			items: matchFiles(strings.TrimPrefix(token, "@"), files)}
 	}
 	return completionState{}
 }
 
-func matchCommands(prefix string, commands []acp.Command) ([]completionItem, int) {
+func matchCommands(prefix string, commands []acp.Command) []completionItem {
 	var items []completionItem
-	var total int
 	for _, c := range commands {
-		if !strings.HasPrefix(c.Name, prefix) {
-			continue
-		}
-		total++
-		if len(items) < maxCompletionItems {
+		if strings.HasPrefix(c.Name, prefix) {
 			items = append(items, completionItem{value: "/" + c.Name, desc: firstLine(c.Description)})
 		}
 	}
-	return items, total
+	return items
 }
 
 // matchFiles prefers a path prefix match but falls back to a substring, so
 // "@session" finds pkg/auth/session.go without typing the directories.
-func matchFiles(prefix string, files []string) ([]completionItem, int) {
+func matchFiles(prefix string, files []string) []completionItem {
 	var prefixed, contained []completionItem
-	var total int
 	for _, f := range files {
 		switch {
 		case strings.HasPrefix(f, prefix):
-			total++
-			if len(prefixed) < maxCompletionItems {
-				prefixed = append(prefixed, completionItem{value: "@" + f})
-			}
+			prefixed = append(prefixed, completionItem{value: "@" + f})
 		case prefix != "" && strings.Contains(f, prefix):
-			total++
-			if len(contained) < maxCompletionItems {
-				contained = append(contained, completionItem{value: "@" + f})
-			}
+			contained = append(contained, completionItem{value: "@" + f})
 		}
 	}
-	items := append(prefixed, contained...)
-	if len(items) > maxCompletionItems {
-		items = items[:maxCompletionItems]
-	}
-	return items, total
+	return append(prefixed, contained...)
 }
 
 // applyCompletion replaces the trailing word with the chosen value.

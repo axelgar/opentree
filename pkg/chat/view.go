@@ -48,11 +48,11 @@ func (m Model) footerHeight() int {
 	}
 }
 
-// completionHeight is how many lines the palette occupies: its items, plus the
-// line saying how many more matched.
+// completionHeight is how many lines the palette occupies: the visible window,
+// plus the line saying where in the list the cursor is.
 func (m Model) completionHeight() int {
-	n := len(m.completion.items)
-	if m.completion.total > n {
+	n := min(len(m.completion.items), completionWindow)
+	if len(m.completion.items) > completionWindow {
 		n++
 	}
 	return n
@@ -122,26 +122,42 @@ func (m Model) footer() string {
 	return b.String()
 }
 
-// completionView lists the palette above the input, closest match first.
+// completionView lists the palette above the input, closest match first,
+// scrolled to keep the cursor visible. opencode advertises ninety-odd commands
+// and only six fit; arrowing past the sixth scrolls rather than stopping, so
+// the whole list is reachable without typing a narrowing prefix.
 func (m Model) completionView() string {
-	lines := make([]string, 0, len(m.completion.items))
-	for i, item := range m.completion.items {
+	items := m.completion.items
+	start := 0
+	if m.completion.cursor >= completionWindow {
+		start = m.completion.cursor - completionWindow + 1
+	}
+	end := min(start+completionWindow, len(items))
+
+	// Descriptions share one column so the eye can run straight down them. The
+	// widest name in the whole list sets it, not the widest on screen, or the
+	// column would jump every time the window scrolls.
+	col := 0
+	for _, item := range items {
+		col = max(col, lipgloss.Width(item.value))
+	}
+	col = min(col, m.width/3)
+
+	lines := make([]string, 0, completionWindow+1)
+	for i := start; i < end; i++ {
 		style, mark := completionItemStyle, "  "
 		if i == m.completion.cursor {
 			style, mark = completionSelectedStyle, "› "
 		}
-		row := mark + item.value
-		if item.desc != "" {
-			row += "  " + item.desc
+		row := mark + items[i].value
+		if items[i].desc != "" {
+			row += strings.Repeat(" ", max(col-lipgloss.Width(items[i].value), 0)+4) + items[i].desc
 		}
 		lines = append(lines, style.Render(truncate(row, m.width-2)))
 	}
-	// opencode advertises thirty-five commands and this shows six. Six with
-	// nothing under them reads as "that is all there is", which sent people
-	// looking for a command list that was already on screen.
-	if hidden := m.completion.total - len(m.completion.items); hidden > 0 {
-		lines = append(lines, helpStyle.Render(fmt.Sprintf("  %d of %d — keep typing to narrow",
-			len(m.completion.items), m.completion.total)))
+	if len(items) > completionWindow {
+		lines = append(lines, helpStyle.Render(fmt.Sprintf("  %d of %d — ↑/↓ to scroll",
+			m.completion.cursor+1, len(items))))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -144,7 +144,7 @@ func TestCompletionFor_UnmatchedIsInactive(t *testing.T) {
 }
 
 func TestMatchCommands_DescriptionIsOneLine(t *testing.T) {
-	items, _ := matchCommands("commit", testCommands)
+	items := matchCommands("commit", testCommands)
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want 1", items)
 	}
@@ -154,7 +154,7 @@ func TestMatchCommands_DescriptionIsOneLine(t *testing.T) {
 }
 
 func TestMatchFiles_PrefixBeatsSubstring(t *testing.T) {
-	items, _ := matchFiles("pkg/auth", trackedFiles)
+	items := matchFiles("pkg/auth", trackedFiles)
 	if len(items) < 2 {
 		t.Fatalf("items = %+v, want both auth files", items)
 	}
@@ -163,19 +163,14 @@ func TestMatchFiles_PrefixBeatsSubstring(t *testing.T) {
 	}
 }
 
-func TestMatchFiles_Capped(t *testing.T) {
+func TestMatchFiles_KeepsEveryMatch(t *testing.T) {
 	var many []string
 	for i := 0; i < 50; i++ {
 		many = append(many, "file")
 	}
-	items, total := matchFiles("f", many)
-	if len(items) > maxCompletionItems {
-		t.Errorf("items = %d, want at most %d", len(items), maxCompletionItems)
-	}
-	// The palette says what it is holding back, so the count is of everything
-	// that matched, not of what fitted.
-	if total != len(many) {
-		t.Errorf("total = %d, want all %d matches counted", total, len(many))
+	// The palette scrolls, so matching stops filtering and keeps the lot.
+	if items := matchFiles("f", many); len(items) != len(many) {
+		t.Errorf("items = %d, want all %d matches", len(items), len(many))
 	}
 }
 

@@ -320,10 +320,11 @@ func TestReplayedUserMessage_KeepsOnlyWhatWasTyped(t *testing.T) {
 	}
 }
 
-// The palette shows six, and opencode advertises thirty-five commands. Six with
-// nothing under them reads as "that is all there is", which sends people
-// looking elsewhere for a list that was already on screen.
-func TestCompletionView_SaysWhatItIsNotShowing(t *testing.T) {
+// The palette shows six, and opencode advertises ninety-odd commands. Six with
+// nothing under them read as "that is all there is", which sent people looking
+// elsewhere for a list that was already on screen — so the rest scroll past
+// under the cursor instead of needing a narrowing prefix typed at them.
+func TestCompletionView_ScrollsPastTheWindow(t *testing.T) {
 	m := newTestModel()
 	for i := range 12 {
 		m.commands = append(m.commands, acp.Command{Name: fmt.Sprintf("cmd%02d", i)})
@@ -331,11 +332,26 @@ func TestCompletionView_SaysWhatItIsNotShowing(t *testing.T) {
 	m.input.SetValue("/cmd")
 	m = m.refreshCompletion()
 
-	if view := m.completionView(); !strings.Contains(view, "6 of 12") {
-		t.Errorf("completionView() = %q, want it to say how many matched", view)
+	if got := len(m.completion.items); got != 12 {
+		t.Errorf("items = %d, want all 12 kept for scrolling", got)
 	}
-	if got, want := m.completionHeight(), len(m.completion.items)+1; got != want {
+	if view := m.completionView(); !strings.Contains(view, "1 of 12") {
+		t.Errorf("completionView() = %q, want it to say where the cursor is", view)
+	}
+	if got, want := m.completionHeight(), completionWindow+1; got != want {
 		t.Errorf("completionHeight = %d, want %d — the footer has to fit the line", got, want)
+	}
+
+	// Arrowing past the sixth scrolls the window instead of stopping.
+	for range completionWindow {
+		m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	view := m.completionView()
+	if !strings.Contains(view, "› /cmd06") {
+		t.Errorf("completionView() = %q, want the seventh command selected", view)
+	}
+	if strings.Contains(view, "/cmd00") {
+		t.Errorf("completionView() = %q, want the first command scrolled off", view)
 	}
 }
 
