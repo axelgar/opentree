@@ -95,8 +95,9 @@ func resolveACPAgent(repoRoot string) (*config.PredefinedAgent, error) {
 	}
 
 	agent := config.FindAgent(name)
-	if agent == nil || agent.ACP == nil {
-		return nil, fmt.Errorf("agent %q has no ACP mode; only %s does", name, acpCapableAgents())
+	if agent == nil {
+		return nil, fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s",
+			name, strings.Join(config.AgentCommands(), ", "))
 	}
 	// A missing adapter is deliberately not an error here: the chat opens in its
 	// stopped state instead, where installing it is one key away.
@@ -114,14 +115,4 @@ func installHint(agent *config.PredefinedAgent) string {
 		size = " (" + agent.ACP.InstallSize + ")"
 	}
 	return fmt.Sprintf("install it%s from opentree's agent list — press A, then i", size)
-}
-
-func acpCapableAgents() string {
-	var names []string
-	for i := range config.PredefinedAgents {
-		if config.PredefinedAgents[i].ACP != nil {
-			names = append(names, config.PredefinedAgents[i].Command)
-		}
-	}
-	return strings.Join(names, ", ")
 }

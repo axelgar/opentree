@@ -22,14 +22,22 @@ type Config struct {
 
 // AgentConfig configures the coding agent
 type AgentConfig struct {
-	Command string   `toml:"command"`
-	Args    []string `toml:"args"`
+	Command string `toml:"command"`
 }
 
-// Validate checks that the agent command exists on PATH.
+// Validate checks that the agent is one opentree can drive, and that it is
+// installed.
+//
+// Being on PATH is not enough: opentree only speaks the Agent Client Protocol,
+// so an agent it has no ACP spec for cannot be run at all. Catching that here
+// turns it into one clear message at `opentree new` rather than a puzzling
+// failure later, inside the chat that was supposed to open.
 func (a AgentConfig) Validate() error {
 	if a.Command == "" {
 		return fmt.Errorf("agent command is empty")
+	}
+	if FindAgent(a.Command) == nil {
+		return fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s", a.Command, knownAgentCommands())
 	}
 	if _, err := exec.LookPath(a.Command); err != nil {
 		return fmt.Errorf("agent command %q not found on PATH — install it or set [agent] command in opentree.toml (known agents: %s)", a.Command, knownAgentCommands())
@@ -56,7 +64,6 @@ type GitHubConfig struct {
 // ConfigSource tracks which config file provided each value.
 type ConfigSource struct {
 	AgentCommand        string
-	AgentArgs           string
 	WorktreeBaseDir     string
 	WorktreeDefaultBase string
 	TmuxSessionPrefix   string
@@ -77,7 +84,6 @@ func Default() *Config {
 	return &Config{
 		Agent: AgentConfig{
 			Command: "opencode",
-			Args:    []string{},
 		},
 		Worktree: WorktreeConfig{
 			BaseDir:     ".opentree",
@@ -177,9 +183,6 @@ func mergeInto(dst, src *Config) {
 	if src.Agent.Command != "" {
 		dst.Agent.Command = src.Agent.Command
 	}
-	if src.Agent.Args != nil {
-		dst.Agent.Args = src.Agent.Args
-	}
 	if src.Worktree.BaseDir != "" {
 		dst.Worktree.BaseDir = src.Worktree.BaseDir
 	}
@@ -199,7 +202,6 @@ func mergeInto(dst, src *Config) {
 func computeSources(resolved, global, repo *Config) ConfigSource {
 	src := ConfigSource{
 		AgentCommand:        SourceDefault,
-		AgentArgs:           SourceDefault,
 		WorktreeBaseDir:     SourceDefault,
 		WorktreeDefaultBase: SourceDefault,
 		TmuxSessionPrefix:   SourceDefault,
@@ -211,13 +213,6 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 	}
 	if repo != nil && repo.Agent.Command != "" {
 		src.AgentCommand = SourceRepo
-	}
-
-	if global != nil && global.Agent.Args != nil {
-		src.AgentArgs = SourceGlobal
-	}
-	if repo != nil && repo.Agent.Args != nil {
-		src.AgentArgs = SourceRepo
 	}
 
 	if global != nil && global.Worktree.BaseDir != "" {
@@ -277,15 +272,12 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 
 	sources := computeSources(resolved, globalCfg, repoCfg)
 
-	// No config file touched the [agent] section: use the first installed
-	// agent so the first run works with whatever the user already has. If a
-	// file set args — even without a command — detection stays off so user
-	// args are never paired with a binary they didn't choose; the hardcoded
-	// default stands and Validate reports it if it isn't installed.
-	if sources.AgentCommand == SourceDefault && sources.AgentArgs == SourceDefault {
+	// No config file named an agent: use the first installed one so the first
+	// run works with whatever the user already has. The hardcoded default
+	// stands otherwise, and Validate reports it if it isn't installed.
+	if sources.AgentCommand == SourceDefault {
 		if a := FirstInstalledAgent(); a != nil {
 			resolved.Agent.Command = a.Command
-			resolved.Agent.Args = a.Args
 		}
 	}
 

@@ -236,7 +236,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "enter":
 				m.filtering = false
 				m.cursor = 0
-				return m, m.capturePreviewCmd()
+				return m, nil
 			case "backspace":
 				if len(m.filterQuery) > 0 {
 					m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
@@ -380,7 +380,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.String() == "esc" && m.filterQuery != "":
 			m.filterQuery = ""
 			m.cursor = 0
-			return m, m.capturePreviewCmd()
+			return m, nil
 		case key.Matches(msg, m.keys.Quit):
 			// Quitting mid create/delete would orphan a half-built workspace
 			// (worktree and window exist, state entry not yet written).
@@ -391,12 +391,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
 				m.cursor--
-				return m, m.capturePreviewCmd()
+				return m, nil
 			}
 		case key.Matches(msg, m.keys.Down):
 			if m.cursor < len(visible)-1 {
 				m.cursor++
-				return m, m.capturePreviewCmd()
+				return m, nil
 			}
 		case key.Matches(msg, m.keys.New):
 			m.creating = true
@@ -467,8 +467,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.isWorkspaceInFlight(ws.Name) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
+				if reason := ws.chatUnavailable(); reason != "" {
+					return m, m.transientErrCmd(reason)
+				}
 				if ws.PRURL != "" {
-					return m, m.sendReviewsCmd(ws.Name)
+					return m, m.sendReviewsCmd(ws)
 				}
 				return m, m.transientErrCmd(fmt.Sprintf("no PR for %q — create one first with 'p'", ws.Name))
 			}
@@ -608,7 +611,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
 		}
-		return m, m.capturePreviewCmd()
+		return m, nil
 
 	case createdWorkspaceMsg:
 		m.workspaceCreating = false
@@ -649,12 +652,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadWorkspacesCmd
 
-	case capturePreviewMsg:
-		// Drop captures for a workspace the cursor has since left.
-		if msg.wsName == m.currentWorkspaceName() {
-			m.agentPreview = msg.lines
-		}
-
 	case refreshTickMsg:
 		next := tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} })
 		// Don't stack another load while one is still running (huge repo,
@@ -664,12 +661,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshing = true
 		return m, tea.Batch(m.loadWorkspacesCmd, next)
-
-	case previewTickMsg:
-		return m, tea.Batch(
-			m.capturePreviewCmd(),
-			tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
-		)
 
 	case prCreatedMsg:
 		ws, err := m.stateStore.GetWorkspace(msg.wsName)
@@ -937,7 +928,7 @@ func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.cursor = next
-	return m, m.capturePreviewCmd()
+	return m, nil
 }
 
 // maxDiffScroll is the furthest the diff can scroll before the last line is on

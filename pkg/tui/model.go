@@ -28,7 +28,6 @@ type WorkspaceItem struct {
 	UncommittedCount int
 	LastActivity     time.Time
 	FileChanges      []worktree.FileChange
-	AgentStatus      *AgentStatus
 	ChatStatus       *chat.Status
 }
 
@@ -79,9 +78,6 @@ type Model struct {
 	workspaceDeletingName  string
 	workspaceDeletingNames map[string]bool
 	spinnerFrame           int
-
-	// agent output preview
-	agentPreview string
 
 	// PR creation dialog
 	prCreating    bool
@@ -194,7 +190,6 @@ type branchStatusCheckedMsg struct {
 }
 type statusCheckErrMsg struct{ err error }
 type refreshTickMsg struct{}
-type previewTickMsg struct{}
 type spinnerTickMsg struct{}
 type diffLoadedMsg struct {
 	content string
@@ -210,10 +205,6 @@ type agentCommandSentMsg struct {
 	action string
 }
 
-type capturePreviewMsg struct {
-	wsName string // workspace the capture belongs to, so stale ones are dropped
-	lines  string
-}
 type reviewsSentMsg struct {
 	wsName string
 	count  int
@@ -271,7 +262,6 @@ func (m Model) Init() tea.Cmd {
 		m.loadWorkspacesCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
-		tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
 	)
 }
 

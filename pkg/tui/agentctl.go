@@ -105,15 +105,14 @@ func (ws WorkspaceItem) chatWorking() bool {
 }
 
 // chatUnavailable explains why the dashboard cannot reach this workspace's
-// agent, or "" when it can. Only ACP agents have a chat to talk to, so in a
-// repo with a mix of them these keys apply to some rows and not others — and a
-// key that quietly does nothing is indistinguishable from a broken one.
+// agent, or "" when it can. A key that quietly does nothing is
+// indistinguishable from a broken one, so every one of these keys says why.
 //
-// A silent socket is ambiguous: the agent may have no chat mode at all, or its
-// chat window may just have been closed, which is now an ordinary thing to do.
-// Enter is the answer to both, but telling someone their ACP agent draws its
-// own screen would be wrong, so the workspace's recorded agent picks the
-// sentence. An agent the registry does not know falls to the vaguer one.
+// A silent socket usually just means the chat window was closed, which is an
+// ordinary thing to do and one enter away from fixed. The exception is a
+// workspace created by an older opentree against an agent that has since left
+// the registry: reopening it cannot work, and saying so is the only way the
+// user learns the workspace needs a different agent.
 func (ws WorkspaceItem) chatUnavailable() string {
 	if ws.ChatStatus != nil {
 		if ws.ChatStatus.State == chat.StateStopped {
@@ -121,9 +120,9 @@ func (ws WorkspaceItem) chatUnavailable() string {
 		}
 		return ""
 	}
-	if agent := config.FindAgent(ws.Agent); agent != nil && agent.ACP == nil {
-		return fmt.Sprintf("%s runs %s, which draws its own screen — press enter to attach",
-			ws.Name, agent.Name)
+	if config.FindAgent(ws.Agent) == nil {
+		return fmt.Sprintf("%s runs %s, which opentree no longer supports — delete it or switch its agent",
+			ws.Name, ws.Agent)
 	}
 	return fmt.Sprintf("%s's chat is not running — press enter to reopen it", ws.Name)
 }
@@ -147,16 +146,10 @@ func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd
 // error message for the caller to surface, or "" on success.
 func (m *Model) selectAgent(agent config.PredefinedAgent) string {
 	m.cfg.Agent.Command = agent.Command
-	if agent.Args != nil {
-		m.cfg.Agent.Args = agent.Args
-	} else {
-		m.cfg.Agent.Args = []string{}
-	}
-	// Persist only the agent keys (not the merged config), and surface failures
+	// Persist only the agent key (not the merged config), and surface failures
 	// instead of silently losing the selection.
 	if err := config.SetKeys(config.FindConfigFile(), map[string]any{
 		"agent.command": m.cfg.Agent.Command,
-		"agent.args":    m.cfg.Agent.Args,
 	}); err != nil {
 		return fmt.Sprintf("failed to save agent selection: %v", err)
 	}

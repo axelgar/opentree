@@ -53,7 +53,7 @@ func (a PredefinedAgent) ACPInstalled() bool {
 // ACPInstallCommand is the argv that installs this agent's adapter, or nil when
 // the agent serves ACP itself and there is nothing to fetch.
 func (a PredefinedAgent) ACPInstallCommand() []string {
-	if a.ACP == nil || a.ACP.Package == "" {
+	if a.ACP.Package == "" {
 		return nil
 	}
 	dir := ToolsDir()

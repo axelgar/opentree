@@ -1,33 +1,25 @@
 package cmd
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/axelgar/opentree/pkg/config"
 )
 
-// statusFileEnv is the environment variable opentree exports into every agent
-// shell; the installed hooks write their status JSON to the path it holds and
-// no-op when it is unset (i.e. outside opentree).
-const statusFileEnv = "OPENTREE_STATUS_FILE"
-
 var agentsSetupCmd = &cobra.Command{
 	Use:   "setup <name>",
-	Short: "Install status-reporting hooks for a coding agent",
-	Long: `Install the hooks that let an agent report its status to opentree.
+	Short: "Install a coding agent's ACP adapter",
+	Long: `Install the Agent Client Protocol server an agent needs, if it needs one.
 
-The agent writes .opentree-status.json when it starts working and when it is
-waiting for your input; opentree shows that as a badge in the workspace list.
-Hooks are installed once at the user level and guarded so they only fire inside
-opentree-launched sessions.`,
+opentree talks to every agent over ACP and draws the conversation itself, so it
+reads status straight from the protocol and no hooks are involved. Agents that
+serve ACP themselves have nothing to install; the ones reached through an
+adapter get it fetched into ~/.opentree/tools, not the user's global npm root.`,
 	Args: cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
@@ -48,120 +40,9 @@ opentree-launched sessions.`,
 			}
 			return fmt.Errorf("agent %q not found", args[0])
 		}
-
-		// An ACP agent needs no hooks: opentree runs it through its own chat
-		// view, which holds the protocol connection and therefore knows what
-		// the agent is doing without being told.
-		if agent.ACP != nil {
-			return setupACPAgent(agent)
-		}
-
-		inst, ok := hookInstallers[agent.Command]
-		if !ok {
-			return fmt.Errorf("no status-hook setup is available for %q yet", agent.Name)
-		}
-
-		if inst.install != nil {
-			if err := inst.install(); err != nil {
-				return err
-			}
-		} else {
-			fmt.Print(inst.manual)
-		}
-
-		fmt.Printf("\nopentree exports %s into each agent shell automatically, so these\n", statusFileEnv)
-		fmt.Println("hooks activate on your next workspace launch (and stay inert elsewhere).")
-		return nil
+		return setupACPAgent(agent)
 	},
 }
-
-// hookInstaller either auto-installs an agent's status hooks (install != nil)
-// or prints manual instructions (manual, when auto-install isn't supported).
-type hookInstaller struct {
-	install func() error
-	manual  string
-}
-
-var hookInstallers = map[string]hookInstaller{
-	"claude": {install: installClaudeHooks},
-	"codex":  {install: installCodexHooks},
-	"gemini": {install: installGeminiHooks},
-	"gh":     {manual: copilotManual}, // Copilot: no waiting-for-input event
-	"pi":     {manual: piManual},      // Pi: single-slot notify.json we won't clobber
-}
-
-// statusHookCommand builds the guarded shell command that writes a status value
-// to $OPENTREE_STATUS_FILE. The command is a no-op when the variable is unset.
-func statusHookCommand(status string) string {
-	return fmt.Sprintf(`[ -n "$%s" ] && printf '{"status":"%s"}' > "$%s"`, statusFileEnv, status, statusFileEnv)
-}
-
-// Each agent maps a new prompt and a completed tool call to in_progress, and
-// a permission prompt, a notification, or the turn ending to needs_input (the
-// user's move again). The tool-completion event closes the gap where
-// approving a permission prompt mid-turn — not a new prompt — would otherwise
-// leave the badge stuck on "waiting" even though the agent resumed. Turn-end →
-// needs_input closes the other gap, where a finished turn would otherwise
-// still read "working..." until an idle timeout.
-var (
-	working  = statusHookCommand("in_progress")
-	needsYou = statusHookCommand("needs_input")
-)
-
-// ---------------------------------------------------------------------------
-// Claude Code — ~/.claude/settings.json (JSON hooks, run through a shell)
-// ---------------------------------------------------------------------------
-
-func installClaudeHooks() error {
-	path, err := homePath(".claude", "settings.json")
-	if err != nil {
-		return err
-	}
-	return installAndReport("Claude Code", path, []jsonHook{
-		{event: "UserPromptSubmit", command: working},
-		{event: "PostToolUse", command: working},
-		{event: "Notification", command: needsYou},
-		{event: "Stop", command: needsYou},
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Codex — ~/.codex/hooks.json (same JSON hook shape; additive across layers)
-// ---------------------------------------------------------------------------
-
-func installCodexHooks() error {
-	path, err := homePath(".codex", "hooks.json")
-	if err != nil {
-		return err
-	}
-	return installAndReport("Codex", path, []jsonHook{
-		{event: "UserPromptSubmit", command: working},
-		{event: "PostToolUse", command: working},
-		{event: "PermissionRequest", command: needsYou},
-		{event: "Stop", command: needsYou},
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Gemini CLI — ~/.gemini/settings.json (same JSON hook shape)
-// ---------------------------------------------------------------------------
-
-func installGeminiHooks() error {
-	path, err := homePath(".gemini", "settings.json")
-	if err != nil {
-		return err
-	}
-	return installAndReport("Gemini CLI", path, []jsonHook{
-		{event: "BeforeAgent", command: working},
-		{event: "AfterTool", command: working},
-		{event: "Notification", command: needsYou},
-		{event: "AfterAgent", command: needsYou},
-	})
-}
-
-// ---------------------------------------------------------------------------
-// ACP agents — nothing to install
-// ---------------------------------------------------------------------------
 
 // setupACPAgent installs the agent's ACP adapter when it needs one. Agents that
 // serve ACP themselves have nothing to set up, and say so.
@@ -192,13 +73,13 @@ func setupACPAgent(agent *config.PredefinedAgent) error {
 	return nil
 }
 
-// reportNoHooksNeeded explains why an ACP agent has no setup step, and points
-// at the plugin an earlier opentree may have installed. The file is left alone
-// rather than deleted: it lives in the user's own agent config.
+// reportNoHooksNeeded explains why an agent has no setup step, and points at the
+// plugin an earlier opentree may have installed. The file is left alone rather
+// than deleted: it lives in the user's own agent config.
 func reportNoHooksNeeded(name string) error {
 	fmt.Printf("%s speaks the Agent Client Protocol, so opentree runs it through\n", name)
 	fmt.Println("its own chat view and reads status straight from the protocol.")
-	fmt.Println("There are no hooks to install.")
+	fmt.Println("There is nothing to install.")
 
 	if path, err := homePath(".config", "opencode", "plugin", "opentree-status.js"); err == nil {
 		if _, err := os.Stat(path); err == nil {
@@ -216,164 +97,3 @@ func homePath(parts ...string) (string, error) {
 	}
 	return filepath.Join(append([]string{home}, parts...)...), nil
 }
-
-func installAndReport(name, path string, specs []jsonHook) error {
-	added, err := installJSONHooks(path, specs)
-	if err != nil {
-		return fmt.Errorf("failed to update %s: %w", path, err)
-	}
-	printInstallResult(name, path, added)
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// Shared JSON hook merge (Claude Code; reusable for other JSON-hook agents)
-// ---------------------------------------------------------------------------
-
-type jsonHook struct {
-	event   string
-	command string
-}
-
-// installJSONHooks merges the given hooks into a `{ "hooks": { <event>: [...] } }`
-// style JSON config, preserving all existing keys. It is idempotent: a hook
-// whose command already contains the OPENTREE_STATUS_FILE marker is not added
-// again. Returns the number of hooks actually added.
-func installJSONHooks(path string, specs []jsonHook) (int, error) {
-	m, err := readJSONObject(path)
-	if err != nil {
-		return 0, err
-	}
-
-	added := 0
-	for _, sp := range specs {
-		if addJSONHook(m, sp.event, sp.command) {
-			added++
-		}
-	}
-
-	if added > 0 {
-		if err := backupOnce(path); err != nil {
-			return added, err
-		}
-		if err := writeJSONObject(path, m); err != nil {
-			return added, err
-		}
-	}
-	return added, nil
-}
-
-// addJSONHook appends a command hook under hooks[event] unless an opentree hook
-// is already present there. Returns true if it added one.
-func addJSONHook(m map[string]any, event, command string) bool {
-	hooks, _ := m["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-		m["hooks"] = hooks
-	}
-	arr, _ := hooks[event].([]any)
-
-	for _, entry := range arr {
-		e, _ := entry.(map[string]any)
-		inner, _ := e["hooks"].([]any)
-		for _, h := range inner {
-			hm, _ := h.(map[string]any)
-			if cmd, _ := hm["command"].(string); strings.Contains(cmd, statusFileEnv) {
-				return false // already installed
-			}
-		}
-	}
-
-	arr = append(arr, map[string]any{
-		"hooks": []any{
-			map[string]any{"type": "command", "command": command},
-		},
-	})
-	hooks[event] = arr
-	return true
-}
-
-func readJSONObject(path string) (map[string]any, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return map[string]any{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return map[string]any{}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("existing config is not valid JSON: %w", err)
-	}
-	return m, nil
-}
-
-func writeJSONObject(path string, m map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false) // keep && and > readable in the shell commands
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(m); err != nil {
-		return err
-	}
-	return os.WriteFile(path, buf.Bytes(), 0600)
-}
-
-// backupOnce copies path to path+".opentree.bak" the first time we touch it, so
-// there's always a pre-opentree snapshot to fall back to. No-op if the file
-// doesn't exist yet or a backup already exists.
-func backupOnce(path string) error {
-	bak := path + ".opentree.bak"
-	if _, err := os.Stat(bak); err == nil {
-		return nil // backup already exists
-	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil // nothing to back up
-	}
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(bak, data, 0600)
-}
-
-func printInstallResult(name, path string, added int) {
-	if added > 0 {
-		fmt.Printf("✓ Installed %s status hooks in %s\n", name, path)
-	} else {
-		fmt.Printf("✓ %s status hooks already present in %s (no change)\n", name, path)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Manual-only agents
-// ---------------------------------------------------------------------------
-
-const copilotManual = `GitHub Copilot CLI does not expose a "waiting for input" hook event, so opentree
-cannot drive the "needs input" badge for it automatically.
-
-You can still signal "working" from a session-start hook — add to
-~/.copilot/hooks/opentree.json:
-  {
-    "version": 1,
-    "hooks": {
-      "userPromptSubmitted": [
-        { "command": "sh -c '[ -n \"$OPENTREE_STATUS_FILE\" ] && printf '\\''{\"status\":\"in_progress\"}'\\'' > \"$OPENTREE_STATUS_FILE\"'" }
-      ]
-    }
-  }
-`
-
-const piManual = `Pi reports via a single-script notification config that opentree will not
-overwrite. Edit ~/.pi/agent/pi-lab/notify.json and point its "script" at a
-wrapper that writes $OPENTREE_STATUS_FILE, e.g. a script containing:
-  [ -n "$OPENTREE_STATUS_FILE" ] && printf '{"status":"needs_input"}' > "$OPENTREE_STATUS_FILE"
-Pi only fires this on permission requests / turn end, so it drives "needs input"
-but not "working".
-`

@@ -116,65 +116,42 @@ func (s *Service) WorktreePath(name string) string {
 	return filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(name))
 }
 
-// StatusFileName is the conventional file agents write to signal completion.
-const StatusFileName = ".opentree-status.json"
-
-// agentEnv builds the environment for an agent window: OPENTREE_STATUS_FILE
-// tells status hooks (see `opentree agents setup`) where to write; they stay
-// inert outside opentree. Set via the window environment (not typed into the
-// shell) so the visible launch line stays clean.
-func agentEnv(worktreePath string) []string {
-	return []string{"OPENTREE_STATUS_FILE=" + filepath.Join(worktreePath, StatusFileName)}
-}
-
 // launchAgentWindow starts the workspace's agent in a new tmux window for
 // name's worktree. On failure the just-created worktree is rolled back;
 // deleteBranch controls whether its branch is deleted too (a pre-existing
 // branch may hold the user's own local-only commits).
-//
-// An agent with an ACP mode is launched through `opentree chat`, which holds
-// the protocol connection and draws the conversation itself. Everything else
-// keeps the original path: the agent's own TUI, with status coming from hooks.
 func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, error) {
 	worktreePath := s.WorktreePath(name)
 
-	launch := s.agentLaunch(name, s.cfg.Agent.Command, worktreePath)
-	if !launch.ownsWindow {
-		s.worktrees.EnsureExcluded(StatusFileName)
+	launch, err := s.agentLaunch(name, s.cfg.Agent.Command, worktreePath)
+	if err != nil {
+		_ = s.worktrees.Delete(name, deleteBranch)
+		return "", err
 	}
-
-	if err := launch.run(); err != nil {
+	if err := launch(); err != nil {
 		_ = s.worktrees.Delete(name, deleteBranch)
 		return "", fmt.Errorf("failed to create tmux window: %w", err)
 	}
 	return worktreePath, nil
 }
 
-// windowLaunch is a decided, not-yet-run window creation.
-type windowLaunch struct {
-	run func() error
-
-	// ownsWindow distinguishes opentree's own chat, which is the window's
-	// process, from an agent typed into a shell that outlives it. It decides
-	// more than how to start: only the shell path needs the status file, and
-	// only the chat path can be assumed dead when the window is gone.
-	ownsWindow bool
-}
-
-// agentLaunch decides how a workspace's window starts. Both callers go through
-// it so the choice cannot drift between creating a workspace and reopening one.
-func (s *Service) agentLaunch(name, agentName, worktreePath string) windowLaunch {
-	if agent := config.FindAgent(agentName); agent != nil && agent.ACP != nil {
-		command, env, args := chatCommand(name, agent.Command)
-		return windowLaunch{
-			run:        func() error { return s.process.CreateAppWindow(name, worktreePath, command, env, args...) },
-			ownsWindow: true,
-		}
+// agentLaunch is the not-yet-run window creation for a workspace. Both callers
+// go through it so the choice cannot drift between creating a workspace and
+// reopening one.
+//
+// Every window runs `opentree chat`, which holds the ACP connection and draws
+// the conversation itself. An agent the registry does not know is an error
+// rather than a fallback: it is a workspace created by an older opentree that
+// still supported agents drawing their own screen, and quietly opening a chat
+// for a binary that cannot serve one would fail further from the cause.
+func (s *Service) agentLaunch(name, agentName, worktreePath string) (func() error, error) {
+	agent := config.FindAgent(agentName)
+	if agent == nil {
+		return nil, fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s",
+			agentName, strings.Join(config.AgentCommands(), ", "))
 	}
-	command, env, args := s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args
-	return windowLaunch{
-		run: func() error { return s.process.CreateWindow(name, worktreePath, command, env, args...) },
-	}
+	command, env, args := chatCommand(name, agent.Command)
+	return func() error { return s.process.CreateAppWindow(name, worktreePath, command, env, args...) }, nil
 }
 
 // chatCommand is how a tmux window runs opentree's own chat view.
@@ -208,16 +185,19 @@ func (s *Service) EnsureWindow(name string) (bool, error) {
 		return false, err
 	}
 
-	worktreePath := s.WorktreePath(name)
-	launch := s.agentLaunch(name, ws.Agent, worktreePath)
-	if !launch.needsWindow(s.process, name) {
+	if !s.needsWindow(name) {
 		return false, nil
 	}
 
+	worktreePath := s.WorktreePath(name)
+	launch, err := s.agentLaunch(name, ws.Agent, worktreePath)
+	if err != nil {
+		return false, err
+	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		return false, fmt.Errorf("worktree for %q is missing: %w", name, err)
 	}
-	if err := launch.run(); err != nil {
+	if err := launch(); err != nil {
 		return false, fmt.Errorf("failed to reopen window for %q: %w", name, err)
 	}
 	return true, nil
@@ -226,16 +206,15 @@ func (s *Service) EnsureWindow(name string) (bool, error) {
 // needsWindow reports whether the workspace has no usable window.
 //
 // A missing window is the easy case. A window sitting at a bare shell is the
-// one worth naming: the chat owns its window, so a shell in its place means the
-// chat is gone and attaching would land the user at a prompt rather than in the
-// conversation. Windows that were always a shell — an agent drawing its own TUI
-// — are left alone, because there the shell is the point.
-func (l windowLaunch) needsWindow(p ProcessManager, name string) bool {
-	cmd, err := p.PaneCurrentCommand(name)
+// one worth naming: the chat is its window's process, so a shell in its place
+// means the chat is gone and attaching would land the user at a prompt rather
+// than in the conversation.
+func (s *Service) needsWindow(name string) bool {
+	cmd, err := s.process.PaneCurrentCommand(name)
 	if err != nil {
 		return true // no window at all
 	}
-	return l.ownsWindow && isShell(cmd)
+	return isShell(cmd)
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
@@ -421,42 +400,8 @@ func (s *Service) HasChanges(name string) (string, error) {
 	return diff, nil
 }
 
-// SendReviewsToAgent fetches all PR review comments for the workspace's branch
-// and sends them as a formatted prompt to the running agent in the tmux window.
-// Returns the number of review comments sent, or 0 if none were found.
-func (s *Service) SendReviewsToAgent(name string) (int, error) {
-	ws, err := s.state.GetWorkspace(name)
-	if err != nil {
-		return 0, fmt.Errorf("workspace not found: %w", err)
-	}
-
-	comments, err := s.github.FetchPRReviews(ws.Branch)
-	// Partial results (top-level reviews fetched, inline-thread fetch failed)
-	// are still sent rather than discarded.
-	if err != nil && len(comments) == 0 {
-		return 0, fmt.Errorf("failed to fetch PR reviews: %w", err)
-	}
-	if len(comments) == 0 {
-		return 0, nil
-	}
-
-	// Review bodies are attacker-controlled text (anyone can review a public
-	// PR). Pasting them into a pane sitting at a shell prompt — agent
-	// crashed or exited — would execute them as shell commands.
-	if cmdName, err := s.process.PaneCurrentCommand(name); err == nil && isShell(cmdName) {
-		return 0, fmt.Errorf("the agent is not running in workspace %q (its window is at a shell prompt) — start it before sending reviews", name)
-	}
-
-	prompt := github.FormatReviewsPrompt(comments)
-	if err := s.process.SendMessage(name, prompt); err != nil {
-		return 0, fmt.Errorf("failed to send reviews to agent: %w", err)
-	}
-
-	return len(comments), nil
-}
-
 // isShell reports whether a pane's current command is an interactive shell
-// rather than a running agent.
+// rather than a running chat.
 func isShell(command string) bool {
 	switch command {
 	case "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh":

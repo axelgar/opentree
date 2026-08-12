@@ -2,16 +2,14 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/state"
 )
@@ -53,12 +51,6 @@ func testWSWithPR(name, prURL string) WorkspaceItem {
 	ws := testWS(name)
 	ws.PRURL = prURL
 	ws.PRStatus = "open"
-	return ws
-}
-
-func testWSWithWindow(name string) WorkspaceItem {
-	ws := testWS(name)
-	ws.WindowID = "@1"
 	return ws
 }
 
@@ -280,203 +272,6 @@ func TestDeleteConfirmation_ViewContainsConfirmHints(t *testing.T) {
 	}
 	if !strings.Contains(view, "cancel") {
 		t.Errorf("View() does not contain 'cancel'\ngot: %s", view)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 2. Live agent output preview
-// ---------------------------------------------------------------------------
-
-func TestCleanPreview_StripsANSIEscapes(t *testing.T) {
-	input := "\x1b[32mHello\x1b[0m World"
-	got := cleanPreview(input)
-	if strings.Contains(got, "\x1b") {
-		t.Errorf("cleanPreview() left ANSI codes: %q", got)
-	}
-	if !strings.Contains(got, "Hello") || !strings.Contains(got, "World") {
-		t.Errorf("cleanPreview() removed real content: %q", got)
-	}
-}
-
-func TestCleanPreview_KeepsLast5NonEmptyLines(t *testing.T) {
-	lines := []string{"line1", "line2", "line3", "line4", "line5", "line6", "line7"}
-	input := strings.Join(lines, "\n")
-
-	got := cleanPreview(input)
-	gotLines := strings.Split(got, "\n")
-
-	if len(gotLines) != 5 {
-		t.Errorf("cleanPreview() returned %d lines, want 5", len(gotLines))
-	}
-	if gotLines[0] != "line3" {
-		t.Errorf("first line = %q, want %q", gotLines[0], "line3")
-	}
-	if gotLines[4] != "line7" {
-		t.Errorf("last line = %q, want %q", gotLines[4], "line7")
-	}
-}
-
-func TestCleanPreview_FiltersBlankLines(t *testing.T) {
-	input := "real\n   \n\noutput\n\t\n"
-	got := cleanPreview(input)
-	gotLines := strings.Split(got, "\n")
-
-	for _, l := range gotLines {
-		if strings.TrimSpace(l) == "" {
-			t.Errorf("cleanPreview() kept a blank line: %q", l)
-		}
-	}
-}
-
-func TestCleanPreview_EmptyInputReturnsEmpty(t *testing.T) {
-	if got := cleanPreview(""); got != "" {
-		t.Errorf("cleanPreview(\"\") = %q, want empty string", got)
-	}
-}
-
-func TestCleanPreview_FewerThan5LinesReturnedAsIs(t *testing.T) {
-	input := "a\nb\nc"
-	got := cleanPreview(input)
-	if got != "a\nb\nc" {
-		t.Errorf("cleanPreview() = %q, want %q", got, "a\nb\nc")
-	}
-}
-
-func TestCleanPreview_TrailingSpacesTrimmed(t *testing.T) {
-	input := "line1   \nline2\t\t"
-	got := cleanPreview(input)
-	for _, l := range strings.Split(got, "\n") {
-		if l != strings.TrimRight(l, " \t") {
-			t.Errorf("line has trailing whitespace: %q", l)
-		}
-	}
-}
-
-func TestCapturePreviewCmd_NilWhenNoWorkspaces(t *testing.T) {
-	m := newTestModel()
-	cmd := m.capturePreviewCmd()
-	if cmd != nil {
-		t.Error("capturePreviewCmd() should return nil when workspace list is empty")
-	}
-}
-
-func TestCapturePreviewCmd_ReturnsEmptyPreviewWhenNoWindow(t *testing.T) {
-	ws := testWS("no-window") // WindowID is ""
-	m := newTestModel(ws)
-
-	cmd := m.capturePreviewCmd()
-	if cmd == nil {
-		t.Fatal("capturePreviewCmd() returned nil, want a cmd")
-	}
-	msg := cmd()
-	preview, ok := msg.(capturePreviewMsg)
-	if !ok {
-		t.Fatalf("cmd() returned %T, want capturePreviewMsg", msg)
-	}
-	if preview.lines != "" {
-		t.Errorf("lines = %q, want empty for workspace with no window", preview.lines)
-	}
-}
-
-func TestCapturePreviewCmd_ReturnsNonNilCmdWhenWindowExists(t *testing.T) {
-	// When a window exists, capturePreviewCmd returns a cmd that will call
-	// tmuxCtrl.CapturePane. We only verify the cmd is non-nil here since
-	// executing it requires a real tmux session.
-	ws := testWSWithWindow("active-ws")
-	m := newTestModel(ws)
-
-	cmd := m.capturePreviewCmd()
-	if cmd == nil {
-		t.Error("capturePreviewCmd() returned nil for workspace with a window")
-	}
-}
-
-func TestAgentPreview_MessageUpdatesModel(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m, _ = applyUpdate(m, capturePreviewMsg{wsName: "ws", lines: "doing something..."})
-
-	if m.agentPreview != "doing something..." {
-		t.Errorf("agentPreview = %q, want %q", m.agentPreview, "doing something...")
-	}
-}
-
-// Regression: a capture that finished after the cursor moved to another
-// workspace used to render the old workspace's output under the new header.
-func TestAgentPreview_StaleCaptureDropped(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m.agentPreview = "current output"
-	m, _ = applyUpdate(m, capturePreviewMsg{wsName: "other-ws", lines: "stale output"})
-
-	if m.agentPreview != "current output" {
-		t.Errorf("agentPreview = %q, want stale capture dropped", m.agentPreview)
-	}
-}
-
-func TestAgentPreview_ViewShowsPanelWhenNonEmpty(t *testing.T) {
-	m := newTestModel(testWSWithWindow("active"))
-	m.agentPreview = "Running tests..."
-
-	view := m.View()
-
-	if !strings.Contains(view, "Running tests...") {
-		t.Errorf("View() does not contain agent preview content\ngot: %s", view)
-	}
-	if !strings.Contains(view, "Agent Output") {
-		t.Errorf("View() does not contain 'Agent Output' panel title\ngot: %s", view)
-	}
-}
-
-func TestAgentPreview_ViewHidesPanelWhenEmpty(t *testing.T) {
-	m := newTestModel(testWSWithWindow("active"))
-	m.agentPreview = "" // explicitly empty
-
-	view := m.View()
-
-	if strings.Contains(view, "Agent Output") {
-		t.Errorf("View() should not show preview panel when agentPreview is empty\ngot: %s", view)
-	}
-}
-
-func TestAgentPreview_CursorUpTriggersCapture(t *testing.T) {
-	m := newTestModel(testWS("ws1"), testWS("ws2"))
-	m.cursor = 1 // start at second item
-
-	_, cmd := applyUpdate(m, keyMsg("k"))
-
-	if cmd == nil {
-		t.Error("expected non-nil cmd (capturePreviewCmd) after cursor move up")
-	}
-}
-
-func TestAgentPreview_CursorDownTriggersCapture(t *testing.T) {
-	m := newTestModel(testWS("ws1"), testWS("ws2"))
-	m.cursor = 0 // start at first item
-
-	_, cmd := applyUpdate(m, keyMsg("j"))
-
-	if cmd == nil {
-		t.Error("expected non-nil cmd (capturePreviewCmd) after cursor move down")
-	}
-}
-
-func TestAgentPreview_LoadedWorkspacesTriggerCapture(t *testing.T) {
-	m := newTestModel()
-
-	workspaces := []WorkspaceItem{testWS("fresh")}
-	_, cmd := applyUpdate(m, loadedWorkspacesMsg{workspaces: workspaces})
-
-	if cmd == nil {
-		t.Error("expected non-nil cmd after loadedWorkspacesMsg")
-	}
-}
-
-func TestAgentPreview_PreviewTickReschedulesAndCaptures(t *testing.T) {
-	m := newTestModel(testWSWithWindow("ws"))
-
-	_, cmd := applyUpdate(m, previewTickMsg{})
-
-	if cmd == nil {
-		t.Error("expected non-nil batch cmd after previewTickMsg")
 	}
 }
 
@@ -1063,201 +858,56 @@ func TestView_IssueBadge_MultipleWorkspaces(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Agent Status Tests
+// Agent status, read from the chat's socket
 // ---------------------------------------------------------------------------
 
-func TestReadAgentStatus_ValidFile(t *testing.T) {
-	dir := t.TempDir()
-	data := `{"status":"needs_input","message":"Approve running tests?"}`
-	if err := os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644); err != nil {
-		t.Fatal(err)
-	}
-	s := readAgentStatus(dir)
-	if s == nil {
-		t.Fatal("expected non-nil AgentStatus")
-	}
-	if s.Status != "needs_input" {
-		t.Errorf("Status = %q, want %q", s.Status, "needs_input")
-	}
-	if s.Message != "Approve running tests?" {
-		t.Errorf("Message = %q, want %q", s.Message, "Approve running tests?")
-	}
-	if s.mtime.IsZero() {
-		t.Error("expected mtime to be populated from the file's ModTime")
-	}
-}
-
-func TestReadAgentStatus_MissingFile(t *testing.T) {
-	s := readAgentStatus(t.TempDir())
-	if s != nil {
-		t.Errorf("expected nil for missing file, got %+v", s)
+// The badge comes from the chat process, which holds the protocol connection
+// and therefore knows what the agent is doing rather than inferring it from a
+// file's age.
+func TestView_ChatBadge_States(t *testing.T) {
+	for _, tt := range []struct {
+		status *chat.Status
+		want   string
+	}{
+		{&chat.Status{State: chat.StateWorking}, "working"},
+		{&chat.Status{State: chat.StateWorking, Tool: "bash"}, "bash"},
+		{&chat.Status{State: chat.StateAwaiting, Permission: &chat.Permission{Title: "Run tests?"}}, "PERMISSION"},
+		{&chat.Status{State: chat.StateStopped}, "agent stopped"},
+		{&chat.Status{State: chat.StateStarting}, "starting"},
+		{&chat.Status{State: chat.StateIdle}, "idle"},
+	} {
+		t.Run(tt.want, func(t *testing.T) {
+			ws := testWS("branch-a")
+			ws.ChatStatus = tt.status
+			view := newTestModel(ws).View()
+			if !strings.Contains(view, tt.want) {
+				t.Errorf("View() missing %q for state %q\ngot: %s", tt.want, tt.status.State, view)
+			}
+		})
 	}
 }
 
-func TestReadAgentStatus_InvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte("not json"), 0644)
-	s := readAgentStatus(dir)
-	if s != nil {
-		t.Errorf("expected nil for invalid JSON, got %+v", s)
-	}
-}
-
-func TestReadAgentStatus_UnknownStatus(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(`{"status":"unknown"}`), 0644)
-	s := readAgentStatus(dir)
-	if s != nil {
-		t.Errorf("expected nil for unknown status, got %+v", s)
-	}
-}
-
-func TestReadAgentStatus_ValidStatuses(t *testing.T) {
-	for _, status := range []string{"in_progress", "needs_input"} {
-		dir := t.TempDir()
-		data := fmt.Sprintf(`{"status":"%s"}`, status)
-		os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(data), 0644)
-		s := readAgentStatus(dir)
-		if s == nil || s.Status != status {
-			t.Errorf("readAgentStatus(%q): expected status %q, got %+v", status, status, s)
+// No chat, no badge. A workspace whose chat window is closed is an ordinary
+// thing, not something to invent a status for.
+func TestView_NoChat_NoAgentBadge(t *testing.T) {
+	view := newTestModel(testWS("branch-a")).View()
+	for _, unwanted := range []string{"working", "PERMISSION", "agent stopped"} {
+		if strings.Contains(view, unwanted) {
+			t.Errorf("View() shows %q for a workspace with no chat\ngot: %s", unwanted, view)
 		}
-	}
-}
-
-// The hooks never emit these; readAgentStatus rejects them so no dead badge shows.
-func TestReadAgentStatus_UnusedStatusesRejected(t *testing.T) {
-	for _, status := range []string{"success", "failure", "error"} {
-		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, ".opentree-status.json"), []byte(fmt.Sprintf(`{"status":"%s"}`, status)), 0644)
-		if s := readAgentStatus(dir); s != nil {
-			t.Errorf("readAgentStatus(%q): expected nil for unused status, got %+v", status, s)
-		}
-	}
-}
-
-func TestView_AgentStatusBadge_Working(t *testing.T) {
-	ws := testWS("work-branch")
-	ws.AgentStatus = &AgentStatus{Status: "in_progress", Message: "Editing files", mtime: time.Now()}
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "working") {
-		t.Errorf("View() should show 'working' badge for a fresh in_progress status\ngot: %s", view)
-	}
-	if !strings.Contains(view, "Editing files") {
-		t.Errorf("View() should show agent message in description\ngot: %s", view)
-	}
-}
-
-func TestView_AgentStatusBadge_Waiting(t *testing.T) {
-	ws := testWS("waiting-branch")
-	ws.AgentStatus = &AgentStatus{Status: "needs_input", Message: "Approve running tests?", mtime: time.Now()}
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "waiting") {
-		t.Errorf("View() should show 'waiting' badge for a fresh needs_input status\ngot: %s", view)
-	}
-	if !strings.Contains(view, "Approve running tests?") {
-		t.Errorf("View() should show agent message in description\ngot: %s", view)
-	}
-}
-
-// A needs_input status that hasn't changed in a while is a parked worktree, not
-// a live prompt — it reads as "idle", not "waiting".
-func TestView_AgentStatusBadge_Idle(t *testing.T) {
-	ws := testWS("idle-branch")
-	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now().Add(-2 * time.Hour)}
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "idle") {
-		t.Errorf("View() should show 'idle' badge for a stale needs_input status\ngot: %s", view)
-	}
-	if strings.Contains(view, "waiting") {
-		t.Errorf("stale needs_input should not read as 'waiting'\ngot: %s", view)
-	}
-}
-
-// An in_progress turn with no recent activity is a dead/hung session, not work
-// in flight — it reads as "stalled" rather than a forever-spinning "working".
-func TestView_AgentStatusBadge_Stalled(t *testing.T) {
-	ws := testWS("stalled-branch")
-	ws.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now().Add(-time.Hour)}
-	m := newTestModel(ws) // LastActivity zero → pane not fresh
-	view := m.View()
-	if !strings.Contains(view, "stalled") {
-		t.Errorf("View() should show 'stalled' badge for a stale in_progress status\ngot: %s", view)
-	}
-}
-
-// A stale in_progress whose tmux pane is still emitting output is a long, quiet
-// turn — not a dead session. Recent pane activity keeps it "working".
-func TestView_AgentStatusBadge_Working_StalePaneFresh(t *testing.T) {
-	ws := testWS("busy-branch")
-	ws.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now().Add(-time.Hour)}
-	ws.LastActivity = time.Now() // pane still active → rescued from "stalled"
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "working") {
-		t.Errorf("fresh pane activity should keep a stale in_progress as 'working'\ngot: %s", view)
-	}
-	if strings.Contains(view, "stalled") {
-		t.Errorf("should not read as 'stalled' when pane activity is fresh\ngot: %s", view)
-	}
-}
-
-// A needs_input status is stuck on disk (no hook flips it back to
-// in_progress on resume, e.g. after a permission prompt is approved), but the
-// pane has produced output since — that's evidence the agent resumed, so it
-// reads "working" instead of staying wedged on "waiting" or decaying to "idle".
-func TestView_AgentStatusBadge_Waiting_ResumedByPaneActivity(t *testing.T) {
-	ws := testWS("resumed-branch")
-	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now().Add(-time.Minute)}
-	ws.LastActivity = time.Now() // pane active after the status write → resumed
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "working") {
-		t.Errorf("pane activity after a needs_input write should read 'working'\ngot: %s", view)
-	}
-	if strings.Contains(view, "waiting") || strings.Contains(view, "idle") {
-		t.Errorf("should not read as 'waiting' or 'idle' once resumed\ngot: %s", view)
-	}
-}
-
-// Pane activity from before the needs_input write (the normal case — the
-// agent asked, nothing has happened since) must not trigger the resume rescue.
-func TestView_AgentStatusBadge_Waiting_PaneActivityBeforeStatus(t *testing.T) {
-	ws := testWS("still-waiting-branch")
-	ws.LastActivity = time.Now().Add(-time.Minute)                          // last pane output was before...
-	ws.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()} // ...the status write
-	m := newTestModel(ws)
-	view := m.View()
-	if !strings.Contains(view, "waiting") {
-		t.Errorf("stale pane activity predating the status write should still read 'waiting'\ngot: %s", view)
 	}
 }
 
 func TestView_StatusBar_WaitingCount(t *testing.T) {
 	ws1 := testWS("branch-a")
-	ws1.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now()} // fresh → waiting
+	ws1.ChatStatus = &chat.Status{State: chat.StateAwaiting, Permission: &chat.Permission{Title: "Run tests?"}}
 	ws2 := testWS("branch-b")
-	ws2.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now()} // working, not counted
-	ws3 := testWS("branch-c")
-	ws3.AgentStatus = &AgentStatus{Status: "needs_input", mtime: time.Now().Add(-2 * time.Hour)} // idle, not counted
+	ws2.ChatStatus = &chat.Status{State: chat.StateWorking} // working, not counted
+	ws3 := testWS("branch-c")                               // no chat, not counted
 	m := newTestModel(ws1, ws2, ws3)
 	bar := m.statusBar()
 	if !strings.Contains(bar, "1 waiting") {
 		t.Errorf("statusBar() should show '1 waiting', got: %s", bar)
-	}
-}
-
-func TestView_StatusBar_StalledCount(t *testing.T) {
-	ws1 := testWS("branch-a")
-	ws1.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now().Add(-time.Hour)} // stalled
-	ws2 := testWS("branch-b")
-	ws2.AgentStatus = &AgentStatus{Status: "in_progress", mtime: time.Now()} // working, not counted
-	m := newTestModel(ws1, ws2)
-	bar := m.statusBar()
-	if !strings.Contains(bar, "1 stalled") {
-		t.Errorf("statusBar() should show '1 stalled', got: %s", bar)
 	}
 }
 

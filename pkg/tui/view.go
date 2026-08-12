@@ -26,10 +26,10 @@ func agentBrand(name string) string {
 }
 
 const (
-	headerFooterHeight  = 8
-	minDiffHeight       = 5
-	defaultPreviewWidth = 60
-	minPreviewWidth     = 20
+	headerFooterHeight = 8
+	minDiffHeight      = 5
+	defaultPanelWidth  = 60
+	minPanelWidth      = 20
 )
 
 func (m Model) View() string {
@@ -54,7 +54,7 @@ func (m Model) View() string {
 	if m.agentInstallConfirm != nil {
 		agent := *m.agentInstallConfirm
 		size := ""
-		if agent.ACP != nil && agent.ACP.InstallSize != "" {
+		if agent.ACP.InstallSize != "" {
 			size = " (" + agent.ACP.InstallSize + ", needs node)"
 		}
 		footer := fmt.Sprintf("%s %s  •  %s %s",
@@ -98,15 +98,10 @@ func (m Model) View() string {
 				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#E9C46A"))
 			}
 
-			cmdStr := agent.Command
-			if len(agent.Args) > 0 {
-				cmdStr += " " + strings.Join(agent.Args, " ")
-			}
-
 			// Pad before styling: the escape codes count toward %-16s otherwise
 			// and the column stops lining up.
 			line := fmt.Sprintf("%s%-18s %-14s %s %s",
-				cursor, name, cmdStr, statusSt.Render(fmt.Sprintf("%-15s", status)), agent.Description)
+				cursor, name, agent.Command, statusSt.Render(fmt.Sprintf("%-15s", status)), agent.Description)
 			sb.WriteString(style.Render(line))
 			sb.WriteString("\n")
 		}
@@ -421,21 +416,10 @@ func (m Model) View() string {
 				title += "  " + notPushedBadgeStyle.Render("not pushed")
 			}
 
-			// Agent badge. A chat process reports exactly what it is doing over
-			// its socket; everything else is inferred from the status file.
+			// Agent badge. The chat process holds the protocol connection, so it
+			// reports exactly what the agent is doing rather than inferring it.
 			if badge := renderChatBadge(ws.ChatStatus); badge != "" {
 				title += "  " + badge
-			} else {
-				switch live, since := ws.liveness(); live {
-				case livenessWorking:
-					title += "  " + agentWorkingStyle.Render("working…")
-				case livenessStalled:
-					title += "  " + agentStalledStyle.Render(badgeWithAge("stalled", since))
-				case livenessWaiting:
-					title += "  " + agentWaitingStyle.Render("waiting · your turn")
-				case livenessIdle:
-					title += "  " + agentIdleStyle.Render(badgeWithAge("idle", since))
-				}
 			}
 
 			// Description line
@@ -460,10 +444,6 @@ func (m Model) View() string {
 
 			if !ws.LastActivity.IsZero() {
 				descParts = append(descParts, "active "+formatAge(ws.LastActivity))
-			}
-
-			if ws.AgentStatus != nil && ws.AgentStatus.Message != "" {
-				descParts = append(descParts, ws.AgentStatus.Message)
 			}
 
 			desc := "  " + strings.Join(descParts, " • ")
@@ -513,7 +493,6 @@ func (m Model) statusBar() string {
 	active := 0
 	openPRs := 0
 	waiting := 0
-	stalled := 0
 	for _, ws := range m.workspaces {
 		if ws.Active {
 			active++
@@ -521,11 +500,12 @@ func (m Model) statusBar() string {
 		if ws.PRStatus == "open" {
 			openPRs++
 		}
-		switch live, _ := ws.liveness(); live {
-		case livenessWaiting:
+		// "waiting" is a permission the agent is blocked on, which the chat
+		// reports outright. There is no "stalled" count any more: that existed
+		// to guess at a hook-written file gone quiet, and the protocol never
+		// leaves that in doubt.
+		if ws.pendingPermission() != nil {
 			waiting++
-		case livenessStalled:
-			stalled++
 		}
 	}
 	parts := []string{
@@ -536,9 +516,6 @@ func (m Model) statusBar() string {
 	}
 	if waiting > 0 {
 		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
-	}
-	if stalled > 0 {
-		parts = append(parts, fmt.Sprintf("%d stalled", stalled))
 	}
 	if len(m.selected) > 0 {
 		parts = append(parts, fmt.Sprintf("%d selected", len(m.selected)))
@@ -555,9 +532,9 @@ func (m Model) statusBar() string {
 // terminals it clamps to the minimum instead of overflowing every line.
 func (m Model) panelWidth() int {
 	if m.width <= 0 {
-		return defaultPreviewWidth
+		return defaultPanelWidth
 	}
-	return max(minPreviewWidth, m.width-8)
+	return max(minPanelWidth, m.width-8)
 }
 
 // currentWorkspaceName returns the name of the workspace under the cursor,
@@ -685,12 +662,6 @@ func (m Model) selectionPanels(visible []WorkspaceItem) string {
 
 	if len(ws.FileChanges) > 0 {
 		b.WriteString(fileChangesBoxStyle.Width(width).Render(m.renderFileChanges(ws.FileChanges, width)))
-		b.WriteString("\n")
-	}
-	if m.agentPreview != "" {
-		content := previewTitleStyle.Render("Agent Output: "+ws.Name) + "\n" +
-			previewLineStyle.Render(m.agentPreview)
-		b.WriteString(previewBoxStyle.Width(width).Render(content))
 		b.WriteString("\n")
 	}
 	return b.String()

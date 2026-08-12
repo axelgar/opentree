@@ -1,131 +1,16 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
-
-// AgentStatus represents the signal an agent writes to .opentree-status.json in
-// its worktree directory. The installed hooks only ever write "in_progress"
-// (a turn started) or "needs_input" (a turn ended, or the agent hit a prompt);
-// mtime is the file's modification time, i.e. when that last event happened.
-type AgentStatus struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-
-	mtime time.Time // when the agent last wrote the file (from os.Stat)
-}
-
-// readAgentStatus reads the .opentree-status.json file from a worktree directory.
-// Returns nil if the file is missing, unreadable, or has an invalid status value.
-func readAgentStatus(worktreeDir string) *AgentStatus {
-	path := filepath.Join(worktreeDir, workspace.StatusFileName)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var s AgentStatus
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil
-	}
-	switch s.Status {
-	case "in_progress", "needs_input":
-		if fi, err := os.Stat(path); err == nil {
-			s.mtime = fi.ModTime()
-		}
-		return &s
-	default:
-		return nil
-	}
-}
-
-// staleAfter is how long since an agent's last status event before opentree
-// treats a worktree as parked (idle/stalled) rather than freshly working or
-// waiting on you.
-// ponytail: single global knob — raise it if agents run long silent turns.
-const staleAfter = 15 * time.Minute
-
-type agentLiveness int
-
-const (
-	livenessNone    agentLiveness = iota
-	livenessWorking               // actively generating
-	livenessStalled               // turn started but no recent activity — likely dead session
-	livenessWaiting               // just stopped / hit a prompt — your turn
-	livenessIdle                  // stopped a while ago — parked/stale
-)
-
-// liveness collapses the agent's last status event and its age into the coarse
-// working-vs-stale state shown as a badge. The returned time is the reference
-// instant for the "· Xh ago" age on the stale states (zero when unused). A live
-// tmux pane keeps a long in-progress turn from reading as stalled, and also
-// rescues a needs_input that the agent has clearly resumed working past.
-func (ws WorkspaceItem) liveness() (agentLiveness, time.Time) {
-	if ws.AgentStatus == nil {
-		return livenessNone, time.Time{}
-	}
-	mtime := ws.AgentStatus.mtime
-	statusFresh := !mtime.IsZero() && time.Since(mtime) < staleAfter
-	paneFresh := !ws.LastActivity.IsZero() && time.Since(ws.LastActivity) < staleAfter
-	switch ws.AgentStatus.Status {
-	case "in_progress":
-		if statusFresh || paneFresh {
-			return livenessWorking, time.Time{}
-		}
-		return livenessStalled, mtime
-	case "needs_input":
-		// Pane output after the status write means something happened since
-		// the agent last claimed to be waiting (e.g. a permission prompt was
-		// approved) — no hook flips the file back to in_progress for that, so
-		// treat it as working. ponytail: a stray unrelated pane bump (resize,
-		// scroll) can misread as working, bounded by staleAfter same as the
-		// in_progress rescue above, and self-corrects on the next hook write.
-		if paneFresh && ws.LastActivity.After(mtime) {
-			return livenessWorking, time.Time{}
-		}
-		if statusFresh {
-			return livenessWaiting, time.Time{}
-		}
-		return livenessIdle, mtime
-	}
-	return livenessNone, time.Time{}
-}
-
-// badgeWithAge renders "label · 2h ago", falling back to just "label" when the
-// reference time is unknown (zero) so the badge never trails a bare "· ".
-func badgeWithAge(label string, t time.Time) string {
-	if age := formatAge(t); age != "" {
-		return label + " · " + age
-	}
-	return label
-}
-
-// cleanPreview strips ANSI codes and returns the last 5 non-empty lines.
-func cleanPreview(s string) string {
-	s = ansiEscapeRe.ReplaceAllString(s, "")
-	lines := strings.Split(s, "\n")
-	var out []string
-	for _, l := range lines {
-		if trimmed := strings.TrimRight(l, " \t"); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	if len(out) > 5 {
-		out = out[len(out)-5:]
-	}
-	return strings.Join(out, "\n")
-}
 
 // renderFileChanges builds the per-file changes panel content.
 func (m Model) renderFileChanges(files []worktree.FileChange, width int) string {

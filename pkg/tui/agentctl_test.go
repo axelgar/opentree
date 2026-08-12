@@ -226,21 +226,23 @@ func TestInterruptKey_OnlyWhileWorking(t *testing.T) {
 	}
 }
 
-// Only ACP agents have a chat, so in a mixed repo these keys apply to some rows
-// and not others. Each one says so rather than appearing broken.
-func TestChatKeys_ExplainThemselvesWithoutAChat(t *testing.T) {
-	for _, k := range []string{"m", "a", "c"} {
+// A workspace created by an older opentree can name an agent that has since
+// left the registry. Reopening its chat cannot work, so each key says why
+// rather than appearing broken.
+func TestChatKeys_ExplainAnAgentOpentreeCannotDrive(t *testing.T) {
+	for _, k := range []string{"m", "a", "c", "R"} {
 		t.Run(k, func(t *testing.T) {
 			ws := testWS("fix-auth")
-			ws.Agent = "codex" // no ACP mode
+			ws.Agent = "codex" // dropped from the registry
+			ws.PRURL = "https://example.test/pr/1"
 			m := newTestModel(ws)
 			m, _ = applyUpdate(m, keyMsg(k))
 
 			if m.prompting || m.answering {
-				t.Fatalf("%q opened a dialog for a workspace with no chat", k)
+				t.Fatalf("%q opened a dialog for a workspace opentree cannot drive", k)
 			}
-			if m.err == nil || !strings.Contains(m.err.Error(), "draws its own screen") {
-				t.Errorf("err = %v, want %q to explain that this agent has no chat", m.err, k)
+			if m.err == nil || !strings.Contains(m.err.Error(), "no longer supports") {
+				t.Errorf("err = %v, want %q to explain that this agent is gone", m.err, k)
 			}
 		})
 	}
@@ -370,9 +372,11 @@ func TestAgentReadiness(t *testing.T) {
 		t.Errorf("opencode status = %q, want installed", status)
 	}
 
-	// An agent with no ACP mode is judged the same way it always was.
-	if status, ready := agentReadiness(*config.FindAgent("pi")); ready || status != "not found" {
-		t.Errorf("pi = %q/%v, want not found", status, ready)
+	// An agent whose binary is not on PATH is not usable, whatever else is true.
+	absent := opencode
+	absent.Command = "definitely-not-a-real-binary-xyz"
+	if status, ready := agentReadiness(absent); ready || status != "not found" {
+		t.Errorf("uninstalled agent = %q/%v, want not found", status, ready)
 	}
 }
 

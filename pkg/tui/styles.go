@@ -1,13 +1,8 @@
 package tui
 
 import (
-	"regexp"
-
 	"github.com/charmbracelet/lipgloss"
 )
-
-// ansiEscapeRe strips ANSI escape sequences from tmux pane output.
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]`)
 
 // Styles
 var (
@@ -57,19 +52,6 @@ var (
 			Foreground(lipgloss.Color("#FFF")).
 			Background(lipgloss.Color("#0969DA")).
 			Padding(0, 1)
-
-	// agent preview panel styles
-	previewBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#444")).
-			Padding(0, 1).
-			MarginTop(1)
-
-	previewTitleStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888"))
-
-	previewLineStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#AAA"))
 
 	// delete confirmation styles
 	dangerStyle = lipgloss.NewStyle().
@@ -206,9 +188,6 @@ var (
 				Background(lipgloss.Color("#F4A261")). // amber — fresh, your turn
 				Bold(true).
 				Padding(0, 1)
-
-	agentStalledStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#8A6D4A")) // dim amber — was working, now quiet
 
 	agentIdleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#666")) // grey — parked/stale

@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -273,7 +274,9 @@ func TestCreateSession(t *testing.T) {
 	}
 }
 
-func TestCreateWindow(t *testing.T) {
+// CreateAppWindow runs the program as the window's own process. A long-lived
+// one is used so the window is still there to be listed.
+func TestCreateAppWindow(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
@@ -285,17 +288,12 @@ func TestCreateWindow(t *testing.T) {
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
 	windowName := "test-feature"
-	workdir := "/tmp"
-	command := "echo"
-	args := []string{"test"}
-
-	err := ctrl.CreateWindow(windowName, workdir, command, nil, args...)
-	if err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
+	if err := ctrl.CreateAppWindow(windowName, "/tmp", "sleep", nil, "30"); err != nil {
+		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 
 	if !ctrl.sessionExists(sessionName) {
-		t.Error("Session does not exist after CreateWindow()")
+		t.Error("Session does not exist after CreateAppWindow()")
 	}
 
 	windows, err := ctrl.ListWindows()
@@ -303,21 +301,25 @@ func TestCreateWindow(t *testing.T) {
 		t.Fatalf("ListWindows() failed: %v", err)
 	}
 
-	if len(windows) < 1 {
-		t.Errorf("Expected at least 1 window, got %d", len(windows))
-	}
-
-	found := false
 	sanitizedName := ctrl.sanitizeWindowName(windowName)
+	found := false
 	for _, w := range windows {
 		if w.Name == sanitizedName {
 			found = true
 			break
 		}
 	}
-
 	if !found {
 		t.Errorf("Window %q not found in list", sanitizedName)
+	}
+
+	// The pane's process is the program itself, not a shell hosting it.
+	cmd, err := ctrl.PaneCurrentCommand(windowName)
+	if err != nil {
+		t.Fatalf("PaneCurrentCommand() failed: %v", err)
+	}
+	if cmd != "sleep" {
+		t.Errorf("pane command = %q, want %q — exec did not replace the shell", cmd, "sleep")
 	}
 }
 
@@ -339,9 +341,9 @@ func TestListWindows(t *testing.T) {
 		t.Errorf("Expected 0 windows with no session, got %d", len(windows))
 	}
 
-	err = ctrl.CreateWindow("test-win", "/tmp", "sleep", nil, "1000")
+	err = ctrl.CreateAppWindow("test-win", "/tmp", "sleep", nil, "1000")
 	if err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
+		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
@@ -366,14 +368,14 @@ func TestKillWindow(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
 	windowName := "test-to-kill"
-	err := ctrl.CreateWindow(windowName, "/tmp", "sleep", nil, "1000")
+	err := ctrl.CreateAppWindow(windowName, "/tmp", "sleep", nil, "1000")
 	if err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
+		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 
-	err = ctrl.CreateWindow("keep-alive", "/tmp", "sleep", nil, "1000")
+	err = ctrl.CreateAppWindow("keep-alive", "/tmp", "sleep", nil, "1000")
 	if err != nil {
-		t.Fatalf("CreateWindow() for keep-alive failed: %v", err)
+		t.Fatalf("CreateAppWindow() for keep-alive failed: %v", err)
 	}
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
@@ -395,68 +397,9 @@ func TestKillWindow(t *testing.T) {
 	}
 }
 
-func TestCapturePane(t *testing.T) {
-	if !isTmuxAvailable() {
-		t.Skip("tmux not available, skipping integration test")
-	}
-
-	ctrl := New("test-opentree-capture")
-	sessionName := ctrl.getSessionName()
-
-	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-
-	windowName := "test-capture"
-	err := ctrl.CreateWindow(windowName, "/tmp", "echo", nil, "test-output")
-	if err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
-	}
-	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-
-	output, err := ctrl.CapturePane(windowName, 10)
-	if err != nil {
-		t.Fatalf("CapturePane() failed: %v", err)
-	}
-
-	if output == "" {
-		t.Error("CapturePane() returned empty output")
-	}
-}
-
-func TestSendMessage_MultilineArrivesIntact(t *testing.T) {
-	if !isTmuxAvailable() {
-		t.Skip("tmux not available, skipping integration test")
-	}
-
-	ctrl := New("test-opentree-sendmsg")
-	sessionName := ctrl.getSessionName()
-	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-
-	windowName := "test-sendmsg"
-	if err := ctrl.CreateWindow(windowName, "/tmp", "cat", nil); err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
-	}
-	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-
-	time.Sleep(500 * time.Millisecond) // let the shell start cat
-
-	msg := "line one\nline two\nEnter"
-	if err := ctrl.SendMessage(windowName, msg); err != nil {
-		t.Fatalf("SendMessage() failed: %v", err)
-	}
-	time.Sleep(500 * time.Millisecond)
-
-	output, err := ctrl.CapturePane(windowName, 20)
-	if err != nil {
-		t.Fatalf("CapturePane() failed: %v", err)
-	}
-	for _, want := range []string{"line one", "line two", "Enter"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("pane output missing %q:\n%s", want, output)
-		}
-	}
-}
-
-func TestCreateWindow_QuotesArgs(t *testing.T) {
+// An argument with a space has to survive the shell that launches the program.
+// Unquoted, "two words" would reach touch as two arguments and make two files.
+func TestCreateAppWindow_QuotesArgs(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
@@ -464,20 +407,24 @@ func TestCreateWindow_QuotesArgs(t *testing.T) {
 	ctrl := New("test-opentree-quotes")
 	sessionName := ctrl.getSessionName()
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-
-	if err := ctrl.CreateWindow("test-quotes", "/tmp", "printf", nil, "%s\n", "two words"); err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
-	}
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
+	dir := t.TempDir()
+	if err := ctrl.CreateAppWindow("test-quotes", dir, "touch", nil, "two words"); err != nil {
+		t.Fatalf("CreateAppWindow() failed: %v", err)
+	}
 	time.Sleep(500 * time.Millisecond)
 
-	output, err := ctrl.CapturePane("test-quotes", 10)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("CapturePane() failed: %v", err)
+		t.Fatal(err)
 	}
-	if !strings.Contains(output, "two words") {
-		t.Errorf("pane output missing %q (args not shell-quoted?):\n%s", "two words", output)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != "two words" {
+		t.Errorf("created %v, want exactly [\"two words\"] — args not shell-quoted?", names)
 	}
 }
 
@@ -492,12 +439,12 @@ func TestSelectWindow(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	err := ctrl.CreateWindow("win-a", "/tmp", "sleep", nil, "1000")
+	err := ctrl.CreateAppWindow("win-a", "/tmp", "sleep", nil, "1000")
 	if err != nil {
-		t.Fatalf("CreateWindow(win-a) failed: %v", err)
+		t.Fatalf("CreateAppWindow(win-a) failed: %v", err)
 	}
 
-	err = ctrl.CreateWindow("win-b", "/tmp", "sleep", nil, "1000")
+	err = ctrl.CreateAppWindow("win-b", "/tmp", "sleep", nil, "1000")
 	if err != nil {
 		t.Fatalf("CreateWindow(win-b) failed: %v", err)
 	}
@@ -530,9 +477,9 @@ func TestSelectWindowNonExistent(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	err := ctrl.CreateWindow("real-win", "/tmp", "sleep", nil, "1000")
+	err := ctrl.CreateAppWindow("real-win", "/tmp", "sleep", nil, "1000")
 	if err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
+		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 
 	err = ctrl.SelectWindow("non-existent-window")
@@ -552,9 +499,9 @@ func TestAttachCmd(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	err := ctrl.CreateWindow("attach-win", "/tmp", "sleep", nil, "1000")
+	err := ctrl.CreateAppWindow("attach-win", "/tmp", "sleep", nil, "1000")
 	if err != nil {
-		t.Fatalf("CreateWindow() failed: %v", err)
+		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 
 	cmd, err := ctrl.AttachCmd("attach-win")
@@ -626,15 +573,15 @@ func TestWindowTargeting_DotsAndPrefixes(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	if err := ctrl.CreateWindow("release-1.2", "/tmp", "sleep", nil, "1000"); err != nil {
-		t.Fatalf("CreateWindow(release-1.2) failed: %v", err)
+	if err := ctrl.CreateAppWindow("release-1.2", "/tmp", "sleep", nil, "1000"); err != nil {
+		t.Fatalf("CreateAppWindow(release-1.2) failed: %v", err)
 	}
-	if err := ctrl.CreateWindow("fix-it", "/tmp", "sleep", nil, "1000"); err != nil {
-		t.Fatalf("CreateWindow(fix-it) failed: %v", err)
+	if err := ctrl.CreateAppWindow("fix-it", "/tmp", "sleep", nil, "1000"); err != nil {
+		t.Fatalf("CreateAppWindow(fix-it) failed: %v", err)
 	}
 
-	if _, err := ctrl.CapturePane("release-1.2", 5); err != nil {
-		t.Errorf("CapturePane(release-1.2) failed: %v", err)
+	if _, err := ctrl.PaneCurrentCommand("release-1.2"); err != nil {
+		t.Errorf("PaneCurrentCommand(release-1.2) failed: %v", err)
 	}
 	if err := ctrl.SelectWindow("release-1.2"); err != nil {
 		t.Errorf("SelectWindow(release-1.2) failed: %v", err)

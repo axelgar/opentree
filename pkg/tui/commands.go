@@ -9,6 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/workspace"
@@ -75,12 +77,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 			if ws.WorktreeDir != "" {
 				item.UncommittedCount = countUncommitted(ws.WorktreeDir)
-				// An ACP chat reports over its socket; everything else still
-				// relies on the hook-written status file.
 				item.ChatStatus = readChatStatus(m.repoRoot, ws.Name)
-				if item.ChatStatus == nil {
-					item.AgentStatus = readAgentStatus(ws.WorktreeDir)
-				}
 			}
 
 			if exists {
@@ -260,35 +257,27 @@ func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bo
 	}
 }
 
-func (m Model) capturePreviewCmd() tea.Cmd {
-	if len(m.workspaces) == 0 {
-		return nil
-	}
-	visible := m.visibleWorkspaces()
-	if len(visible) == 0 || m.cursor >= len(visible) {
-		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
-	}
-	ws := visible[m.cursor]
-	if ws.WindowID == "" {
-		return func() tea.Msg { return capturePreviewMsg{wsName: ws.Name, lines: ""} }
-	}
-	wsName := ws.Name
+// sendReviewsCmd hands a workspace's open PR review comments to its agent as a
+// prompt, over the chat's control socket. The socket refuses a prompt the chat
+// cannot honour — mid-turn, or no chat running — so "sent" stays truthful.
+func (m Model) sendReviewsCmd(ws WorkspaceItem) tea.Cmd {
+	repoRoot, wsName, branch := m.repoRoot, ws.Name, ws.Branch
 	return func() tea.Msg {
-		output, err := m.svc.Process().CapturePane(wsName, 5)
-		if err != nil {
-			return capturePreviewMsg{wsName: wsName, lines: ""}
+		comments, err := m.prMgr.FetchPRReviews(branch)
+		// Partial results (top-level reviews fetched, inline-thread fetch
+		// failed) are still sent rather than discarded.
+		if err != nil && len(comments) == 0 {
+			return errMsg{fmt.Errorf("failed to fetch PR reviews: %w", err)}
 		}
-		return capturePreviewMsg{wsName: wsName, lines: cleanPreview(output)}
-	}
-}
-
-func (m Model) sendReviewsCmd(wsName string) tea.Cmd {
-	return func() tea.Msg {
-		count, err := m.svc.SendReviewsToAgent(wsName)
-		if err != nil {
-			return errMsg{err}
+		if len(comments) == 0 {
+			return reviewsSentMsg{wsName: wsName}
 		}
-		return reviewsSentMsg{wsName: wsName, count: count}
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), chat.Command{
+			Type: chat.CommandPrompt, Text: github.FormatReviewsPrompt(comments),
+		}); err != nil {
+			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
+		}
+		return reviewsSentMsg{wsName: wsName, count: len(comments)}
 	}
 }
 

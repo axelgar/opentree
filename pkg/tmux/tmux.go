@@ -31,35 +31,6 @@ func New(sessionPrefix string) *Controller {
 	}
 }
 
-// CreateWindow creates a new tmux window and types a command into its shell.
-// The shell is the window's process and outlives the command, so the window
-// stays open — and the worktree stays a place you can work — after an agent
-// that draws its own TUI exits.
-//
-// env holds KEY=value pairs set in the window's environment (tmux new-window
-// -e, ≥3.0) rather than typed into the shell, keeping the visible line clean.
-func (c *Controller) CreateWindow(name, workdir, command string, env []string, args ...string) error {
-	windowID, err := c.newWindow(name, workdir, env)
-	if err != nil {
-		return err
-	}
-
-	// -l types the command line literally so tmux never interprets it as key names.
-	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", windowID, "--", launchLine(command, args))
-	if output, err := sendCmd.CombinedOutput(); err != nil {
-		// Don't leave a dead window behind for the retry to collide with.
-		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
-		return fmt.Errorf("failed to send command to window: %w\nOutput: %s", err, output)
-	}
-	enterCmd := exec.Command("tmux", "send-keys", "-t", windowID, "Enter")
-	if output, err := enterCmd.CombinedOutput(); err != nil {
-		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
-		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
-	}
-
-	return nil
-}
-
 // CreateAppWindow creates a window whose process *is* the command. Nothing is
 // typed into a shell, which is the difference that matters for a full-screen
 // program: tmux's alternate screen preserves whatever the pane held before the
@@ -72,7 +43,7 @@ func (c *Controller) CreateWindow(name, workdir, command string, env []string, a
 func (c *Controller) CreateAppWindow(name, workdir, command string, env []string, args ...string) error {
 	// exec so the program replaces the shell rather than being its child;
 	// otherwise the pane's process is sh and nothing has really changed.
-	_, err := c.newWindow(name, workdir, env, "--", "sh", "-c", launchLine(command, args, "exec"))
+	_, err := c.newWindow(name, workdir, env, "--", "sh", "-c", launchLine(command, args))
 	return err
 }
 
@@ -112,18 +83,19 @@ func (c *Controller) newWindow(name, workdir string, env []string, trailing ...s
 	return strings.TrimSpace(string(output)), nil
 }
 
-// launchLine is the shell line that starts an agent. The file descriptor limit
-// is raised first so tools like claude and opencode do not hit the default
-// macOS limit. prefix is "exec" when the program should replace the shell.
-func launchLine(command string, args []string, prefix ...string) string {
-	parts := append(append([]string{}, prefix...), command)
+// launchLine is the shell line that starts the window's program. The file
+// descriptor limit is raised first so the agents behind the chat do not hit the
+// default macOS limit; exec then replaces the shell, so the pane's process is
+// the program itself.
+func launchLine(command string, args []string) string {
+	parts := []string{"exec", command}
 	for _, a := range args {
 		parts = append(parts, shellQuote(a))
 	}
 	return fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", strings.Join(parts, " "))
 }
 
-// checkVersion fails when the installed tmux predates 3.0, which CreateWindow
+// checkVersion fails when the installed tmux predates 3.0, which newWindow
 // requires for new-window -e. Cached per Controller. A missing/broken tmux
 // binary passes: the command that actually needs tmux reports that error.
 func (c *Controller) checkVersion() error {
@@ -429,32 +401,6 @@ func (c *Controller) KillWindow(name string) error {
 	return nil
 }
 
-// SendMessage sends a text message to a tmux window as if typed by the user,
-// followed by Enter. The text is delivered through a tmux paste buffer with
-// bracketed paste so multi-line payloads and words that look like tmux key
-// names ("Enter", "C-c", ...) arrive literally instead of being interpreted.
-func (c *Controller) SendMessage(name, text string) error {
-	target, err := c.findWindowID(name)
-	if err != nil {
-		return err
-	}
-
-	load := exec.Command("tmux", "load-buffer", "-b", "opentree-msg", "-")
-	load.Stdin = strings.NewReader(text)
-	if output, err := load.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to load message buffer: %w\nOutput: %s", err, output)
-	}
-	paste := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", "opentree-msg", "-t", target)
-	if output, err := paste.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to paste message to window: %w\nOutput: %s", err, output)
-	}
-	enter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
-	if output, err := enter.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
-	}
-	return nil
-}
-
 // KillSession stops and removes the tmux session
 func (c *Controller) KillSession() error {
 	sessionName := c.getSessionName()
@@ -476,23 +422,6 @@ func (c *Controller) KillSession() error {
 	}
 
 	return nil
-}
-
-// CapturePane captures recent output from a window
-func (c *Controller) CapturePane(name string, lines int) (string, error) {
-	windowID, err := c.findWindowID(name)
-	if err != nil {
-		return "", err
-	}
-
-	cmd := exec.Command("tmux", "capture-pane", "-t", windowID,
-		"-p", "-S", fmt.Sprintf("-%d", lines))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to capture pane: %w", err)
-	}
-
-	return string(output), nil
 }
 
 // PaneCurrentCommand returns the name of the process currently running in a

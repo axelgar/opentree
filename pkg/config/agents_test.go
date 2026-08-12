@@ -54,16 +54,17 @@ func TestAgentNames(t *testing.T) {
 	}
 }
 
-func TestGitHubCopilot_HasArgs(t *testing.T) {
-	agent := FindAgent("GitHub Copilot")
-	if agent == nil {
-		t.Fatal("expected to find GitHub Copilot")
-	}
-	if agent.Command != "gh" {
-		t.Errorf("Command = %q, want %q", agent.Command, "gh")
-	}
-	if len(agent.Args) != 1 || agent.Args[0] != "copilot" {
-		t.Errorf("Args = %v, want [copilot]", agent.Args)
+// The registry is the list of agents opentree can drive, so every entry has to
+// carry a way to start it over ACP. An entry without one would be offered in
+// the picker and then fail to open a chat.
+func TestEveryAgentServesACP(t *testing.T) {
+	for _, a := range PredefinedAgents {
+		if a.ACPCommand() == "" {
+			t.Errorf("%s has no ACP command — opentree has no other way to run it", a.Name)
+		}
+		if a.Logo == nil {
+			t.Errorf("%s has no logo; every agent opens a chat, and the chat draws one", a.Name)
+		}
 	}
 }
 
@@ -94,8 +95,6 @@ func TestACPCommand(t *testing.T) {
 		{"opencode", "opencode"},
 		// Claude Code does not; a separate adapter binary does.
 		{"claude", "claude-agent-acp"},
-		// No ACP mode at all.
-		{"pi", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.agent, func(t *testing.T) {
@@ -118,9 +117,6 @@ func TestACPArgs(t *testing.T) {
 	}
 	if got := FindAgent("claude").ACPArgs("/work/tree"); len(got) != 0 {
 		t.Errorf("claude args = %v, want none — the adapter takes no flags", got)
-	}
-	if got := FindAgent("pi").ACPArgs("/work/tree"); got != nil {
-		t.Errorf("pi args = %v, want nil for an agent with no ACP mode", got)
 	}
 }
 
@@ -150,9 +146,6 @@ func TestACPSpec_AdapterIsInstallable(t *testing.T) {
 	// opencode serves ACP itself, so there is nothing to fetch.
 	if opencode := FindAgent("opencode"); opencode.ACPInstallCommand() != nil {
 		t.Errorf("opencode install = %v, want none", opencode.ACPInstallCommand())
-	}
-	if FindAgent("pi").ACPInstallCommand() != nil {
-		t.Error("an agent with no ACP mode has no adapter to install")
 	}
 }
 
@@ -195,15 +188,11 @@ func TestBrand_ResolvesHoweverTheAgentWasRecorded(t *testing.T) {
 	}
 }
 
-// Every agent needs a mark and a colour or the list is inconsistent; only the
-// agents opentree draws a chat for need a drawing.
+// Every agent needs a mark and a colour or the list is inconsistent.
 func TestPredefinedAgents_AllBranded(t *testing.T) {
 	for _, a := range PredefinedAgents {
 		if a.Mark == "" || a.Colour == "" {
 			t.Errorf("%s has no mark or colour", a.Name)
-		}
-		if a.ACP != nil && len(a.Logo) == 0 {
-			t.Errorf("%s opens a chat but has no logo to open it with", a.Name)
 		}
 	}
 }

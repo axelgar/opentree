@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 // resolveACPAgent decides which agent a chat window runs. It is the seam where
@@ -53,7 +55,7 @@ func TestResolveACPAgent_FallsBackToRepoConfig(t *testing.T) {
 
 func TestResolveACPAgent_RejectsNonACPAgent(t *testing.T) {
 	repo := t.TempDir()
-	writeConfig(t, repo, "pi") // no ACP mode in the registry
+	writeConfig(t, repo, "pi") // dropped from the registry — no ACP mode
 
 	agentFlag = ""
 	_, err := resolveACPAgent(repo)
@@ -65,23 +67,25 @@ func TestResolveACPAgent_RejectsNonACPAgent(t *testing.T) {
 	}
 }
 
-func TestResolveACPAgent_MissingAdapterExplainsItself(t *testing.T) {
-	// Claude Code is reached through a separate adapter binary, so the agent
-	// can be installed while the thing that serves ACP is not. "executable file
-	// not found in $PATH" would be true and useless.
+// A missing adapter is deliberately not resolved as an error: the chat opens in
+// its stopped state instead, where installing it is one key away. Failing here
+// would turn a one-keystroke fix into a command that refuses to run.
+func TestResolveACPAgent_MissingAdapterIsNotAnError(t *testing.T) {
 	repo := t.TempDir()
 	writeConfig(t, repo, "claude")
 	t.Setenv("PATH", t.TempDir()) // no adapter anywhere
+	t.Setenv("HOME", t.TempDir()) // ...and none in opentree's own prefix either
 
 	agentFlag = ""
-	_, err := resolveACPAgent(repo)
-	if err == nil {
-		t.Skip("claude-agent-acp is installed here, so there is nothing to miss")
+	agent, err := resolveACPAgent(repo)
+	if err != nil {
+		t.Fatalf("resolveACPAgent = %v, want the agent back so the chat can offer to install it", err)
 	}
-	for _, want := range []string{"claude-agent-acp", "npm i -g"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to mention %q", err, want)
-		}
+	if agent.ACPInstalled() {
+		t.Fatal("expected the adapter to be missing in this environment")
+	}
+	if len(agent.ACPInstallCommand()) == 0 {
+		t.Error("the chat needs a way to install the adapter it just found missing")
 	}
 }
 
@@ -94,15 +98,18 @@ func TestResolveACPAgent_RejectsUnknownAgent(t *testing.T) {
 	}
 }
 
-func TestACPCapableAgents(t *testing.T) {
-	got := acpCapableAgents()
-	if !strings.Contains(got, "opencode") {
-		t.Errorf("acpCapableAgents() = %q, want it to list opencode", got)
+func TestAgentCommands(t *testing.T) {
+	got := strings.Join(config.AgentCommands(), ", ")
+	for _, want := range []string{"opencode", "claude"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("AgentCommands() = %q, want it to list %q", got, want)
+		}
 	}
-	if !strings.Contains(got, "claude") {
-		t.Errorf("acpCapableAgents() = %q, want claude listed now that it has an adapter", got)
-	}
-	if strings.Contains(got, "pi") {
-		t.Errorf("acpCapableAgents() = %q, should not list agents without an ACP spec", got)
+	// The registry is the list of drivable agents now, so a name that left it
+	// must not still be advertised as one.
+	for _, gone := range []string{"codex", "gemini", "pi"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("AgentCommands() = %q, still lists %q, which has no ACP mode", got, gone)
+		}
 	}
 }

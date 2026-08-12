@@ -6,12 +6,16 @@ import (
 )
 
 // PredefinedAgent describes a known coding agent that opentree can orchestrate.
+//
+// The registry is deliberately short: opentree talks to agents over the Agent
+// Client Protocol and nothing else, so an agent that does not serve ACP has no
+// way in. Adding one back is a single entry here — everything downstream
+// already assumes the protocol.
 type PredefinedAgent struct {
-	Name        string   // display name: "Claude Code"
-	Command     string   // binary: "claude"
-	Args        []string // default args
-	Description string   // short description for list display
-	ACP         *ACPSpec // how to run it as an ACP server; nil means no ACP mode
+	Name        string // display name: "Claude Code"
+	Command     string // binary: "claude"
+	Description string // short description for list display
+	ACP         ACPSpec
 
 	// Colour and Mark are the agent's identity in a crowded line. A worktree
 	// row has no space for a drawing, but it has space for one glyph, and a
@@ -24,14 +28,12 @@ type PredefinedAgent struct {
 	Mark   string
 
 	// Logo is the agent's mark drawn large, for the one screen with room for
-	// it: the opening of a chat. Only agents opentree draws a chat for need
-	// one, so the plain-launch agents leave it empty.
+	// it: the opening of a chat.
 	Logo []string
 }
 
 // ACPSpec describes how to start an agent as an Agent Client Protocol server on
-// stdio. Agents without one keep the plain launch path, where opentree types
-// the command into a shell and the agent draws its own TUI.
+// stdio.
 type ACPSpec struct {
 	// Command overrides the agent's binary when its ACP server is a separate
 	// program. opencode serves ACP itself; Claude Code does not, and is reached
@@ -71,7 +73,7 @@ var PredefinedAgents = []PredefinedAgent{
 			"█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀",
 			"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
 		},
-		ACP: &ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}}},
+		ACP: ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
 		// Claude Code's own mark, transcribed from its welcome banner, in
 		// Anthropic's clay.
@@ -84,20 +86,12 @@ var PredefinedAgents = []PredefinedAgent{
 		// Claude Code has no ACP mode of its own; claude-agent-acp bridges it,
 		// reusing the same login. Install with
 		// `npm i -g @agentclientprotocol/claude-agent-acp`.
-		ACP: &ACPSpec{
+		ACP: ACPSpec{
 			Command:     "claude-agent-acp",
 			Package:     "@agentclientprotocol/claude-agent-acp",
 			InstallSize: "303MB",
 			AuthCommand: []string{"auth", "login"},
 		}},
-	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent",
-		Colour: "#10A37F", Mark: "◈"},
-	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI",
-		Colour: "#A371F7", Mark: "◉"},
-	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent",
-		Colour: "#4285F4", Mark: "✦"},
-	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent",
-		Colour: "#2A9D8F", Mark: "π"},
 }
 
 // Brand is the agent's mark and colour, resolved from whatever name a
@@ -114,9 +108,6 @@ func Brand(name string) (mark, colour, display string) {
 // ACPCommand is the binary that serves ACP for this agent: its own, unless the
 // spec names a separate adapter.
 func (a PredefinedAgent) ACPCommand() string {
-	if a.ACP == nil {
-		return ""
-	}
 	if a.ACP.Command != "" {
 		return a.ACP.Command
 	}
@@ -126,9 +117,6 @@ func (a PredefinedAgent) ACPCommand() string {
 // ACPArgs is the full argument list for the ACP server, including the worktree
 // when the agent wants it as a flag.
 func (a PredefinedAgent) ACPArgs(worktree string) []string {
-	if a.ACP == nil {
-		return nil
-	}
 	args := append([]string{}, a.ACP.Args...)
 	if a.ACP.CwdFlag != "" {
 		args = append(args, a.ACP.CwdFlag, worktree)
@@ -168,14 +156,20 @@ func FirstInstalledAgent() *PredefinedAgent {
 	return nil
 }
 
-// knownAgentCommands returns the registry's commands as a comma-separated
-// list for error messages.
-func knownAgentCommands() string {
+// AgentCommands returns the registry's commands, which is also the full list of
+// agents opentree can drive.
+func AgentCommands() []string {
 	cmds := make([]string, len(PredefinedAgents))
 	for i, a := range PredefinedAgents {
 		cmds[i] = a.Command
 	}
-	return strings.Join(cmds, ", ")
+	return cmds
+}
+
+// knownAgentCommands is AgentCommands as one comma-separated line, for error
+// messages.
+func knownAgentCommands() string {
+	return strings.Join(AgentCommands(), ", ")
 }
 
 // AgentNames returns display names of all predefined agents.

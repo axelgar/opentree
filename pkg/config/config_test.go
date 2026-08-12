@@ -16,9 +16,6 @@ func TestDefault(t *testing.T) {
 	if cfg.Agent.Command != "opencode" {
 		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, "opencode")
 	}
-	if cfg.Agent.Args == nil {
-		t.Error("Agent.Args should not be nil")
-	}
 	if cfg.Worktree.BaseDir != ".opentree" {
 		t.Errorf("Worktree.BaseDir = %q, want %q", cfg.Worktree.BaseDir, ".opentree")
 	}
@@ -77,9 +74,6 @@ auto_push = true
 
 	if cfg.Agent.Command != "custom-agent" {
 		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, "custom-agent")
-	}
-	if len(cfg.Agent.Args) != 2 || cfg.Agent.Args[0] != "--flag" {
-		t.Errorf("Agent.Args = %v, want [--flag --other]", cfg.Agent.Args)
 	}
 	if cfg.Worktree.BaseDir != ".custom" {
 		t.Errorf("Worktree.BaseDir = %q, want %q", cfg.Worktree.BaseDir, ".custom")
@@ -142,7 +136,6 @@ func TestSetKeys_And_Load_RoundTrip(t *testing.T) {
 	original := &Config{
 		Agent: AgentConfig{
 			Command: "my-agent",
-			Args:    []string{"-v", "--debug"},
 		},
 		Worktree: WorktreeConfig{
 			BaseDir:     ".trees",
@@ -158,7 +151,6 @@ func TestSetKeys_And_Load_RoundTrip(t *testing.T) {
 
 	if err := SetKeys(path, map[string]any{
 		"agent.command":         original.Agent.Command,
-		"agent.args":            original.Agent.Args,
 		"worktree.base_dir":     original.Worktree.BaseDir,
 		"worktree.default_base": original.Worktree.DefaultBase,
 		"tmux.session_prefix":   original.Tmux.SessionPrefix,
@@ -174,9 +166,6 @@ func TestSetKeys_And_Load_RoundTrip(t *testing.T) {
 
 	if loaded.Agent.Command != original.Agent.Command {
 		t.Errorf("Agent.Command = %q, want %q", loaded.Agent.Command, original.Agent.Command)
-	}
-	if len(loaded.Agent.Args) != len(original.Agent.Args) {
-		t.Errorf("Agent.Args len = %d, want %d", len(loaded.Agent.Args), len(original.Agent.Args))
 	}
 	if loaded.Worktree.BaseDir != original.Worktree.BaseDir {
 		t.Errorf("Worktree.BaseDir = %q, want %q", loaded.Worktree.BaseDir, original.Worktree.BaseDir)
@@ -207,10 +196,31 @@ func TestAgentConfig_Validate_MissingBinary(t *testing.T) {
 }
 
 func TestAgentConfig_Validate_ValidBinary(t *testing.T) {
-	// "go" should be available in any Go test environment.
-	a := AgentConfig{Command: "go"}
+	binDir := t.TempDir()
+	fakeAgentBinary(t, binDir, "opencode")
+	t.Setenv("PATH", binDir)
+
+	a := AgentConfig{Command: "opencode"}
 	if err := a.Validate(); err != nil {
-		t.Fatalf("Validate() with valid binary failed: %v", err)
+		t.Fatalf("Validate() with an installed registry agent failed: %v", err)
+	}
+}
+
+// Being installed is not enough. opentree only speaks ACP, so a binary it has
+// no spec for cannot be run at all — and catching that here is the difference
+// between one clear message and a chat that opens and immediately dies.
+func TestAgentConfig_Validate_RejectsAgentOutsideTheRegistry(t *testing.T) {
+	binDir := t.TempDir()
+	fakeAgentBinary(t, binDir, "codex") // installed, but opentree cannot drive it
+	t.Setenv("PATH", binDir)
+
+	err := AgentConfig{Command: "codex"}.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted an agent with no ACP spec")
+	}
+	// The message has to name the way out, or the only remedy is guesswork.
+	if !strings.Contains(err.Error(), "opencode") {
+		t.Errorf("error = %q, want it to list the agents that do work", err)
 	}
 }
 
@@ -316,36 +326,29 @@ func fakeAgentBinary(t *testing.T, dir, cmd string) {
 func TestLoadWithSources_DetectsInstalledAgent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	binDir := t.TempDir()
-	fakeAgentBinary(t, binDir, "codex")
+	fakeAgentBinary(t, binDir, "claude")
 	t.Setenv("PATH", binDir)
 
 	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
 	if err != nil {
 		t.Fatalf("LoadWithSources() failed: %v", err)
 	}
-	if cfg.Agent.Command != "codex" {
-		t.Errorf("Agent.Command = %q, want detected %q", cfg.Agent.Command, "codex")
+	// claude is second in the registry, so this is detection finding the only
+	// installed agent rather than falling through to the first entry.
+	if cfg.Agent.Command != "claude" {
+		t.Errorf("Agent.Command = %q, want detected %q", cfg.Agent.Command, "claude")
 	}
 	if sources.AgentCommand != SourceDefault {
 		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceDefault)
 	}
 }
 
-// Detection must carry the agent's default args (gh needs "copilot") and must
-// never override an agent set in a config file.
-func TestLoadWithSources_DetectionArgsAndConfigPrecedence(t *testing.T) {
+// Detection must never override an agent set in a config file.
+func TestLoadWithSources_ConfigBeatsDetection(t *testing.T) {
 	binDir := t.TempDir()
-	fakeAgentBinary(t, binDir, "gh")
+	fakeAgentBinary(t, binDir, "opencode")
 	t.Setenv("PATH", binDir)
-
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	cfg, _, err := LoadWithSources(filepath.Join(t.TempDir(), "nonexistent.toml"))
-	if err != nil {
-		t.Fatalf("LoadWithSources() failed: %v", err)
-	}
-	if cfg.Agent.Command != "gh" || len(cfg.Agent.Args) != 1 || cfg.Agent.Args[0] != "copilot" {
-		t.Errorf("detected agent = %q %v, want \"gh\" [copilot]", cfg.Agent.Command, cfg.Agent.Args)
-	}
 
 	repoDir := t.TempDir()
 	repoPath := filepath.Join(repoDir, "opentree.toml")
@@ -364,11 +367,11 @@ func TestLoadWithSources_DetectionArgsAndConfigPrecedence(t *testing.T) {
 	}
 }
 
-// A config file that sets args without a command must disable detection:
-// user-authored args must never be paired with a binary the user didn't choose.
-func TestLoadWithSources_ArgsOnlyConfigSkipsDetection(t *testing.T) {
+// agent.args used to exist and is now unread. Someone upgrading has it sitting
+// in their config file, and the loader has to walk past it rather than refuse.
+func TestLoad_IgnoresRetiredAgentArgsKey(t *testing.T) {
 	binDir := t.TempDir()
-	fakeAgentBinary(t, binDir, "codex")
+	fakeAgentBinary(t, binDir, "opencode")
 	t.Setenv("PATH", binDir)
 
 	xdgDir := t.TempDir()
@@ -377,7 +380,7 @@ func TestLoadWithSources_ArgsOnlyConfigSkipsDetection(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(globalPath, []byte("[agent]\nargs = [\"--yolo\"]\n"), 0644); err != nil {
+	if err := os.WriteFile(globalPath, []byte("[agent]\ncommand = \"claude\"\nargs = [\"--yolo\"]\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -385,17 +388,11 @@ func TestLoadWithSources_ArgsOnlyConfigSkipsDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithSources() failed: %v", err)
 	}
-	if want := Default().Agent.Command; cfg.Agent.Command != want {
-		t.Errorf("Agent.Command = %q, want default %q (not detected codex)", cfg.Agent.Command, want)
+	if cfg.Agent.Command != "claude" {
+		t.Errorf("Agent.Command = %q, want %q — a stale args key must not derail the rest", cfg.Agent.Command, "claude")
 	}
-	if len(cfg.Agent.Args) != 1 || cfg.Agent.Args[0] != "--yolo" {
-		t.Errorf("Agent.Args = %v, want [--yolo]", cfg.Agent.Args)
-	}
-	if sources.AgentCommand != SourceDefault {
-		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceDefault)
-	}
-	if sources.AgentArgs != SourceGlobal {
-		t.Errorf("sources.AgentArgs = %q, want %q", sources.AgentArgs, SourceGlobal)
+	if sources.AgentCommand != SourceGlobal {
+		t.Errorf("sources.AgentCommand = %q, want %q", sources.AgentCommand, SourceGlobal)
 	}
 }
 
@@ -543,7 +540,7 @@ func TestSetKeys_OnlyWritesGivenKeys(t *testing.T) {
 
 func TestSetKeys_CreatesMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "opentree.toml")
-	if err := SetKeys(path, map[string]any{"agent.command": "claude", "agent.args": []string{"-x"}}); err != nil {
+	if err := SetKeys(path, map[string]any{"agent.command": "claude"}); err != nil {
 		t.Fatalf("SetKeys: %v", err)
 	}
 	cfg, err := Load(path)
@@ -552,9 +549,6 @@ func TestSetKeys_CreatesMissingFile(t *testing.T) {
 	}
 	if cfg.Agent.Command != "claude" {
 		t.Errorf("agent.command = %q, want claude", cfg.Agent.Command)
-	}
-	if len(cfg.Agent.Args) != 1 || cfg.Agent.Args[0] != "-x" {
-		t.Errorf("agent.args = %v, want [-x]", cfg.Agent.Args)
 	}
 }
 

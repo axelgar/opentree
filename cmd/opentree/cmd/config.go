@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,7 +11,6 @@ import (
 
 var configKeys = map[string]string{
 	"agent.command":         "Command to run as the coding agent",
-	"agent.args":            "Extra arguments passed to the agent (comma-separated)",
 	"worktree.base_dir":     "Directory to store worktrees",
 	"worktree.default_base": "Default base branch for new workspaces",
 	"tmux.session_prefix":   "Prefix for tmux session names",
@@ -33,7 +31,6 @@ Use --global to read/write the global config instead of the repo config.
 
 Available keys:
   agent.command          Command to run as the coding agent
-  agent.args             Extra arguments passed to the agent (comma-separated)
   worktree.base_dir      Directory to store worktrees
   worktree.default_base  Default base branch for new workspaces
   tmux.session_prefix    Prefix for tmux session names
@@ -56,7 +53,6 @@ var configListCmd = &cobra.Command{
 				return fmt.Errorf("failed to load global config: %w", err)
 			}
 			fmt.Printf("agent.command = %s\n", cfg.Agent.Command)
-			fmt.Printf("agent.args = %s\n", strings.Join(cfg.Agent.Args, ","))
 			fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
 			fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
 			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
@@ -70,7 +66,6 @@ var configListCmd = &cobra.Command{
 		}
 
 		fmt.Printf("agent.command = %s  (%s)\n", cfg.Agent.Command, sources.AgentCommand)
-		fmt.Printf("agent.args = %s  (%s)\n", strings.Join(cfg.Agent.Args, ","), sources.AgentArgs)
 		fmt.Printf("worktree.base_dir = %s  (%s)\n", cfg.Worktree.BaseDir, sources.WorktreeBaseDir)
 		fmt.Printf("worktree.default_base = %s  (%s)\n", cfg.Worktree.DefaultBase, sources.WorktreeDefaultBase)
 		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
@@ -155,11 +150,6 @@ var configSetCmd = &cobra.Command{
 // parseConfigValue converts a CLI string value into the TOML type for key.
 func parseConfigValue(key, value string) (any, error) {
 	switch key {
-	case "agent.args":
-		if value == "" {
-			return []string{}, nil
-		}
-		return strings.Split(value, ","), nil
 	case "github.auto_push":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -175,8 +165,6 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 	switch key {
 	case "agent.command":
 		return cfg.Agent.Command, nil
-	case "agent.args":
-		return strings.Join(cfg.Agent.Args, ","), nil
 	case "worktree.base_dir":
 		return cfg.Worktree.BaseDir, nil
 	case "worktree.default_base":
