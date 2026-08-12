@@ -11,8 +11,8 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 ## Features
 
 - **🌳 Isolated Workspaces**: Each workspace = git worktree + branch + tmux window
-- **🤖 Agent Integration**: Launch OpenCode (or other agents) automatically in each workspace
-- **💬 Built-in Chat**: Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com) run inside opentree's own chat view — answer permissions, watch diffs, and drive the agent from the dashboard without attaching
+- **🤖 Agent Integration**: Launch your agent automatically in each workspace
+- **💬 Built-in Chat**: Every agent speaks the [Agent Client Protocol](https://agentclientprotocol.com) and runs inside opentree's own chat view — answer permissions, watch diffs, send images, and drive the agent from the dashboard without attaching
 - **📊 TUI Dashboard**: Interactive terminal UI for managing workspaces (press `?` for help)
 - **🔀 Parallel Development**: Work on multiple branches simultaneously without checkout overhead
 - **📝 Diff Viewer**: Review changes before committing
@@ -103,6 +103,7 @@ opentree
 - `p` - Create PR for selected workspace (auto-generates title and body from commits)
 - `o` - Open PR in browser
 - `x` - Delete selected workspace (shows diff confirmation if uncommitted changes)
+- `R` - Send the workspace's open PR review comments to its agent
 - `space` - Toggle multi-select on current workspace
 - `/` - Filter workspaces by name
 - `s` - Cycle sort order (name → age → activity → PR)
@@ -110,13 +111,15 @@ opentree
 - `?` - Toggle full help
 - `q` - Quit
 
-The TUI also shows a live **agent output preview** for the selected workspace and **CI check status** badges for open PRs.
+Each row also carries what its agent is doing — working, waiting on a
+permission, stopped — plus cost and context use, read live from the chat's
+control socket. Open PRs show **CI check status** badges.
 
 ### Talking to the agent
 
-Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
-(ACP) don't get their own TUI in the tmux window — opentree talks to them
-directly and draws the conversation itself. You get the same worktree-per-branch
+opentree talks to agents over the [Agent Client Protocol](https://agentclientprotocol.com)
+(ACP) and draws the conversation itself, rather than handing the tmux window to
+the agent's own TUI. You get the same worktree-per-branch
 flow, but the agent's turns, tool calls, diffs, what each tool printed, and
 permission prompts are rendered by opentree, which means the dashboard knows
 what every agent is doing without scraping its output.
@@ -161,11 +164,21 @@ agent's own logo, in its own colours:
 | `ctrl+j` | newline |
 | `/` | the agent's own slash commands |
 | `@` | attach a file from this worktree |
+| `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn |
 | `shift+tab` | cycle the agent's mode (plan / build / …) |
 | `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
 | `ctrl+o` | show or hide the agent's reasoning |
 | `?` | every key |
+
+**Images.** Press `ctrl+v` to attach a screenshot from the clipboard, or drag one
+onto the terminal. Either way the path collapses into `[image · shot.png · 412 KB]`
+in the message you are writing — backspace over it and the attachment goes with
+it — and it travels to the agent as a real image block. On macOS
+that is `ctrl+v` and not `cmd+v`: `cmd+v` is the terminal's own paste, and a
+terminal asked to paste a picture sends nothing at all. An agent that does not
+take images gets the path as a link instead, and the chat says so rather than
+letting the difference go unnoticed.
 
 The agent's live model, mode and effort sit on the right of the input, next to
 the running context and cost. `ctrl+c` takes you back to the workspace list and
@@ -182,8 +195,10 @@ is queued rather than refused.
 `claude-agent-acp` adapter, which opentree installs on request into
 `~/.opentree/tools` rather than your global npm root — press `A` in the
 dashboard, pick Claude Code, and it offers the download (303MB, needs `node`).
-Any other agent keeps the original behaviour: its own TUI in the tmux window,
-with status coming from [hooks](#agent-status-signals).
+
+Those two are the whole list. opentree drives agents over ACP and nothing else,
+so an agent without an ACP server has no way in — if one ships support, it
+becomes a single registry entry and everything above applies to it unchanged.
 
 ### CLI Mode (Direct Commands)
 
@@ -252,6 +267,17 @@ opentree pr feat/user-auth --title "Add user auth" --body "..." # Non-interactiv
 
 Requires GitHub CLI (`gh`) to be authenticated.
 
+#### Send PR Reviews to the Agent
+
+```bash
+opentree review <branch-name>
+```
+
+Fetches the open PR's review comments and sends them to the workspace's agent as
+a prompt, over the chat's control socket. The chat has to be running, but it
+doesn't have to be the window you're looking at — and if the agent is mid-turn
+the command says so rather than reporting a send that went nowhere.
+
 #### Delete Workspace
 
 ```bash
@@ -281,8 +307,7 @@ base_dir = ".opentree"        # Where to store worktrees (relative to repo root)
 default_base = "main"         # Default base branch
 
 [agent]
-command = "opencode"          # Command to launch agent
-args = []                     # Additional arguments
+command = "opencode"          # Agent to run: "opencode" or "claude"
 
 [tmux]
 session_prefix = "opentree"   # Prefix for the tmux session name
@@ -293,93 +318,25 @@ auto_push = true              # Push branch before creating a PR (set false to p
 
 ### Using Different Agents
 
-To use a different coding agent instead of OpenCode:
+To use Claude Code instead of OpenCode:
 
 ```toml
 [agent]
-command = "claude"            # Or "aider", "cursor", etc.
-args = ["--some-flag"]
+command = "claude"
 ```
 
 Or press `A` in the dashboard to pick from the agents you have installed — it
-writes the same config, and offers to fetch an ACP adapter if the agent needs
-one. `opencode` and `claude` run in opentree's [built-in chat](#talking-to-the-agent);
-everything else launches its own TUI in the tmux window.
-
-### Agent status signals
-
-Agents can tell opentree how they're doing by writing a `.opentree-status.json`
-file to the **worktree root**. The workspace list reads it on every refresh and
-shows a badge, so a glance across the dashboard tells you which worktrees are
-working and which have gone quiet and want your attention.
-
-```jsonc
-{
-  "status": "needs_input",              // required: "in_progress" or "needs_input"
-  "message": "Approve running tests?"   // optional — shown on the row
-}
-```
-
-Agents only ever report two things — `in_progress` (a turn started) and
-`needs_input` (a turn ended, or it hit a prompt). opentree pairs that with **how
-long ago** the file last changed to derive the badge, so a finished turn from an
-hour ago doesn't look the same as one that just landed:
-
-| Agent wrote   | Last change      | Badge                | Meaning                              |
-| ------------- | ---------------- | -------------------- | ------------------------------------ |
-| `in_progress` | recent           | `working…`           | actively generating                  |
-| `in_progress` | stale            | `stalled · 40m ago`  | turn never ended — likely dead session |
-| `needs_input` | recent           | `waiting · your turn`| just stopped — your move             |
-| `needs_input` | stale            | `idle · 2h ago`      | parked; nobody's touched it          |
-
-The status bar tallies the ones that want you: `N waiting` and, if any, `N stalled`.
-
-Pane activity also rescues a stuck badge in both directions: a long-running
-`in_progress` with a quiet status file but a still-active pane stays
-`working…` instead of reading `stalled`, and a `needs_input` with pane output
-*after* the status write (e.g. you approved a permission prompt, which isn't
-a new top-level message) reads `working…` again instead of staying wedged on
-`waiting`.
-
-**One-step setup.** Let opentree install the hooks for you:
+writes the same config, and offers to fetch the ACP adapter if the agent needs
+one. From the CLI:
 
 ```bash
-opentree agents setup claude   # or: codex, gemini, opencode
+opentree agents list           # what's installed, and which is active
+opentree agents use claude     # switch this repo (--global for everywhere)
+opentree agents setup claude   # fetch its ACP adapter, if it needs one
 ```
 
-This merges the guarded status hooks into the agent's user-level config
-(`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/settings.json`, or
-an OpenCode plugin), backing up any existing file first. It's idempotent — safe
-to re-run. opentree exports `OPENTREE_STATUS_FILE` into every agent shell it
-launches, so the hooks write to the right worktree and stay inert (a no-op) in
-any session opentree didn't start. That means you install once, globally, and it
-just works across all your worktrees.
-
-`opentree agents setup <agent>` maps a new prompt and a completed tool call →
-`in_progress`, and a permission prompt / notification / turn-end →
-`needs_input`. The tool-completion hook is what flips the badge back to
-`working…` after you approve a permission prompt mid-turn, since that isn't a
-new prompt itself. The bundled hooks report `status` only; the optional
-`message` is for hand-written or custom hooks.
-
-**GitHub Copilot** and **Pi** can't be fully automated (Copilot has no
-"waiting for input" event; Pi's notify config holds a single script) — running
-`opentree agents setup gh` / `pi` prints tailored manual instructions.
-
-**Manual wiring / other agents.** Any agent can drive the badge by writing the
-status file itself. Point it at `$OPENTREE_STATUS_FILE` (exported by opentree),
-e.g. a Claude Code hook in `~/.claude/settings.json`:
-
-```jsonc
-{
-  "hooks": {
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
-      "command": "[ -n \"$OPENTREE_STATUS_FILE\" ] && printf '{\"status\":\"in_progress\"}' > \"$OPENTREE_STATUS_FILE\"" }] }],
-    "Notification": [{ "hooks": [{ "type": "command",
-      "command": "[ -n \"$OPENTREE_STATUS_FILE\" ] && printf '{\"status\":\"needs_input\"}' > \"$OPENTREE_STATUS_FILE\"" }] }]
-  }
-}
-```
+An agent opentree has no ACP spec for is refused up front, when you create a
+workspace, rather than later inside a chat that cannot start.
 
 ## How It Works
 
@@ -391,7 +348,7 @@ e.g. a Claude Code hook in `~/.claude/settings.json`:
 
 4. **Agent Integration**: When creating a workspace, opentree launches your configured agent inside the tmux window, ready to code. With no agent configured, it uses the first supported agent found on your PATH.
 
-5. **The Chat**: For an ACP agent, the tmux window runs `opentree chat` rather than the agent's own TUI. It holds one JSON-RPC connection to the agent over stdio and renders the conversation, so opentree sees every turn, tool call and permission request as structured data instead of scraped terminal output. The dashboard reaches a running chat over a Unix socket, which is how `m`, `a` and `c` work without attaching. Session IDs are kept in `state.json` so conversations survive closing the window.
+5. **The Chat**: The tmux window runs `opentree chat`, never the agent's own TUI. It holds one JSON-RPC connection to the agent over stdio and renders the conversation, so opentree sees every turn, tool call and permission request as structured data instead of scraped terminal output. The dashboard reaches a running chat over a Unix socket, which is how `m`, `a` and `c` work without attaching. Session IDs are kept in `state.json` so conversations survive closing the window.
 
 ## Workflow Example
 
