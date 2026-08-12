@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -73,11 +75,51 @@ func runChat(ctx context.Context, name, version string) error {
 		AuthCommand: agent.ACP.AuthCommand,
 		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
 		SessionID:   ws.ACPSessionID,
-		SaveSession: func(id string) error {
-			ws.ACPSessionID = id
+
+		KnownSessions: knownSessions(ws, agent.Command),
+		SaveSession: func(s acp.SessionInfo) error {
+			ws.RecordSession(state.ACPSession{
+				Agent:     agent.Command,
+				ID:        s.SessionID,
+				Title:     s.Title,
+				UpdatedAt: s.UpdatedAt,
+			})
 			return store.UpdateWorkspace(ws)
 		},
 	})
+}
+
+// knownSessions is what opentree recorded for this workspace, narrowed to the
+// agent about to run: a session id is that agent's own bookkeeping, and
+// offering one to a different agent gets a failed load rather than somebody
+// else's conversation.
+//
+// It is the floor under /resume. An agent that serves session/list keeps a
+// better directory than this one and it is merged over the top; an agent that
+// does not still has something to offer.
+func knownSessions(ws *state.Workspace, agentCommand string) []acp.SessionInfo {
+	var out []acp.SessionInfo
+	for _, s := range ws.ACPSessions {
+		// An entry from before opentree recorded which agent made it belongs to
+		// whichever agent the workspace was already using.
+		if s.Agent != "" && s.Agent != agentCommand {
+			continue
+		}
+		out = append(out, acp.SessionInfo{
+			SessionID: s.ID,
+			Cwd:       ws.WorktreeDir,
+			Title:     s.Title,
+			UpdatedAt: s.UpdatedAt,
+		})
+	}
+
+	// A workspace that predates the ledger has only its current session id. It
+	// is still a conversation, and it is the one most likely to be wanted.
+	if id := ws.ACPSessionID; id != "" && !slices.ContainsFunc(out,
+		func(s acp.SessionInfo) bool { return s.SessionID == id }) {
+		out = append(out, acp.SessionInfo{SessionID: id, Cwd: ws.WorktreeDir})
+	}
+	return out
 }
 
 // resolveACPAgent picks the agent to run. The --agent flag wins; otherwise the

@@ -110,6 +110,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionReadyMsg:
 		m.sessionID = msg.id
 		m.configOptions = msg.options
+		m.titled = msg.resumed
 		if msg.note != "" {
 			m = m.appendNotice(msg.note)
 		}
@@ -176,6 +177,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case filesLoadedMsg:
 		m.files = msg.files
 		return m, nil
+
+	case sessionsListedMsg:
+		// The picker may already be gone — the list is a round trip and esc is
+		// instant — in which case its answer is stale by definition.
+		if !m.sessions.open {
+			return m, nil
+		}
+		m.sessions.loading = false
+		if msg.err != nil {
+			// Not an error banner: the recorded conversations are still listed
+			// underneath, and one of them is probably the one being looked for.
+			m.sessions.err = "could not list " + m.opts.Agent + "'s own"
+			return m.relayout(), nil
+		}
+		m.sessions.rows = mergeSessions(msg.sessions, m.opts.KnownSessions)
+		m.sessions.cursor = min(m.sessions.cursor, max(len(m.sessions.rows)-1, 0))
+		return m.relayout(), nil
 
 	case pastedImageMsg:
 		if msg.err != "" {
@@ -274,6 +292,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleStoppedKey(msg)
 	case overlaySettings:
 		return m.handleSettingsKey(msg)
+	case overlaySessions:
+		return m.handleSessionsKey(msg)
 	case overlayHelp:
 		// The key list is read-only, so anything at all dismisses it rather
 		// than making people hunt for the one key that closes it.
@@ -347,10 +367,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// opentree's own commands never reach the agent.
-		if configID, ok := m.clientCommandFor(text); ok {
+		if run, ok := m.clientCommandFor(text); ok {
 			m.input.Reset()
 			m.completion = completionState{}
-			return m.openSettingsAt(configID)
+			return run(m)
 		}
 		if m.turn || m.sessionID == "" {
 			return m, nil
@@ -552,10 +572,18 @@ func (m Model) startTurn(text string) (Model, tea.Cmd) {
 	for _, n := range notices {
 		m = m.appendNotice(n)
 	}
+
+	// The first thing said to a conversation is what names it in /resume.
+	var name tea.Cmd
+	if !m.titled {
+		m.titled = true
+		name = m.nameSessionCmd(text)
+	}
+
 	m.turn = true
 	m.turnStart = time.Now()
 	m.err = nil
-	return m.relayout(), tea.Batch(cmd, spinnerTick())
+	return m.relayout(), tea.Batch(cmd, name, spinnerTick())
 }
 
 // composeTurn is the message about to be sent, as blocks. It exists so the

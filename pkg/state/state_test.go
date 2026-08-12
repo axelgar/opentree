@@ -491,3 +491,100 @@ func TestNew_CorruptStateFileHasRecoveryHint(t *testing.T) {
 		t.Errorf("error = %q, want a recovery hint", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The session ledger
+// ---------------------------------------------------------------------------
+
+// RecordSession is called several times for the same conversation: once when it
+// is created, again once somebody has said something to it. The later call must
+// not erase what the earlier one knew, and vice versa.
+func TestRecordSession_UpsertsWithoutErasing(t *testing.T) {
+	ws := &Workspace{Name: "fix-auth"}
+	when := time.Now()
+
+	ws.RecordSession(ACPSession{Agent: "claude", ID: "ses_a"})
+	ws.RecordSession(ACPSession{ID: "ses_a", Title: "the auth bug", UpdatedAt: when})
+
+	if len(ws.ACPSessions) != 1 {
+		t.Fatalf("ACPSessions = %+v, want one conversation, not two", ws.ACPSessions)
+	}
+	got := ws.ACPSessions[0]
+	if got.Title != "the auth bug" || got.UpdatedAt.IsZero() {
+		t.Errorf("session = %+v, want the title and time added", got)
+	}
+	if got.Agent != "claude" {
+		t.Errorf("Agent = %q, want the one recorded when it was created", got.Agent)
+	}
+
+	// A later call with nothing new says nothing, rather than blanking it.
+	ws.RecordSession(ACPSession{ID: "ses_a"})
+	if ws.ACPSessions[0].Title != "the auth bug" {
+		t.Errorf("Title = %q, want it kept", ws.ACPSessions[0].Title)
+	}
+}
+
+// Whichever conversation was recorded last is the one this workspace is in, so
+// closing the window and coming back lands where it left off.
+func TestRecordSession_TracksTheCurrentOne(t *testing.T) {
+	ws := &Workspace{Name: "fix-auth"}
+	ws.RecordSession(ACPSession{ID: "ses_a"})
+	ws.RecordSession(ACPSession{ID: "ses_b"})
+
+	if ws.ACPSessionID != "ses_b" {
+		t.Errorf("ACPSessionID = %q, want the one just opened", ws.ACPSessionID)
+	}
+	if len(ws.ACPSessions) != 2 {
+		t.Errorf("ACPSessions = %+v, want both remembered", ws.ACPSessions)
+	}
+	// An id is the only thing worth recording; a call without one is a no-op
+	// rather than an empty row in the ledger.
+	ws.RecordSession(ACPSession{Title: "no id"})
+	if len(ws.ACPSessions) != 2 || ws.ACPSessionID != "ses_b" {
+		t.Errorf("ACPSessions = %+v, ACPSessionID = %q, want both untouched", ws.ACPSessions, ws.ACPSessionID)
+	}
+}
+
+func TestRecordSession_DropsTheOldestPastTheCap(t *testing.T) {
+	ws := &Workspace{Name: "fix-auth"}
+	for i := range maxRecordedSessions + 5 {
+		ws.RecordSession(ACPSession{ID: fmt.Sprintf("ses_%02d", i)})
+	}
+
+	if len(ws.ACPSessions) != maxRecordedSessions {
+		t.Fatalf("ACPSessions = %d, want the cap of %d", len(ws.ACPSessions), maxRecordedSessions)
+	}
+	if ws.ACPSessions[0].ID != "ses_05" {
+		t.Errorf("oldest kept = %q, want the first five dropped", ws.ACPSessions[0].ID)
+	}
+}
+
+// The ledger has to survive a round trip, or /resume would only ever offer the
+// conversations from this run.
+func TestRecordSession_Persists(t *testing.T) {
+	dir := t.TempDir()
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	ws := &Workspace{Name: "fix-auth", Branch: "fix-auth", WorktreeDir: dir}
+	if err := store.AddWorkspace(ws); err != nil {
+		t.Fatalf("AddWorkspace(): %v", err)
+	}
+	ws.RecordSession(ACPSession{Agent: "opencode", ID: "ses_a", Title: "the auth bug"})
+	if err := store.UpdateWorkspace(ws); err != nil {
+		t.Fatalf("UpdateWorkspace(): %v", err)
+	}
+
+	reopened, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	got, err := reopened.GetWorkspace("fix-auth")
+	if err != nil {
+		t.Fatalf("GetWorkspace(): %v", err)
+	}
+	if len(got.ACPSessions) != 1 || got.ACPSessions[0].Title != "the auth bug" {
+		t.Errorf("ACPSessions = %+v, want the recorded conversation back", got.ACPSessions)
+	}
+}

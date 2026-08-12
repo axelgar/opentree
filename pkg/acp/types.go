@@ -3,6 +3,7 @@ package acp
 import (
 	"encoding/json"
 	"slices"
+	"time"
 )
 
 // ProtocolVersion is the ACP major version this client speaks.
@@ -14,6 +15,8 @@ const (
 	methodInitialize        = "initialize"
 	methodSessionNew        = "session/new"
 	methodSessionLoad       = "session/load"
+	methodSessionResume     = "session/resume"
+	methodSessionList       = "session/list"
 	methodSessionPrompt     = "session/prompt"
 	methodSessionCancel     = "session/cancel"
 	methodSetConfigOption   = "session/set_config_option"
@@ -59,13 +62,43 @@ type InitializeResponse struct {
 }
 
 type AgentCapabilities struct {
-	LoadSession        bool               `json:"loadSession"`
-	PromptCapabilities PromptCapabilities `json:"promptCapabilities"`
+	LoadSession         bool                `json:"loadSession"`
+	PromptCapabilities  PromptCapabilities  `json:"promptCapabilities"`
+	SessionCapabilities SessionCapabilities `json:"sessionCapabilities"`
 }
 
 type PromptCapabilities struct {
 	EmbeddedContext bool `json:"embeddedContext"`
 	Image           bool `json:"image"`
+}
+
+// SessionCapabilities are the optional session methods an agent serves. ACP
+// spells each as presence rather than a boolean — `{}` means supported, null or
+// omitted means not — which is why they are pointers rather than bools.
+//
+// session/load is the exception: it stays on the top-level loadSession flag,
+// and the schema says the two will be unified in a later version of the
+// protocol. CanReopen hides the split, so that day costs one function.
+//
+// Only the ones opentree acts on are decoded. session/fork is deliberately
+// absent: the schema marks it UNSTABLE, "may be removed or changed at any
+// point", which is not something to build a command on.
+type SessionCapabilities struct {
+	List   *Capability `json:"list,omitempty"`
+	Resume *Capability `json:"resume,omitempty"`
+}
+
+// Capability is an ACP capability object. It carries nothing — being there is
+// the entire signal.
+type Capability struct{}
+
+// CanList reports whether the agent will enumerate the conversations it keeps.
+func (c AgentCapabilities) CanList() bool { return c.SessionCapabilities.List != nil }
+
+// CanReopen reports whether an existing conversation can be opened at all, by
+// either of the two methods that do it.
+func (c AgentCapabilities) CanReopen() bool {
+	return c.LoadSession || c.SessionCapabilities.Resume != nil
 }
 
 // AuthMethod describes one way to authenticate. opencode offers exactly one,
@@ -103,6 +136,42 @@ type LoadSessionRequest struct {
 // conversation as session/update notifications.
 type LoadSessionResponse struct {
 	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+}
+
+// ResumeSessionRequest reopens a conversation without replaying it. It is the
+// same shape as a load; what differs is that the agent owes no history.
+type ResumeSessionRequest struct {
+	SessionID  string            `json:"sessionId"`
+	Cwd        string            `json:"cwd"`
+	MCPServers []json.RawMessage `json:"mcpServers"`
+}
+
+type ResumeSessionResponse struct {
+	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+}
+
+// ListSessionsRequest asks for the conversations an agent still has. Cwd
+// narrows them to one worktree, which is the only scope a chat can offer:
+// every session opentree opens is rooted in the worktree it belongs to.
+type ListSessionsRequest struct {
+	Cwd    string `json:"cwd,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+type ListSessionsResponse struct {
+	Sessions   []SessionInfo `json:"sessions"`
+	NextCursor string        `json:"nextCursor,omitempty"`
+}
+
+// SessionInfo is one conversation the agent kept. Title is its own summary of
+// what was discussed — the thing that makes a list of ids worth showing.
+//
+// Nothing about the order is promised, so callers sort by UpdatedAt themselves.
+type SessionInfo struct {
+	SessionID string    `json:"sessionId"`
+	Cwd       string    `json:"cwd,omitempty"`
+	Title     string    `json:"title,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
 }
 
 // ConfigOption is an agent-declared control — model, reasoning effort, session

@@ -162,7 +162,7 @@ agent's own logo, in its own colours:
 | --- | --- |
 | `enter` | send |
 | `ctrl+j` | newline |
-| `/` | the agent's own slash commands |
+| `/` | slash commands — the agent's own, plus `/resume`, `/model` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn |
@@ -179,6 +179,12 @@ that is `ctrl+v` and not `cmd+v`: `cmd+v` is the terminal's own paste, and a
 terminal asked to paste a picture sends nothing at all. An agent that does not
 take images gets the path as a link instead, and the chat says so rather than
 letting the difference go unnoticed.
+
+**Earlier conversations.** `/resume` lists what this worktree has already
+talked about — newest first, by what each conversation was about — and picking
+one reopens it in place, history and all. The list is the agent's own where it
+keeps one, merged with what opentree recorded itself, so the command works the
+same whichever agent is running.
 
 The agent's live model, mode and effort sit on the right of the input, next to
 the running context and cost. `ctrl+c` takes you back to the workspace list and

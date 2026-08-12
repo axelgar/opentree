@@ -41,6 +41,64 @@ type Workspace struct {
 	BranchPushed   bool      `json:"branch_pushed,omitempty"`
 	MergeConflicts bool      `json:"merge_conflicts,omitempty"`
 	RemoteDeleted  bool      `json:"remote_deleted,omitempty"`
+
+	// ACPSessions is every conversation opentree has opened here, oldest first.
+	// ACPSessionID is the current one; this is what makes the earlier ones
+	// offerable again.
+	ACPSessions []ACPSession `json:"acp_sessions,omitempty"`
+}
+
+// ACPSession is one agent conversation this workspace has had.
+//
+// The agent is recorded with it because a session id is that agent's own
+// bookkeeping: handing an opencode id to Claude Code gets a failed load, not
+// somebody else's conversation.
+type ACPSession struct {
+	Agent     string    `json:"agent,omitempty"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// maxRecordedSessions caps the ledger.
+//
+// ponytail: a fixed cap with the oldest dropped. The picker shows the recent
+// ones and an agent that keeps its own list is the better source anyway; this
+// only has to survive the agent that does not.
+const maxRecordedSessions = 20
+
+// RecordSession makes s the workspace's current conversation and remembers it
+// among the ones that can be reopened later.
+//
+// Empty fields do not erase what is already known: the id is recorded the
+// moment a session is created, and its title only exists once somebody has
+// said something to it.
+func (w *Workspace) RecordSession(s ACPSession) {
+	if s.ID == "" {
+		return
+	}
+	w.ACPSessionID = s.ID
+
+	for i := range w.ACPSessions {
+		if w.ACPSessions[i].ID != s.ID {
+			continue
+		}
+		if s.Title != "" {
+			w.ACPSessions[i].Title = s.Title
+		}
+		if s.Agent != "" {
+			w.ACPSessions[i].Agent = s.Agent
+		}
+		if !s.UpdatedAt.IsZero() {
+			w.ACPSessions[i].UpdatedAt = s.UpdatedAt
+		}
+		return
+	}
+
+	w.ACPSessions = append(w.ACPSessions, s)
+	if len(w.ACPSessions) > maxRecordedSessions {
+		w.ACPSessions = w.ACPSessions[len(w.ACPSessions)-maxRecordedSessions:]
+	}
 }
 
 // New creates a new state store

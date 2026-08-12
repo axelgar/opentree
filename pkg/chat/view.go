@@ -37,6 +37,8 @@ func (m Model) footerHeight() int {
 	switch m.overlay() {
 	case overlaySettings:
 		return m.settingsHeight()
+	case overlaySessions:
+		return m.sessionsHeight()
 	case overlayStopped:
 		return len(m.stoppedLines()) + 4
 	case overlayPermission:
@@ -102,6 +104,8 @@ func (m Model) footer() string {
 	switch m.overlay() {
 	case overlaySettings:
 		return m.settingsView()
+	case overlaySessions:
+		return m.sessionsView()
 	case overlayStopped:
 		return m.stoppedView()
 	case overlayPermission:

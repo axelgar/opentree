@@ -146,34 +146,40 @@ func (m Model) setConfigCmd(configID, value string) tea.Cmd {
 
 // settingsView renders the picker, scrolled to keep the cursor visible.
 func (m Model) settingsView() string {
-	rows := m.settingsRows()
 	title := m.opts.Agent + " settings"
 	if m.settings.choosingValue() {
 		if opt, ok := configOption(m.configOptions, m.settings.configID); ok {
 			title = opt.Name
 		}
 	}
+	return pickerView(title, m.settingsRows(), m.settings.cursor, m.width)
+}
 
+// pickerView renders a titled list into the footer, scrolled to keep the
+// cursor visible. Shared with the /resume picker: two lists of rows with a
+// cursor on one of them are the same thing, and the second one drawing itself
+// slightly differently would read as a different app.
+func pickerView(title string, rows []completionItem, cursor, width int) string {
 	start := 0
-	if m.settings.cursor >= settingsWindow {
-		start = m.settings.cursor - settingsWindow + 1
+	if cursor >= settingsWindow {
+		start = cursor - settingsWindow + 1
 	}
 	end := min(start+settingsWindow, len(rows))
 
 	lines := []string{permLabelStyle.Render(title)}
 	for i := start; i < end; i++ {
 		mark, style := "  ", completionItemStyle
-		if i == m.settings.cursor {
+		if i == cursor {
 			mark, style = "› ", completionSelectedStyle
 		}
 		row := mark + rows[i].value
 		if rows[i].desc != "" {
 			row += "  " + rows[i].desc
 		}
-		lines = append(lines, style.Render(truncate(row, m.width-6)))
+		lines = append(lines, style.Render(truncate(row, width-6)))
 	}
 	if len(rows) > settingsWindow {
-		lines = append(lines, noticeStyle.Render(fmt.Sprintf("  %d of %d", m.settings.cursor+1, len(rows))))
+		lines = append(lines, noticeStyle.Render(fmt.Sprintf("  %d of %d", cursor+1, len(rows))))
 	}
 
 	var b strings.Builder
@@ -185,28 +191,59 @@ func (m Model) settingsView() string {
 }
 
 // settingsHeight is the footer space the picker needs.
-func (m Model) settingsHeight() int {
-	rows := len(m.settingsRows())
+func (m Model) settingsHeight() int { return pickerHeight(len(m.settingsRows())) }
+
+func pickerHeight(rows int) int {
 	if rows > settingsWindow {
 		return settingsWindow + 6 // plus the "n of N" counter
 	}
 	return rows + 5
 }
 
-// clientCommands are opentree's own slash commands, derived from the settings
-// the agent declares: /model, /mode and /effort exist exactly where those
-// settings do, and an agent declaring something else gets a command for it too.
+// clientCommand is one of opentree's own slash commands: the name the palette
+// offers, and what pressing enter on it opens.
+type clientCommand struct {
+	acp.Command
+	run func(Model) (tea.Model, tea.Cmd)
+}
+
+// clientCommandTable is the commands that are not derived from a setting.
 //
-// They are opentree's because the protocol has no equivalent — an agent's
-// available_commands are its prompt-level skills, and opencode advertises
-// thirty-five of them without a /model among them.
-func (m Model) clientCommands() []acp.Command {
+// Each carries the condition it can be served under, checked against what the
+// agent advertised rather than against which agent it is — that is what lets an
+// agent opentree has never met get /resume for free, and stops one that cannot
+// reopen a conversation from being offered it.
+//
+// ponytail: a table, not a registry with registration. One entry today; the
+// next one is three lines.
+var clientCommandTable = []struct {
+	name, desc string
+	available  func(Model) bool
+	run        func(Model) (tea.Model, tea.Cmd)
+}{{
+	name:      "resume",
+	desc:      "reopen an earlier conversation",
+	available: Model.canPickSession,
+	run:       Model.openSessions,
+}}
+
+// clientCommandList is opentree's own slash commands, in the order the palette
+// shows them: the ones derived from the settings the agent declares — /model,
+// /mode and /effort exist exactly where those settings do, and an agent
+// declaring something else gets a command for it too — then the table above.
+//
+// They are opentree's because the protocol has no equivalent. An agent's
+// available_commands are its prompt-level skills: opencode advertises
+// thirty-five without a /model among them, and Claude Code's adapter passes on
+// ninety without a /resume, because resuming is a capability there rather than
+// a command.
+func (m Model) clientCommandList() []clientCommand {
 	advertised := make(map[string]bool, len(m.commands))
 	for _, c := range m.commands {
 		advertised[c.Name] = true
 	}
 
-	var out []acp.Command
+	var out []clientCommand
 	for _, o := range m.configOptions {
 		// An agent that advertises the same name keeps it; its own command is
 		// the more specific thing.
@@ -217,7 +254,32 @@ func (m Model) clientCommands() []acp.Command {
 		if o.CurrentValue != "" {
 			desc += " (now " + o.CurrentValue + ")"
 		}
-		out = append(out, acp.Command{Name: o.ID, Description: desc})
+		configID := o.ID
+		out = append(out, clientCommand{
+			Command: acp.Command{Name: configID, Description: desc},
+			run:     func(m Model) (tea.Model, tea.Cmd) { return m.openSettingsAt(configID) },
+		})
+	}
+
+	for _, c := range clientCommandTable {
+		if advertised[c.name] || !c.available(m) {
+			continue
+		}
+		out = append(out, clientCommand{
+			Command: acp.Command{Name: c.name, Description: c.desc},
+			run:     c.run,
+		})
+	}
+	return out
+}
+
+// clientCommands is the same list as names alone, which is what the palette
+// and the completion matcher want.
+func (m Model) clientCommands() []acp.Command {
+	list := m.clientCommandList()
+	out := make([]acp.Command, 0, len(list))
+	for _, c := range list {
+		out = append(out, c.Command)
 	}
 	return out
 }
@@ -228,18 +290,18 @@ func (m Model) paletteCommands() []acp.Command {
 }
 
 // clientCommandFor reports whether typed text is one of opentree's own
-// commands, so it opens a picker instead of being sent to the agent.
-func (m Model) clientCommandFor(text string) (string, bool) {
+// commands, and if so what it opens instead of being sent to the agent.
+func (m Model) clientCommandFor(text string) (func(Model) (tea.Model, tea.Cmd), bool) {
 	name := strings.TrimPrefix(strings.TrimSpace(text), "/")
 	if name == text || name == "" {
-		return "", false
+		return nil, false
 	}
-	for _, c := range m.clientCommands() {
+	for _, c := range m.clientCommandList() {
 		if c.Name == name {
-			return name, true
+			return c.run, true
 		}
 	}
-	return "", false
+	return nil, false
 }
 
 // openSettingsAt jumps straight into one option's values, which is what

@@ -52,6 +52,12 @@ type Client struct {
 	cmd    *exec.Cmd
 	stderr *ring
 	done   chan struct{}
+
+	// caps is what the agent said it can do, written once by Initialize before
+	// the client is handed to anything that reads it. Every method that is
+	// gated on a capability consults this rather than making the caller carry
+	// the handshake around with the connection.
+	caps AgentCapabilities
 }
 
 type rpcResult struct {
@@ -201,8 +207,12 @@ func (c *Client) Initialize(ctx context.Context, clientName, version string) (*I
 		return nil, fmt.Errorf("agent speaks ACP v%d, opentree speaks v%d",
 			resp.ProtocolVersion, ProtocolVersion)
 	}
+	c.caps = resp.AgentCapabilities
 	return &resp, nil
 }
+
+// Capabilities is what the agent advertised at initialize, zero until then.
+func (c *Client) Capabilities() AgentCapabilities { return c.caps }
 
 // NewSession opens a fresh conversation rooted at cwd.
 func (c *Client) NewSession(ctx context.Context, cwd string) (*NewSessionResponse, error) {
@@ -214,13 +224,58 @@ func (c *Client) NewSession(ctx context.Context, cwd string) (*NewSessionRespons
 	return &resp, nil
 }
 
-// LoadSession reopens an existing conversation. The agent replays the entire
-// history as session/update notifications before this returns, so Handlers.Update
-// fires many times during the call.
-func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) (*LoadSessionResponse, error) {
-	var resp LoadSessionResponse
-	req := LoadSessionRequest{SessionID: sessionID, Cwd: cwd, MCPServers: []json.RawMessage{}}
-	if err := c.call(ctx, methodSessionLoad, req, &resp); err != nil {
+// ErrCannotReopen means the agent serves neither session/load nor
+// session/resume, so an existing conversation cannot be opened at all. It is
+// answered here rather than on the wire: ACP says a client must not call a
+// method the agent did not advertise, and a refusal round trip reads like a
+// lost conversation rather than an agent that never kept one.
+var ErrCannotReopen = errors.New("this agent cannot reopen a conversation")
+
+// ReopenResponse is the outcome of reopening a conversation. Replayed says
+// whether its history came back with it: session/load replays every message as
+// session/update notifications before returning, session/resume opens the same
+// conversation cold. Both leave the agent with the full context — only the
+// client's view of it differs.
+type ReopenResponse struct {
+	ConfigOptions []ConfigOption
+	Replayed      bool
+}
+
+// Reopen opens an existing conversation by whichever method the agent serves,
+// preferring the one that brings the history back.
+//
+// Handlers.Update fires many times during a load, before this returns.
+func (c *Client) Reopen(ctx context.Context, sessionID, cwd string) (*ReopenResponse, error) {
+	switch {
+	case c.caps.LoadSession:
+		var resp LoadSessionResponse
+		req := LoadSessionRequest{SessionID: sessionID, Cwd: cwd, MCPServers: []json.RawMessage{}}
+		if err := c.call(ctx, methodSessionLoad, req, &resp); err != nil {
+			return nil, err
+		}
+		return &ReopenResponse{ConfigOptions: resp.ConfigOptions, Replayed: true}, nil
+
+	case c.caps.SessionCapabilities.Resume != nil:
+		var resp ResumeSessionResponse
+		req := ResumeSessionRequest{SessionID: sessionID, Cwd: cwd, MCPServers: []json.RawMessage{}}
+		if err := c.call(ctx, methodSessionResume, req, &resp); err != nil {
+			return nil, err
+		}
+		return &ReopenResponse{ConfigOptions: resp.ConfigOptions}, nil
+	}
+	return nil, ErrCannotReopen
+}
+
+// ListSessions asks the agent for the conversations it still has under cwd.
+// Only available where Capabilities().CanList() is set.
+//
+// ponytail: one page. The response's NextCursor is passed back in to get the
+// next, and nothing yet asks for it — the picker shows a handful of the most
+// recent. Page when someone wants to scroll past the end.
+func (c *Client) ListSessions(ctx context.Context, cwd, cursor string) (*ListSessionsResponse, error) {
+	var resp ListSessionsResponse
+	req := ListSessionsRequest{Cwd: cwd, Cursor: cursor}
+	if err := c.call(ctx, methodSessionList, req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

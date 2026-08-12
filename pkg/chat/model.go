@@ -9,6 +9,7 @@ package chat
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -56,9 +57,15 @@ type Options struct {
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
-	// SaveSession records a newly created session id so the next launch
-	// resumes instead of forgetting.
-	SaveSession func(string) error
+	// KnownSessions are the conversations opentree has already opened in this
+	// worktree. They are what /resume offers an agent that cannot enumerate its
+	// own — with one that can, the agent's list is merged over them.
+	KnownSessions []acp.SessionInfo
+
+	// SaveSession records the workspace's current conversation: so the next
+	// launch resumes it rather than forgetting, and so it can be found again by
+	// name once it is no longer the current one.
+	SaveSession func(acp.SessionInfo) error
 }
 
 // acpBinary is the program to spawn: the resolver when one is set, otherwise
@@ -205,6 +212,12 @@ type sessionReadyMsg struct {
 	id      string
 	options []acp.ConfigOption
 	note    string
+
+	// resumed distinguishes a conversation that was reopened from one that was
+	// just created. A reopened one is already named — by the agent, or by what
+	// was first said to it — and naming it again after today's prompt would
+	// rename it every time somebody attached.
+	resumed bool
 }
 
 type promptDoneMsg struct {
@@ -288,10 +301,15 @@ type Model struct {
 	agentVersion string
 	authMethods  []acp.AuthMethod
 
-	// canResume is the agent's loadSession capability. ACP says a client must
-	// not call session/load without it, and an agent that cannot reopen a
-	// conversation should be told so rather than asked and refused.
+	// canResume is whether the agent can reopen a conversation at all, by
+	// either session/load or session/resume. An agent that cannot should be
+	// told so rather than asked and refused.
 	canResume bool
+
+	// canListSessions is the agent's sessionCapabilities.list. Without it
+	// /resume falls back to the conversations opentree recorded itself, which
+	// is why the command survives an agent that keeps no directory.
+	canListSessions bool
 
 	// canSendImages is the agent's promptCapabilities.image. ACP says a client
 	// must restrict what it sends to what the agent declared, so without this an
@@ -301,6 +319,12 @@ type Model struct {
 	sessionID     string
 	configOptions []acp.ConfigOption
 	settings      settings
+	sessions      sessions
+
+	// titled is whether the current conversation already has a name in the
+	// ledger, which stops the first prompt of a resumed session from renaming
+	// it after whatever was said today.
+	titled bool
 
 	entries []entry
 	toolIdx map[string]int
@@ -441,6 +465,7 @@ const (
 	overlayPermission
 	overlayStopped
 	overlaySettings
+	overlaySessions
 	overlayHelp
 )
 
@@ -460,6 +485,8 @@ func (m Model) overlay() overlay {
 		return overlayStopped
 	case m.settings.open:
 		return overlaySettings
+	case m.sessions.open:
+		return overlaySessions
 	case m.showHelp:
 		return overlayHelp
 	}
@@ -471,7 +498,8 @@ func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 		return m
 	}
 	m.authMethods = info.AuthMethods
-	m.canResume = info.AgentCapabilities.LoadSession
+	m.canResume = info.AgentCapabilities.CanReopen()
+	m.canListSessions = info.AgentCapabilities.CanList()
 	m.canSendImages = info.AgentCapabilities.PromptCapabilities.Image
 	if info.AgentInfo != nil {
 		m.agentVersion = info.AgentInfo.Version
@@ -517,28 +545,43 @@ func (m Model) startSession() tea.Cmd {
 		return nil // nothing started; the stopped panel is already showing why
 	}
 	return func() tea.Msg {
-		if want != "" && !m.canResume {
-			// Both agents opentree ships with advertise loadSession, so this is
-			// for the next one. Saying so beats a round trip that fails.
-			return m.freshSession(client, cwd,
-				"this agent cannot reopen a conversation — starting a new one")
+		if want == "" {
+			return m.freshSession(client, cwd, "")
 		}
-		if want != "" {
-			resp, err := client.LoadSession(m.ctx, want, cwd)
-			if err == nil {
-				return sessionReadyMsg{id: want, options: resp.ConfigOptions}
-			}
-			if acp.IsAuthRequired(err) {
-				return errMsg{err: err, auth: true}
-			}
-			// A session the agent has forgotten is not worth failing over; the
-			// worktree is still the unit of work. The id is left out: it is the
-			// agent's bookkeeping, and nothing the reader can act on.
-			return m.freshSession(client, cwd,
-				"the previous conversation could not be resumed — this is a new one")
-		}
-		return m.freshSession(client, cwd, "")
+		return m.reopenSession(client, want, cwd)
 	}
+}
+
+// reopenSession opens an existing conversation, falling back to a new one with
+// a note saying why. Which protocol method that takes is the client's business,
+// not this view's: an agent that only serves session/resume reaches here the
+// same way as one that replays its history.
+func (m Model) reopenSession(client *acp.Client, id, cwd string) tea.Msg {
+	resp, err := client.Reopen(m.ctx, id, cwd)
+	switch {
+	case err == nil:
+		note := ""
+		if !resp.Replayed {
+			// The agent has the conversation; this view does not. Saying so
+			// beats an empty log that looks like a lost one.
+			note = "resumed — this agent does not replay what was said before"
+		}
+		return sessionReadyMsg{id: id, options: resp.ConfigOptions, note: note, resumed: true}
+
+	case errors.Is(err, acp.ErrCannotReopen):
+		// Both agents opentree ships with can, so this is for the next one.
+		return m.freshSession(client, cwd,
+			"this agent cannot reopen a conversation — starting a new one")
+
+	case acp.IsAuthRequired(err):
+		return errMsg{err: err, auth: true}
+	}
+
+	// A session the agent has forgotten is not worth failing over; the worktree
+	// is still the unit of work. The id is left out: it is the agent's
+	// bookkeeping, and nothing the reader can act on.
+	return m.freshSession(client, cwd,
+		"the previous conversation could not be resumed — this is a new one")
 }
 
 // resumeID is the conversation to reopen: whichever one this view already has,
@@ -556,7 +599,11 @@ func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
 		return errMsg{err: err, auth: acp.IsAuthRequired(err), fatal: true}
 	}
 	if m.opts.SaveSession != nil {
-		if err := m.opts.SaveSession(resp.SessionID); err != nil {
+		// Dated now: a conversation that has just been opened is the most
+		// recent one there is, and an undated row sorts to the bottom of the
+		// picker as if it were the oldest.
+		info := acp.SessionInfo{SessionID: resp.SessionID, Cwd: cwd, UpdatedAt: time.Now()}
+		if err := m.opts.SaveSession(info); err != nil {
 			return errMsg{err: fmt.Errorf("failed to record session id: %w", err), fatal: true}
 		}
 	}
