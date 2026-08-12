@@ -635,7 +635,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.workspaces = append(m.workspaces, item)
 				}
 			}
-			return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
+			// Creating a workspace means wanting to work in it: go straight
+			// to the chat. Quitting the chat drops back to the list.
+			return m, tea.Batch(
+				m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false),
+				m.attachWorkspaceCmd(msg.wsName),
+			)
 		}
 		return m, nil
 
