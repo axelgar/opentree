@@ -192,6 +192,23 @@ var (
 	agentIdleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#666")) // grey — parked/stale
 
+	// tab bar: the active tab wears the title chip, the others recede
+	tabInactiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#626262")).
+				Padding(0, 1)
+
+	// skills
+	skillScopeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666"))
+
+	sharedTagStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#88C0D0"))
+
+	// A skill an agent has been told to ignore: greyed rather than dropped, so
+	// the row still says it is installed.
+	skillOffStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555"))
+
 	// inline loading states
 	pendingItemStyle = lipgloss.NewStyle().
 				Padding(0, 1).

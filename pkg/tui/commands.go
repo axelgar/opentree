@@ -12,6 +12,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/workspace"
 )
@@ -78,6 +79,9 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 			if ws.WorktreeDir != "" {
 				item.UncommittedCount = countUncommitted(ws.WorktreeDir)
 				item.ChatStatus = readChatStatus(m.repoRoot, ws.Name)
+				// A couple of stats per workspace, so it rides the same refresh
+				// rather than needing a poll of its own.
+				item.MissingSkills = skills.Missing(m.repoRoot, ws.WorktreeDir)
 			}
 
 			if exists {

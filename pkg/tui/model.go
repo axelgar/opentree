@@ -13,6 +13,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/workspace"
@@ -29,6 +30,9 @@ type WorkspaceItem struct {
 	LastActivity     time.Time
 	FileChanges      []worktree.FileChange
 	ChatStatus       *chat.Status
+	// MissingSkills are the repository skill trees this worktree cannot see —
+	// empty for the common case where the repo has none or git carries them.
+	MissingSkills []string
 }
 
 const (
@@ -39,6 +43,14 @@ const (
 )
 
 var sortModeNames = []string{"name", "age", "activity", "PR"}
+
+// The two top-level places opentree shows. Tabs rather than overlays: an
+// overlay is something you open, act on, and close, while both of these are
+// inventories you come back to.
+const (
+	tabWorkspaces = 0
+	tabSkills     = 1
+)
 
 // Model is the main Bubble Tea model for the opentree TUI.
 type Model struct {
@@ -145,6 +157,18 @@ type Model struct {
 	errLog     []string
 	showErrLog bool
 
+	// which top-level place is showing
+	tab int
+
+	// skills tab
+	skills          []skills.Skill
+	skillCursor     int
+	skillFilter     string
+	skillFiltering  bool
+	skillDeleting   *skills.Skill
+	skillCopying    *skills.Skill
+	skillCopyCursor int
+
 	help help.Model
 	keys keyMap
 
@@ -156,6 +180,12 @@ type Model struct {
 type loadedWorkspacesMsg struct {
 	workspaces []WorkspaceItem
 }
+
+type skillsScannedMsg struct {
+	skills []skills.Skill
+}
+type skillEditedMsg struct{ err error }
+type skillsRelinkedMsg struct{ count int }
 
 type remoteBranchesLoadedMsg struct {
 	branches []string
@@ -260,6 +290,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
 		m.loadWorkspacesCmd,
+		m.scanSkillsCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
 	)

@@ -22,6 +22,7 @@ type keyMap struct {
 	Stop   key.Binding
 	Msg    key.Binding
 	ErrLog key.Binding
+	Tab    key.Binding
 	Quit   key.Binding
 	Help   key.Binding
 }
@@ -35,7 +36,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
 		{k.Answer, k.Stop, k.Msg, k.Filter, k.Sort, k.Agent},
-		{k.ErrLog, k.Quit, k.Help},
+		{k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -115,6 +116,10 @@ var keys = keyMap{
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),
 		key.WithHelp("E", "error log"),
+	),
+	Tab: key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "skills"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),

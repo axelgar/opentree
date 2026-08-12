@@ -72,6 +72,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// The Skills tab owns its keys while it has focus. None of the
+		// workspace dialogs can be open behind it — there is no way to reach
+		// one from here — so this sits above them rather than after.
+		if m.tab == tabSkills {
+			return m.updateSkills(msg)
+		}
+
 		// Confirming an adapter download before switching agent
 		if m.agentInstallConfirm != nil {
 			agent := *m.agentInstallConfirm
@@ -377,6 +384,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Normal mode
 		visible := m.visibleWorkspaces()
 		switch {
+		case key.Matches(msg, m.keys.Tab):
+			// Rescan on the way in: skills are edited by hand and by other
+			// agents, so the tab shows what is on disk now rather than what was
+			// there when opentree started.
+			m.tab = tabSkills
+			return m, m.scanSkillsCmd
 		case msg.String() == "esc" && m.filterQuery != "":
 			m.filterQuery = ""
 			m.cursor = 0
@@ -867,6 +880,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return clearNoticeMsg{seq: seq}
 		})
 
+	case skillsScannedMsg:
+		m.skills = msg.skills
+		// The list may have shrunk under the cursor — a deleted skill, or a
+		// filter that no longer matches.
+		if m.skillCursor >= len(m.visibleSkills()) {
+			m.skillCursor = max(len(m.visibleSkills())-1, 0)
+		}
+
+	case skillEditedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("editor: " + msg.err.Error())
+		}
+		// The frontmatter is what may have changed, so the row is re-read.
+		return m, m.scanSkillsCmd
+
+	case skillsRelinkedMsg:
+		if msg.count == 0 {
+			return m, m.transientErrCmd("no workspace was missing the repo's skills")
+		}
+		return m, tea.Batch(m.loadWorkspacesCmd,
+			m.noticeCmd(fmt.Sprintf("linked skills into %s", plural(msg.count, "workspace"))))
+
 	case clearNoticeMsg:
 		if msg.seq == m.noticeSeq {
 			m.notice = ""
@@ -976,6 +1011,17 @@ func (m *Model) transientErrCmd(msg string) tea.Cmd {
 	m.err = fmt.Errorf("%s", msg)
 	m.appendErrLog(msg)
 	return m.scheduleErrClear()
+}
+
+// noticeCmd raises a success banner and arms its 3s auto-clear. The sequence
+// number is what stops an older banner's timer from wiping a newer one.
+func (m *Model) noticeCmd(msg string) tea.Cmd {
+	m.notice = msg
+	m.noticeSeq++
+	seq := m.noticeSeq
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return clearNoticeMsg{seq: seq}
+	})
 }
 
 func (m *Model) appendErrLog(msg string) {

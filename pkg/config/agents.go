@@ -16,6 +16,7 @@ type PredefinedAgent struct {
 	Command     string // binary: "claude"
 	Description string // short description for list display
 	ACP         ACPSpec
+	Skills      SkillsSpec
 
 	// Colour and Mark are the agent's identity in a crowded line. A worktree
 	// row has no space for a drawing, but it has space for one glyph, and a
@@ -61,6 +62,48 @@ type ACPSpec struct {
 	AuthCommand []string
 }
 
+// SkillsSpec is where an agent reads its skills from. Skills are a filesystem
+// convention rather than anything ACP models — every agent that has them looks
+// for <dir>/<skill-name>/SKILL.md with the same YAML frontmatter — so opentree
+// manages them by reading directories and needs no cooperation from the agent.
+//
+// The zero value means the agent has no skills concept, and it is left alone.
+//
+// Every field is a list because agents accept more than one spelling of the
+// same tree, and because reading another agent's tree is normal: the same
+// SKILL.md is frequently visible to several agents at once, which is why a
+// skill records the agents that can see it rather than one owner.
+type SkillsSpec struct {
+	// UserDirs are the machine-wide trees, shared by every repository. A
+	// leading "~/" is expanded at scan time so tests can point HOME elsewhere.
+	// The first entry is the canonical one — where opentree puts a new skill.
+	UserDirs []string
+
+	// RepoDirs are the per-repository trees, relative to a repo or worktree
+	// root. These are the ones worktrees miss when they are not committed.
+	// The first entry is the canonical one.
+	RepoDirs []string
+
+	// ExternalDirs are trees this agent loads that another agent owns. opencode
+	// reads Claude Code's global skills directly, so a skill installed once is
+	// usable from both without being copied.
+	ExternalDirs []string
+
+	// SettingsFiles are the agent's settings documents in precedence order,
+	// lowest first, each optionally holding a per-skill override map under
+	// OverridesKey. A "~/" prefix is expanded against the home directory;
+	// anything else is relative to the repository root.
+	//
+	// Installed is not the same as available: an agent can be told to ignore a
+	// skill that is sitting right there on disk, and a list that cannot see
+	// that is telling the user something untrue.
+	SettingsFiles []string
+
+	// OverridesKey is the object mapping skill name to state. Empty for an
+	// agent with no way to switch a skill off.
+	OverridesKey string
+}
+
 // PredefinedAgents is the built-in registry of known agents.
 var PredefinedAgents = []PredefinedAgent{
 	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
@@ -73,7 +116,15 @@ var PredefinedAgents = []PredefinedAgent{
 			"█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀",
 			"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
 		},
-		ACP: ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}}},
+		ACP: ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}},
+		// Paths transcribed from opencode 1.18.16's own embedded documentation,
+		// which spells its own trees "skill(s)" — both singular and plural are
+		// read — and auto-loads two it does not own.
+		Skills: SkillsSpec{
+			UserDirs:     []string{"~/.config/opencode/skills", "~/.config/opencode/skill"},
+			RepoDirs:     []string{".opencode/skills", ".opencode/skill"},
+			ExternalDirs: []string{"~/.claude/skills", "~/.agents/skills"},
+		}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
 		// Claude Code's own mark, transcribed from its welcome banner, in
 		// Anthropic's clay.
@@ -91,6 +142,18 @@ var PredefinedAgents = []PredefinedAgent{
 			Package:     "@agentclientprotocol/claude-agent-acp",
 			InstallSize: "303MB",
 			AuthCommand: []string{"auth", "login"},
+		},
+		Skills: SkillsSpec{
+			UserDirs: []string{"~/.claude/skills"},
+			RepoDirs: []string{".claude/skills"},
+			// The three sources `claude --setting-sources` names, in its own
+			// precedence order.
+			SettingsFiles: []string{
+				"~/.claude/settings.json",
+				".claude/settings.json",
+				".claude/settings.local.json",
+			},
+			OverridesKey: "skillOverrides",
 		}},
 }
 

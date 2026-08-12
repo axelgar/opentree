@@ -11,6 +11,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -217,6 +218,18 @@ func (s *Service) needsWindow(name string) bool {
 	return isShell(cmd)
 }
 
+// linkSkills gives a fresh worktree the repository's own skills, which git does
+// not carry unless they are committed.
+//
+// Best-effort, in the shape of the other worktree conveniences: a workspace
+// that came up without its skills is still a workspace, and failing creation
+// over a symlink would trade a smaller problem for a larger one. The Skills
+// view reports what is missing, so a failure here is visible where it can be
+// acted on rather than swallowed.
+func (s *Service) linkSkills(name string) {
+	_, _ = skills.Link(s.repoRoot, s.WorktreePath(name))
+}
+
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	// Fail before creating anything, not with a "✓ Launched" success message
@@ -228,6 +241,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
+	s.linkSkills(name)
 
 	worktreePath, err := s.launchAgentWindow(name, true)
 	if err != nil {
@@ -298,6 +312,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree from remote: %w", err)
 	}
+	s.linkSkills(branchName)
 
 	worktreePath, err := s.launchAgentWindow(branchName, createdBranch)
 	if err != nil {

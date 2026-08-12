@@ -12,6 +12,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
@@ -927,5 +928,49 @@ func TestAgentLaunch_RefusesAnAgentTheRegistryDoesNotKnow(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to mention %q", err, want)
 		}
+	}
+}
+
+// The reason the skills package exists: git carries only what it tracks, so a
+// worktree made from a repository whose skills are untracked starts unable to
+// see them, and the agent working there is quietly less capable than the same
+// agent one directory up.
+func TestCreate_LinksTheReposSkillsIntoTheWorktree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Worktree.BaseDir = ".opentree"
+
+	// An untracked project skill, which is how most repositories keep them.
+	skillDir := filepath.Join(repoDir, ".claude", "skills", "release")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: release\ndescription: Ship it.\n---\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("feature", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(svc.WorktreePath("feature"), ".claude", "skills", "release", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("the agent in the worktree cannot read the repo's skill: %v", err)
+	}
+	if !strings.Contains(string(got), "name: release") {
+		t.Errorf("skill content = %q", got)
+	}
+	if missing := skills.Missing(repoDir, svc.WorktreePath("feature")); len(missing) != 0 {
+		t.Errorf("Missing = %v after Create, want nothing", missing)
 	}
 }

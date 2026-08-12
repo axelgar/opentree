@@ -49,6 +49,12 @@ func (m Model) View() string {
 		return appStyle.Render(sb.String())
 	}
 
+	// The Skills tab draws its own screen, including the tab bar. It sits above
+	// the workspace dialogs because none of them can be open behind it.
+	if m.tab == tabSkills {
+		return m.skillsView()
+	}
+
 	// Adapter download confirmation. Enter on an agent whose adapter is missing
 	// means "use this agent", but 300MB is asked about rather than sprung.
 	if m.agentInstallConfirm != nil {
@@ -307,9 +313,7 @@ func (m Model) View() string {
 	s.WriteString(renderLogo())
 	s.WriteString("\n\n")
 
-	// Header with sort/filter info
-	header := "Workspaces"
-	s.WriteString(titleStyle.Render(header))
+	s.WriteString(m.tabBar())
 	s.WriteString("\n\n")
 
 	// Filter prompt
@@ -420,6 +424,12 @@ func (m Model) View() string {
 			// reports exactly what the agent is doing rather than inferring it.
 			if badge := renderChatBadge(ws.ChatStatus); badge != "" {
 				title += "  " + badge
+			}
+
+			// The agent working here cannot see the repository's own skills, and
+			// nothing else about the row would say so.
+			if len(ws.MissingSkills) > 0 {
+				title += "  " + uncommittedStyle.Render("⚠ no repo skills")
 			}
 
 			// Description line
