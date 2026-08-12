@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -1800,5 +1801,372 @@ func TestUserMessage_BandRunsTheFullColumn(t *testing.T) {
 		if got != width {
 			t.Errorf("user message at width %d rendered %d cells wide", width, got)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+// dropped is what a terminal sends when a file is dragged onto it: one
+// bracketed paste carrying the whole path.
+func dropped(path string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(path), Paste: true}
+}
+
+// Dragging a file in should read the same as pasting one. Before this the drop
+// sat in the composer as eighty characters of /Users/… until it was sent.
+func TestDroppedImage_BecomesALabelInTheInput(t *testing.T) {
+	m := newPastingModel()
+	path := writeFile(t, "swatch.png", onePixelPNG)
+
+	m, _ = applyUpdate(m, dropped(path))
+
+	if got := m.input.Value(); !strings.Contains(got, "[image · swatch.png") {
+		t.Errorf("input = %q, want the path replaced by its label", got)
+	}
+	if len(m.pending) != 1 {
+		t.Errorf("pending = %d, want the image held", len(m.pending))
+	}
+}
+
+// Terminals escape the spaces in a dragged path, and add one after it.
+func TestDroppedImage_SurvivesEscapesAndATrailingSpace(t *testing.T) {
+	m := newPastingModel()
+	path := writeFile(t, "Screenshot 2026-08-10.png", onePixelPNG)
+
+	m, _ = applyUpdate(m, dropped(strings.ReplaceAll(path, " ", `\ `)+" "))
+
+	if got := m.input.Value(); !strings.Contains(got, "[image · Screenshot 2026-08-10.png") {
+		t.Errorf("input = %q, want the escaped path resolved", got)
+	}
+}
+
+// Typing a path by hand must not convert: the label would appear mid-word, and
+// taking it back would take the typed path with it.
+func TestTypedPath_IsNotConvertedWhileTyping(t *testing.T) {
+	m := newPastingModel()
+	path := writeFile(t, "swatch.png", onePixelPNG)
+
+	for _, r := range path {
+		m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if got := m.input.Value(); got != path {
+		t.Errorf("input = %q, want the typed path left alone", got)
+	}
+	// It still travels as an image — it is only the label that waits.
+	blocks, _ := m.composeTurn(m.input.Value())
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockImage {
+		t.Errorf("blocks = %+v, want the typed path still sent as an image", blocks)
+	}
+}
+
+// A dropped file that is not an image already reads perfectly well as a path.
+func TestDroppedNonImage_StaysAPath(t *testing.T) {
+	m := newPastingModel()
+	path := writeFile(t, "notes.txt", []byte("plain words"))
+
+	m, _ = applyUpdate(m, dropped(path))
+
+	if got := m.input.Value(); got != path {
+		t.Errorf("input = %q, want the path left as typed", got)
+	}
+}
+
+// newPastingModel is a test model wired the way a paste needs: an agent that
+// said it takes images.
+func newPastingModel() Model {
+	m := newTestModel()
+	m.canSendImages = true
+	return m
+}
+
+// mustCompose is the blocks the model would send for whatever is typed.
+func mustCompose(m Model) []acp.ContentBlock {
+	blocks, _ := m.composeTurn(strings.TrimSpace(m.input.Value()))
+	return blocks
+}
+
+func pastedImage() pastedImageMsg {
+	return pastedImageMsg{block: acp.ImageBlock(
+		base64.StdEncoding.EncodeToString(onePixelPNG), "image/png")}
+}
+
+// A pasted image lands in the message being written, not beside it. Anything
+// less and the only way to learn whether ctrl+v worked is to send and ask.
+func TestPastedImage_LandsInTheInput(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+
+	if len(m.pending) != 1 {
+		t.Fatalf("pending = %d, want the image held", len(m.pending))
+	}
+	if got := m.input.Value(); !strings.Contains(got, "[image") {
+		t.Errorf("input = %q, want the attachment showing in it", got)
+	}
+}
+
+// The label goes in at the cursor, so an image can be pasted mid-sentence
+// rather than only at the end.
+func TestPastedImage_GoesInAtTheCursor(t *testing.T) {
+	m := newPastingModel()
+	m.input.SetValue("why does ")
+	m, _ = applyUpdate(m, pastedImage())
+	m.input.InsertString("look wrong?")
+
+	blocks, _ := m.composeTurn(m.input.Value())
+	if len(blocks) != 3 {
+		t.Fatalf("blocks = %+v, want text, image, text", blocks)
+	}
+	if blocks[0].Text != "why does " || blocks[1].Type != acp.BlockImage {
+		t.Errorf("blocks = %+v, want the image between the two halves", blocks)
+	}
+}
+
+func TestPastedImage_IsSentOnceAndCleared(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+	m.input.InsertString("what is wrong here?")
+
+	// What the turn will actually put on the wire, captured before sending
+	// clears the state it is built from.
+	var sent struct{ image bool }
+	for _, b := range mustCompose(m) {
+		sent.image = sent.image || b.Type == acp.BlockImage
+	}
+
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if len(m.pending) != 0 {
+		t.Errorf("pending = %d, want it cleared; a second turn would send the image twice", len(m.pending))
+	}
+	if len(m.entries) != 1 {
+		t.Fatalf("entries = %+v, want the one message", m.entries)
+	}
+	text := m.entries[0].text
+	if !strings.Contains(text, "[image") || !strings.Contains(text, "what is wrong here?") {
+		t.Errorf("logged %q, want it to show both the image and the question", text)
+	}
+	// The log alone cannot tell the difference: an attachment left behind as
+	// literal text logs the identical line, because the label in the input is
+	// exactly what the log prints. Only the blocks say which happened.
+	if !sent.image {
+		t.Error("no image block was composed; the label went as text")
+	}
+}
+
+// Deleting the label is how an attachment is taken back — the only undo a
+// marker sitting in a text box can have.
+func TestPastedImage_DeletingTheLabelDropsTheImage(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+	m.input.SetValue("never mind")
+
+	blocks, _ := m.composeTurn(m.input.Value())
+	for _, b := range blocks {
+		if b.Type == acp.BlockImage {
+			t.Fatalf("blocks = %+v, want the image gone with its label", blocks)
+		}
+	}
+}
+
+// One backspace, not twenty-five. A label reads as one thing, so a keystroke
+// that breaks it takes the whole thing rather than leaving a chewed remnant.
+func TestPastedImage_OneBackspaceTakesTheWholeLabel(t *testing.T) {
+	m := newPastingModel()
+	m.input.SetValue("why does ")
+	m, _ = applyUpdate(m, pastedImage())
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyBackspace}) // the trailing space
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyBackspace}) // into the label
+
+	if got := m.input.Value(); got != "why does " {
+		t.Errorf("input = %q, want the label gone whole and the message intact", got)
+	}
+}
+
+// The repair must not fire on ordinary typing, or every keystroke after a paste
+// would eat the attachment.
+func TestPastedImage_OrdinaryTypingLeavesTheLabelAlone(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+	before := m.input.Value()
+
+	for _, r := range "looks odd" {
+		m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if got := m.input.Value(); got != before+"looks odd" {
+		t.Errorf("input = %q, want %q", got, before+"looks odd")
+	}
+}
+
+// Two pastes of the same image share a label, so the labels have to be matched
+// in order rather than both resolving to the first block.
+func TestPastedImage_TwoOfTheSameResolveInOrder(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+	m.input.InsertString("and ")
+	m, _ = applyUpdate(m, pastedImage())
+
+	blocks, _ := m.composeTurn(m.input.Value())
+	images := 0
+	for _, b := range blocks {
+		if b.Type == acp.BlockImage {
+			images++
+		}
+	}
+	if images != 2 {
+		t.Errorf("images = %d, want both sent", images)
+	}
+}
+
+// Two different attachments have to come out in the order they appear in the
+// message, not the order they were pasted — they can be rearranged by editing.
+func TestPastedImage_ResolveInMessageOrderNotPasteOrder(t *testing.T) {
+	m := newPastingModel()
+	first := acp.ImageBlock(base64.StdEncoding.EncodeToString(onePixelPNG), "image/png")
+	second := acp.ImageBlock(base64.StdEncoding.EncodeToString(append(onePixelPNG, 0, 0)), "image/png")
+	m.pending = []acp.ContentBlock{first, second}
+	m.input.SetValue(imageLabel(second) + " then " + imageLabel(first))
+
+	var got []string
+	for _, b := range mustCompose(m) {
+		if b.Type == acp.BlockImage {
+			got = append(got, b.Data)
+		}
+	}
+	if len(got) != 2 || got[0] != second.Data || got[1] != first.Data {
+		t.Errorf("images came out in paste order, not the order they are written in")
+	}
+}
+
+// The size ceiling is reported rather than swallowed: a paste that silently did
+// nothing is indistinguishable from a key that is not bound.
+func TestPastedImage_TooLargeSaysSo(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, pastedImageMsg{err: "that image is 9.1 MB — too large to send"})
+
+	if len(m.pending) != 0 {
+		t.Errorf("pending = %d, want nothing attached", len(m.pending))
+	}
+	if len(m.entries) != 1 || m.entries[0].kind != entryNotice {
+		t.Fatalf("entries = %+v, want one notice", m.entries)
+	}
+}
+
+// ctrl+v has to be taken from the textarea before the fallthrough, or the text
+// paste happens first and an image can never be noticed.
+func TestCtrlV_IsClaimedBeforeTheTextarea(t *testing.T) {
+	m := newTestModel()
+	m.input.SetValue("before")
+
+	// The textarea answers ctrl+v with a command of its own, so a non-nil one
+	// proves nothing. Only reaching this does.
+	claimed := false
+	original := pasteCmd
+	pasteCmd = func() tea.Cmd {
+		claimed = true
+		return func() tea.Msg { return nil }
+	}
+	defer func() { pasteCmd = original }()
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlV})
+	if !claimed {
+		t.Error("ctrl+v fell through to the textarea, so an image can never be noticed")
+	}
+	if got := m.input.Value(); got != "before" {
+		t.Errorf("input = %q, want ctrl+v to leave it to the command", got)
+	}
+}
+
+// A message the client renders nothing for must not leave a marker where a
+// paragraph would be — a bare coloured bullet on a line of its own reads as a
+// rendering fault.
+func TestAgentBlock_WithNothingToShowDrawsNoEntry(t *testing.T) {
+	m := newTestModel()
+	m = m.appendNotice("session resumed")
+
+	m, _ = applyUpdate(m, acpUpdateMsg(acp.SessionUpdate{
+		Type:    acp.UpdateAgentMessage,
+		Message: &acp.MessageChunk{Content: acp.ContentBlock{Type: "audio", Data: "…"}},
+	}))
+
+	if len(m.entries) != 1 {
+		t.Errorf("entries = %+v, want only the notice", m.entries)
+	}
+}
+
+// A replay arrives one block per notification where sending composed them in
+// one pass, and the two have to end up reading the same. opencode really does
+// replay a pasted image followed by the question as two chunks.
+func TestReplayedImage_DoesNotRunIntoTheQuestion(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, userChunk(acp.ImageBlock(
+		base64.StdEncoding.EncodeToString(onePixelPNG), "image/png")))
+	m, _ = applyUpdate(m, userChunk(acp.TextBlock("describe this image")))
+
+	if len(m.entries) != 1 {
+		t.Fatalf("entries = %+v, want the one message", m.entries)
+	}
+	if !strings.Contains(m.entries[0].text, "]\ndescribe this image") {
+		t.Errorf("replayed %q, want the question on its own line", m.entries[0].text)
+	}
+}
+
+// Captured from opencode replaying a pasted image: it was sent with no uri at
+// all, and comes back wearing one that ends in "/image".
+func TestImageLabel_IgnoresAnInventedURI(t *testing.T) {
+	got := imageLabel(acp.ContentBlock{
+		Type:     acp.BlockImage,
+		MimeType: "image/png",
+		URI:      "file:///repo/.opentree/imgcheck/image",
+		Data:     base64.StdEncoding.EncodeToString(onePixelPNG),
+	})
+	if strings.Contains(got, "image · image") {
+		t.Errorf("imageLabel = %q, want the invented name dropped", got)
+	}
+	if !strings.Contains(got, "png") {
+		t.Errorf("imageLabel = %q, want it to fall back to the kind of image", got)
+	}
+}
+
+func TestImageLabel_KeepsARealFileName(t *testing.T) {
+	got := imageLabel(acp.ContentBlock{
+		Type: acp.BlockImage, MimeType: "image/png",
+		URI: "file:///repo/swatch.png",
+	})
+	if !strings.Contains(got, "swatch.png") {
+		t.Errorf("imageLabel = %q, want it to name the file", got)
+	}
+}
+
+// An image inside a tool call is the one thing a screenshot-taking tool has to
+// show, and it used to finish with nothing underneath it.
+func TestToolOutput_NamesAnImageItReturned(t *testing.T) {
+	img := acp.ImageBlock(base64.StdEncoding.EncodeToString(onePixelPNG), "image/png")
+	call := acp.ToolCall{
+		ToolCallID: "t1", Title: "screenshot", Status: acp.StatusCompleted,
+		Content: []acp.ToolCallContent{{Type: "content", Content: &img}},
+	}
+	if got := toolOutput(call); !strings.Contains(got, "image") {
+		t.Errorf("toolOutput = %q, want it to say an image came back", got)
+	}
+}
+
+// ACP says a client must restrict what it sends to the capabilities the agent
+// declared, so this bool is the difference between a feature and a violation.
+func TestWithAgentInfo_BelievesTheAgentAboutImages(t *testing.T) {
+	m := newTestModel()
+
+	m = m.withAgentInfo(&acp.InitializeResponse{})
+	if m.canSendImages {
+		t.Error("canSendImages is set for an agent that declared nothing")
+	}
+
+	m = m.withAgentInfo(&acp.InitializeResponse{AgentCapabilities: acp.AgentCapabilities{
+		PromptCapabilities: acp.PromptCapabilities{Image: true},
+	}})
+	if !m.canSendImages {
+		t.Error("canSendImages is unset for an agent that advertised image support")
 	}
 }

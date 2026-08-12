@@ -576,8 +576,13 @@ func renderOutput(call acp.ToolCall, width int, style lipgloss.Style) []string {
 func toolOutput(call acp.ToolCall) string {
 	var parts []string
 	for _, c := range call.Content {
-		if c.Type == "content" && c.Content != nil && c.Content.Text != "" {
-			parts = append(parts, strings.TrimRight(c.Content.Text, "\n"))
+		if c.Type != "content" || c.Content == nil {
+			continue
+		}
+		// Through blockText, so a tool that returns a screenshot says so rather
+		// than finishing with nothing underneath it.
+		if text := blockText(*c.Content); text != "" {
+			parts = append(parts, strings.TrimRight(text, "\n"))
 		}
 	}
 	return strings.Join(parts, "\n")

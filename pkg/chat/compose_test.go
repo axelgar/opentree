@@ -1,6 +1,9 @@
 package chat
 
 import (
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,19 +22,44 @@ func known(paths ...string) map[string]bool {
 	return m
 }
 
+// compose is composePrompt for the cases that only care about the blocks, with
+// an agent that takes images.
+func compose(text, cwd string, files map[string]bool) []acp.ContentBlock {
+	blocks, _ := composePrompt(text, cwd, files, true, nil)
+	return blocks
+}
+
+// onePixelPNG is the smallest thing http.DetectContentType will call an image.
+var onePixelPNG = []byte{
+	0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
+	0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R',
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+}
+
+// writeFile drops a file in a temp dir and returns its path.
+func writeFile(t *testing.T, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("writing %s: %v", name, err)
+	}
+	return path
+}
+
 // ---------------------------------------------------------------------------
 // composePrompt
 // ---------------------------------------------------------------------------
 
 func TestComposePrompt_PlainText(t *testing.T) {
-	blocks := composePrompt("just words", "/repo", known())
+	blocks := compose("just words", "/repo", known())
 	if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != "just words" {
 		t.Errorf("blocks = %+v, want a single text block", blocks)
 	}
 }
 
 func TestComposePrompt_MentionBecomesResourceLink(t *testing.T) {
-	blocks := composePrompt("look at @main.go please", "/repo", known("main.go"))
+	blocks := compose("look at @main.go please", "/repo", known("main.go"))
 	if len(blocks) != 3 {
 		t.Fatalf("blocks = %+v, want text, link, text", blocks)
 	}
@@ -54,7 +82,7 @@ func TestComposePrompt_MentionBecomesResourceLink(t *testing.T) {
 
 func TestComposePrompt_UnknownMentionStaysText(t *testing.T) {
 	// A stray @ in prose must not turn into a broken link.
-	blocks := composePrompt("email @someone about it", "/repo", known("main.go"))
+	blocks := compose("email @someone about it", "/repo", known("main.go"))
 	if len(blocks) != 1 || blocks[0].Type != "text" {
 		t.Fatalf("blocks = %+v, want one text block", blocks)
 	}
@@ -64,14 +92,14 @@ func TestComposePrompt_UnknownMentionStaysText(t *testing.T) {
 }
 
 func TestComposePrompt_MidWordAtIsNotAMention(t *testing.T) {
-	blocks := composePrompt("mail me@main.go now", "/repo", known("main.go"))
+	blocks := compose("mail me@main.go now", "/repo", known("main.go"))
 	if len(blocks) != 1 {
 		t.Fatalf("blocks = %+v, want one text block; an email is not a mention", blocks)
 	}
 }
 
 func TestComposePrompt_MultipleMentions(t *testing.T) {
-	blocks := composePrompt("@main.go and @README.md", "/repo", known("main.go", "README.md"))
+	blocks := compose("@main.go and @README.md", "/repo", known("main.go", "README.md"))
 	links := 0
 	for _, b := range blocks {
 		if b.Type == "resource_link" {
@@ -84,9 +112,169 @@ func TestComposePrompt_MultipleMentions(t *testing.T) {
 }
 
 func TestComposePrompt_OnlyAMention(t *testing.T) {
-	blocks := composePrompt("@main.go", "/repo", known("main.go"))
+	blocks := compose("@main.go", "/repo", known("main.go"))
 	if len(blocks) != 1 || blocks[0].Type != "resource_link" {
 		t.Errorf("blocks = %+v, want a single resource link", blocks)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+func TestComposePrompt_ImagePathBecomesAnImageBlock(t *testing.T) {
+	path := writeFile(t, "shot.png", onePixelPNG)
+
+	blocks := compose("what is wrong with "+path, "/repo", known())
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %+v, want text then image", blocks)
+	}
+	img := blocks[1]
+	if img.Type != acp.BlockImage {
+		t.Fatalf("second block = %+v, want an image", img)
+	}
+	if img.MimeType != "image/png" {
+		t.Errorf("MimeType = %q, want image/png", img.MimeType)
+	}
+	// The bytes have to survive the trip, not merely be present: an agent given
+	// a truncated base64 payload reports an image it cannot open.
+	data, err := base64.StdEncoding.DecodeString(img.Data)
+	if err != nil {
+		t.Fatalf("Data is not base64: %v", err)
+	}
+	if string(data) != string(onePixelPNG) {
+		t.Errorf("decoded %d bytes, want the %d written", len(data), len(onePixelPNG))
+	}
+}
+
+func TestComposePrompt_ImageFallsBackToALinkWhenTheAgentCannotTakeOne(t *testing.T) {
+	path := writeFile(t, "shot.png", onePixelPNG)
+
+	blocks, notices := composePrompt(path, "/repo", known(), false, nil)
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
+		t.Fatalf("blocks = %+v, want a single resource link", blocks)
+	}
+	// Silence would be the worst outcome: an image that quietly went as a link
+	// looks exactly like one that did not.
+	if len(notices) != 1 || !strings.Contains(notices[0], "does not take images") {
+		t.Errorf("notices = %q, want one saying why", notices)
+	}
+}
+
+func TestComposePrompt_OversizeImageFallsBackToALink(t *testing.T) {
+	big := append(append([]byte{}, onePixelPNG...), make([]byte, maxImageBytes)...)
+	path := writeFile(t, "huge.png", big)
+
+	blocks, notices := composePrompt(path, "/repo", known(), true, nil)
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
+		t.Fatalf("blocks = %+v, want a single resource link", blocks)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "too large") {
+		t.Errorf("notices = %q, want one saying it was too large", notices)
+	}
+}
+
+func TestComposePrompt_NonImageFileBecomesALinkWithNoNotice(t *testing.T) {
+	path := writeFile(t, "notes.txt", []byte("plain words"))
+
+	blocks, notices := composePrompt(path, "/repo", known(), true, nil)
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
+		t.Fatalf("blocks = %+v, want a single resource link", blocks)
+	}
+	// A link is what a text file was always going to be, so there is nothing
+	// to report.
+	if len(notices) != 0 {
+		t.Errorf("notices = %q, want none", notices)
+	}
+}
+
+func TestComposePrompt_EscapedSpacesInADraggedPathSurvive(t *testing.T) {
+	path := writeFile(t, "Screenshot 2026-08-10.png", onePixelPNG)
+
+	// This is what a terminal inserts when a file is dragged onto it.
+	blocks := compose(strings.ReplaceAll(path, " ", `\ `), "/repo", known())
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockImage {
+		t.Fatalf("blocks = %+v, want a single image; the escape split the word", blocks)
+	}
+}
+
+func TestComposePrompt_BareWordIsNotAPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A word with no separator stays prose even when a file by that name is
+	// sitting right there.
+	blocks := compose("check the README first", dir, known())
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockText {
+		t.Errorf("blocks = %+v, want one text block", blocks)
+	}
+}
+
+func TestComposePrompt_MissingPathStaysText(t *testing.T) {
+	blocks := compose("see ./nope/missing.png", t.TempDir(), known())
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockText {
+		t.Errorf("blocks = %+v, want it left as typed", blocks)
+	}
+}
+
+func TestComposePrompt_TrackedFileNeedsNoDisk(t *testing.T) {
+	// The palette offers whatever git listed, and a mention of one has to travel
+	// whether or not the file survived to the moment of sending.
+	blocks := compose("@pkg/auth/session.go", "/nowhere", known("pkg/auth/session.go"))
+	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
+		t.Fatalf("blocks = %+v, want a single resource link", blocks)
+	}
+	if blocks[0].Name != "pkg/auth/session.go" {
+		t.Errorf("Name = %q, want the path as typed", blocks[0].Name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Blocks back to text
+// ---------------------------------------------------------------------------
+
+func TestEcho_ReadsAsTheMessageWasTyped(t *testing.T) {
+	blocks := []acp.ContentBlock{
+		acp.TextBlock("look at "),
+		acp.ResourceLink("file:///repo/main.go", "main.go"),
+		acp.TextBlock(" please"),
+	}
+	if got := echo(blocks); got != "look at @main.go please" {
+		t.Errorf("echo = %q, want the sigil put back and no invented breaks", got)
+	}
+}
+
+func TestEcho_SeparatesAPastedImageFromTheMessage(t *testing.T) {
+	blocks := []acp.ContentBlock{
+		acp.ImageBlock(base64.StdEncoding.EncodeToString(onePixelPNG), "image/png"),
+		acp.TextBlock("what is this?"),
+	}
+	got := echo(blocks)
+	if !strings.HasPrefix(got, "[image") {
+		t.Fatalf("echo = %q, want it to open with the image", got)
+	}
+	if !strings.Contains(got, "\nwhat is this?") {
+		t.Errorf("echo = %q, want the message on its own line", got)
+	}
+}
+
+func TestBlockText_NamesTheFileAnImageCameFrom(t *testing.T) {
+	path := writeFile(t, "shot.png", onePixelPNG)
+	blocks := compose(path, "/repo", known())
+
+	got := blockText(blocks[0])
+	if !strings.Contains(got, "shot.png") {
+		t.Errorf("blockText = %q, want it to name the file", got)
+	}
+}
+
+func TestBlockText_SaysNothingForABlockItCannotRender(t *testing.T) {
+	// Empty is the signal to draw no entry at all. An audio block rendered as a
+	// blank leaves a coloured bullet on a line of its own.
+	if got := blockText(acp.ContentBlock{Type: "audio", Data: "…"}); got != "" {
+		t.Errorf("blockText = %q, want empty", got)
 	}
 }
 

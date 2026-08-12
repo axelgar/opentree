@@ -8,6 +8,7 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -224,6 +225,12 @@ type configChangedMsg struct {
 
 type filesLoadedMsg struct{ files []string }
 
+// pastedImageMsg is an image lifted off the system clipboard.
+type pastedImageMsg struct {
+	block acp.ContentBlock
+	err   string
+}
+
 // socketCommandMsg is an instruction from the workspace list, together with the
 // channel the sender is blocked on. Exactly one Result must be sent to reply.
 type socketCommandMsg struct {
@@ -286,6 +293,11 @@ type Model struct {
 	// conversation should be told so rather than asked and refused.
 	canResume bool
 
+	// canSendImages is the agent's promptCapabilities.image. ACP says a client
+	// must restrict what it sends to what the agent declared, so without this an
+	// image would be a protocol violation rather than a feature.
+	canSendImages bool
+
 	sessionID     string
 	configOptions []acp.ConfigOption
 	settings      settings
@@ -301,6 +313,11 @@ type Model struct {
 	commands   []acp.Command
 	files      []string
 	completion completionState
+
+	// pending holds images pasted but not yet sent. They cannot go into the
+	// textarea — there is no path to type, the bytes came off the clipboard —
+	// so they wait beside it and lead the next prompt.
+	pending []acp.ContentBlock
 
 	// queued holds a prompt from the workspace list that arrived while the
 	// agent was busy or still starting. At most one waits at a time.
@@ -455,6 +472,7 @@ func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 	}
 	m.authMethods = info.AuthMethods
 	m.canResume = info.AgentCapabilities.LoadSession
+	m.canSendImages = info.AgentCapabilities.PromptCapabilities.Image
 	if info.AgentInfo != nil {
 		m.agentVersion = info.AgentInfo.Version
 	}
@@ -545,12 +563,41 @@ func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
 	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, note: note}
 }
 
-func (m Model) promptCmd(text string) tea.Cmd {
+// promptCmd sends blocks that have already been composed. Composing happens in
+// startTurn instead, where the log entry is written: the two have to agree
+// about what is being sent, and an image only shows up in one of them.
+func (m Model) promptCmd(blocks []acp.ContentBlock) tea.Cmd {
 	client, sessionID := m.client, m.sessionID
-	blocks := composePrompt(text, m.opts.Cwd, m.trackedFiles())
 	return func() tea.Msg {
 		resp, err := client.Prompt(m.ctx, sessionID, blocks)
 		return promptDoneMsg{resp: resp, err: err}
+	}
+}
+
+// pasteCmd resolves ctrl+v. An image on the clipboard becomes an attachment;
+// anything else is the terminal's ordinary paste, handed to the textarea's own
+// one so there is a single implementation of pasting text.
+//
+// It runs off the event loop because asking is not cheap: the macOS route is an
+// osascript round trip, measured at ~150ms, and it is paid on every paste
+// including the text ones. That is a wait, not a freeze — the chat keeps
+// drawing — and it buys one mental model for the key instead of two.
+//
+// ponytail: a var, so a test can tell this apart from the textarea's own paste
+// without a clipboard interface and its one implementation. The textarea also
+// answers ctrl+v with a non-nil command, so nothing observable distinguishes
+// "opentree claimed the key" from "opentree let it through".
+var pasteCmd = func() tea.Cmd {
+	return func() tea.Msg {
+		data, mime, ok := clipboardImage()
+		if !ok {
+			return textarea.Paste()
+		}
+		if int64(len(data)) > maxImageBytes {
+			return pastedImageMsg{err: fmt.Sprintf("that image is %s — too large to send",
+				humanBytes(int64(len(data))))}
+		}
+		return pastedImageMsg{block: acp.ImageBlock(base64.StdEncoding.EncodeToString(data), mime)}
 	}
 }
 

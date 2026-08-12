@@ -174,11 +174,24 @@ type CancelNotification struct {
 	SessionID string `json:"sessionId"`
 }
 
-// ContentBlock is one piece of a message. Text and resource links are
-// modelled; opentree neither sends nor renders images yet.
+// Content block types opentree handles. audio and resource are deliberately
+// absent: neither agent advertises audio, and an embedded resource inlines a
+// whole file where a resource_link would have the agent read only what it needs.
+const (
+	BlockText         = "text"
+	BlockImage        = "image"
+	BlockResourceLink = "resource_link"
+)
+
+// ContentBlock is one piece of a message.
 type ContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+
+	// image. Data is base64. MimeType is also a resource_link field, which is
+	// why it is not nested with the rest of the image ones.
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 
 	// resource_link
 	URI  string `json:"uri,omitempty"`
@@ -208,14 +221,23 @@ func (c ContentBlock) ForUser() bool {
 }
 
 func TextBlock(text string) ContentBlock {
-	return ContentBlock{Type: "text", Text: text}
+	return ContentBlock{Type: BlockText, Text: text}
 }
 
 // ResourceLink points the agent at a file without inlining it. This is how an
 // @-mention travels: the agent reads the file itself rather than the client
 // pasting its contents into the prompt.
 func ResourceLink(uri, name string) ContentBlock {
-	return ContentBlock{Type: "resource_link", URI: uri, Name: name}
+	return ContentBlock{Type: BlockResourceLink, URI: uri, Name: name}
+}
+
+// ImageBlock inlines an image, which a link cannot replace: fs/read_text_file
+// is text-only, so a link to a PNG leaves the agent nothing to read.
+//
+// Only send one to an agent whose promptCapabilities.image is set — the spec
+// says a client MUST restrict content to the capabilities it was told about.
+func ImageBlock(data, mimeType string) ContentBlock {
+	return ContentBlock{Type: BlockImage, Data: data, MimeType: mimeType}
 }
 
 // ---------------------------------------------------------------------------

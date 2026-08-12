@@ -13,6 +13,7 @@ type keyMap struct {
 	Settings  key.Binding
 	CycleMode key.Binding
 	Thoughts  key.Binding
+	Paste     key.Binding
 	Help      key.Binding
 	Restart   key.Binding
 	Login     key.Binding
@@ -36,7 +37,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 // FullHelp is every key, grouped by what it is for.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Commands, k.Mentions},
+		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts},
 		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
 	}
@@ -101,6 +102,14 @@ var keys = keyMap{
 	Thoughts: key.NewBinding(
 		key.WithKeys("ctrl+o"),
 		key.WithHelp("ctrl+o", "toggle reasoning"),
+	),
+	// Taken from the textarea, which binds ctrl+v to pasting text, and handed
+	// straight back when the clipboard holds no image. On macOS this is ctrl+v
+	// and not cmd+v: cmd+v is the terminal's own paste, and a terminal asked to
+	// paste a picture sends nothing at all.
+	Paste: key.NewBinding(
+		key.WithKeys("ctrl+v"),
+		key.WithHelp("ctrl+v", "paste"),
 	),
 	// A printable character, so it only opens the key list when the message is
 	// empty — typing "?" into a question must reach the textarea.

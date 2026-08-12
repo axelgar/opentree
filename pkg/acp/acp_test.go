@@ -192,6 +192,29 @@ func TestPromptResponse_Decode(t *testing.T) {
 	}
 }
 
+// The field names are the whole contract. An image block whose data landed
+// under the wrong key marshals cleanly and arrives as an image with no picture
+// in it, which no agent reports as an error.
+func TestImageBlock_Encode(t *testing.T) {
+	data, err := json.Marshal(ImageBlock("aGk=", "image/png"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := map[string]any{"type": "image", "data": "aGk=", "mimeType": "image/png"}
+	if len(got) != len(want) {
+		t.Errorf("keys = %v, want exactly %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v", k, got[k], v)
+		}
+	}
+}
+
 func TestPermissionRequest_Decode(t *testing.T) {
 	var env struct {
 		Params PermissionRequest `json:"params"`

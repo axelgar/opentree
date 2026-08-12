@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -176,6 +177,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.files = msg.files
 		return m, nil
 
+	case pastedImageMsg:
+		if msg.err != "" {
+			m = m.appendNotice(msg.err)
+			return m.relayout(), nil
+		}
+		// Into the message rather than beside it: the label is where the cursor
+		// was, so an image can be pasted mid-sentence, and what is on screen is
+		// what will be sent.
+		m.pending = append(m.pending, msg.block)
+		m.input.InsertString(imageLabel(msg.block) + " ")
+		m = m.refreshCompletion()
+		return m.relayout(), nil
+
 	case configChangedMsg:
 		if msg.err != nil {
 			m.err = fmt.Errorf("could not set %s: %w", msg.configID, msg.err)
@@ -224,8 +238,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The textarea's own paste lands here, since its message type is private to
+	// it. Nothing else in this branch changes the text, so a change is a paste —
+	// and a path pasted with ctrl+v should become an attachment exactly like one
+	// that was dragged in.
+	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.input.Value() != before {
+		m = m.attachDropped()
+	}
 	return m, cmd
 }
 
@@ -285,6 +307,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 		return m, nil
 
+	// Taken from the textarea, which binds ctrl+v to pasting text. The command
+	// hands it straight back when the clipboard holds no image, so the key does
+	// what it always did and gains a second meaning rather than losing its first.
+	case key.Matches(msg, m.keys.Paste):
+		return m, pasteCmd()
+
 	// Guarded on an empty message: "?" is a character before it is a key, and
 	// a chat that cannot type a question mark is a bad trade for a shortcut.
 	case key.Matches(msg, m.keys.Help) && m.input.Value() == "":
@@ -332,10 +360,101 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startTurn(text)
 	}
 
+	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m = m.healLabels(before)
+	// Only on a paste. Dragging a file onto a terminal arrives as one bracketed
+	// paste, while a path typed by hand would turn into a label the instant it
+	// became a real filename — mid-word, with the text it replaced gone.
+	if msg.Paste {
+		m = m.attachDropped()
+	}
 	m = m.refreshCompletion()
 	return m, cmd
+}
+
+// attachDropped turns an image path that just landed in the message into an
+// attachment, so a file dragged onto the terminal reads the same as one pasted
+// off the clipboard rather than as eighty characters of /Users/…
+//
+// ponytail: the trailing word, which is the same limit the completion palette
+// takes. A drop lands at the cursor and the cursor is at the end. One dropped
+// into the middle of a sentence still travels as an image; it just keeps
+// looking like a path until it is sent.
+func (m Model) attachDropped() Model {
+	if !m.canSendImages {
+		return m
+	}
+	runes := []rune(m.input.Value())
+	start, end := lastWord(runes)
+	if start < 0 {
+		return m
+	}
+	block, _, ok := attach(string(runes[start:end]), m.opts.Cwd, m.trackedFiles(), true)
+	if !ok || block.Type != acp.BlockImage {
+		// A path to something that is not an image reads perfectly well as a
+		// path, and it already travels as a link.
+		return m
+	}
+	m.pending = append(m.pending, block)
+	m.input.SetValue(string(runes[:start]) + imageLabel(block) + string(runes[end:]))
+	m.input.CursorEnd()
+	return m
+}
+
+// lastWord is the span of the final word, honouring the backslash escapes a
+// dragged path arrives wearing.
+func lastWord(runes []rune) (start, end int) {
+	start, end = -1, -1
+	for i := 0; i < len(runes); {
+		if isBoundary(runes[i]) {
+			i++
+			continue
+		}
+		j := wordEnd(runes, i)
+		start, end = i, j
+		i = j
+	}
+	return start, end
+}
+
+// healLabels removes an attachment's label whole once a keystroke has broken
+// it. A label reads as one thing and has to behave like one: twenty-five
+// backspaces to take back one paste is not an undo, and the twenty-four states
+// in between are gibberish.
+//
+// Nothing needs to be dropped from m.pending — a block whose label is not in
+// the message never makes it into the prompt.
+//
+// ponytail: single-line messages, which is where a paste lands. Repairing
+// across a newline means mapping a rune offset onto the textarea's wrapped
+// rows, and SetCursor only addresses one row; there a label erases by hand.
+func (m Model) healLabels(before string) Model {
+	after := m.input.Value()
+	if after == before || strings.ContainsRune(after, '\n') {
+		return m
+	}
+	for _, c := range m.pending {
+		label := imageLabel(c)
+		at := strings.Index(before, label)
+		if at < 0 || strings.Contains(after, label) {
+			continue
+		}
+		// The edit landed inside this label. Take back the whole region it
+		// occupied, grown or shrunk by whatever the keystroke did to it.
+		runes := []rune(after)
+		start := utf8.RuneCountInString(before[:at])
+		end := start + utf8.RuneCountInString(label) + (len(runes) - utf8.RuneCountInString(before))
+		start, end = min(start, len(runes)), min(max(end, 0), len(runes))
+		if start > end {
+			continue
+		}
+		m.input.SetValue(string(runes[:start]) + string(runes[end:]))
+		m.input.SetCursor(start)
+		return m
+	}
+	return m
 }
 
 // refreshCompletion recomputes the palette from whatever is now typed. Keeping
@@ -419,14 +538,32 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 	return m, nil, Result{Reason: "unknown command " + cmd.Type}
 }
 
-// startTurn sends text to the agent and records it in the log.
+// startTurn sends a message to the agent and records it in the log.
+//
+// Composing here rather than inside promptCmd is what keeps the two honest with
+// each other: the log shows what was sent, not what was typed, so an attachment
+// that quietly became a link says so on the line you can see.
 func (m Model) startTurn(text string) (Model, tea.Cmd) {
-	cmd := m.promptCmd(text)
-	m.entries = append(m.entries, entry{kind: entryUser, text: text})
+	blocks, notices := m.composeTurn(text)
+	m.pending = nil
+
+	cmd := m.promptCmd(blocks)
+	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks)})
+	for _, n := range notices {
+		m = m.appendNotice(n)
+	}
 	m.turn = true
 	m.turnStart = time.Now()
 	m.err = nil
 	return m.relayout(), tea.Batch(cmd, spinnerTick())
+}
+
+// composeTurn is the message about to be sent, as blocks. It exists so the
+// state that feeds composePrompt — the pasted attachments, what this agent
+// accepts, which files git knows about — is reachable from a test without
+// executing the command that would need a live agent behind it.
+func (m Model) composeTurn(text string) ([]acp.ContentBlock, []string) {
+	return composePrompt(text, m.opts.Cwd, m.trackedFiles(), m.canSendImages, m.pending)
 }
 
 // flushQueued runs a prompt that arrived while the agent was busy or starting.
@@ -542,12 +679,12 @@ func (m Model) applyUpdate(u acp.SessionUpdate) Model {
 
 	case acp.UpdateAgentMessage:
 		if u.Message != nil {
-			m = m.appendChunk(entryAgent, u.Message.Content.Text)
+			m = m.appendChunk(entryAgent, blockText(u.Message.Content))
 		}
 
 	case acp.UpdateAgentThought:
 		if u.Message != nil {
-			m = m.appendChunk(entryThought, u.Message.Content.Text)
+			m = m.appendChunk(entryThought, blockText(u.Message.Content))
 		}
 
 	case acp.UpdateToolCall, acp.UpdateToolCallUpdate:
@@ -623,23 +760,27 @@ func (m Model) replayUserChunk(c acp.ContentBlock) Model {
 	if !c.ForUser() {
 		return m
 	}
-	text := c.Text
-	if c.Type == "resource_link" {
-		// An @mention leaves as a link and its sigil leaves with it, so putting
-		// the sigil back is what makes the replayed line read as it was typed.
-		text = "@" + c.Name
-	}
-	if text == "" {
-		// A block opentree does not render still arrived, and an entry with no
-		// text draws a full-width band with nothing in it.
-		return m
+	text := blockText(c)
+	// A replay arrives one block per notification, so the joining echo does in
+	// one pass happens here across several. Without it a reopened conversation
+	// reads "[image · 303 bytes]describe this image" — the same message the
+	// live path had already spaced correctly.
+	if n := len(m.entries); text != "" && n > 0 && m.entries[n-1].kind == entryUser {
+		text = separator(m.entries[n-1].text, text) + text
 	}
 	return m.appendChunk(entryUser, text)
 }
 
 // appendChunk grows the trailing entry when it is the same kind, so a streamed
 // message renders as one paragraph rather than one line per token.
+//
+// Nothing to say means no entry: a block opentree does not render still arrives,
+// and an empty entry draws a full-width band, or a coloured bullet on a line of
+// its own, with nothing in it.
 func (m Model) appendChunk(kind entryKind, text string) Model {
+	if text == "" {
+		return m
+	}
 	if n := len(m.entries); n > 0 && m.entries[n-1].kind == kind {
 		m.entries[n-1].text += text
 		return m
