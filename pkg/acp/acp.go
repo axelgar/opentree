@@ -214,6 +214,21 @@ func (c *Client) Initialize(ctx context.Context, clientName, version string) (*I
 // Capabilities is what the agent advertised at initialize, zero until then.
 func (c *Client) Capabilities() AgentCapabilities { return c.caps }
 
+// Stderr is what the agent has printed outside the protocol, oldest line first,
+// as much of it as the ring still holds.
+//
+// Agents say things there that they have no ACP method for and that matter
+// anyway: Gemini reports it is skipping a worktree's own agents and hooks
+// because the folder is not trusted, and says it only here.
+func (c *Client) Stderr() string {
+	// A client wired to something other than a process — a test pipe, a zero
+	// value — has no stream to have collected, and has printed nothing.
+	if c == nil || c.stderr == nil {
+		return ""
+	}
+	return c.stderr.String()
+}
+
 // Authenticate asks the agent to log itself in by one of the methods it
 // declared. It returns when the agent says it is done, which for a browser flow
 // is after the user has finished in the browser — no timeout is imposed here,

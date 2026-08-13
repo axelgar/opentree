@@ -165,6 +165,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.err == nil {
 			m.err = fmt.Errorf("%s exited", m.opts.Command)
 		}
+		// Whatever the agent printed on its way out, into the log where it can be
+		// read. The stopped panel keeps one line — the rest would swamp a footer —
+		// and an agent that died explaining why deserves better than to have that
+		// explanation truncated at the terminal's width.
+		m = m.appendNotice(m.agentOutput())
 		m = m.relayout()
 		return m, waitForMsg(m.msgs)
 

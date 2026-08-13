@@ -230,6 +230,11 @@ var clientCommandTable = []struct {
 	desc:      "log in again, or as somebody else",
 	available: Model.canAuthenticate,
 	run:       Model.startLogin,
+}, {
+	name:      "output",
+	desc:      "what the agent printed outside the conversation",
+	available: Model.canShowOutput,
+	run:       Model.showOutput,
 }}
 
 // clientCommandList is opentree's own slash commands, in the order the palette
