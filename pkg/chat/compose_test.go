@@ -406,6 +406,43 @@ func TestPalette_OpensWhileTyping(t *testing.T) {
 	}
 }
 
+// An agent sends its commands after the session opens, and the first "/" is
+// often typed before they land — a palette that keeps its opening snapshot
+// shows opentree's own commands and nothing else until the whole token is
+// retyped.
+func TestPalette_TakesCommandsThatArriveWhileOpen(t *testing.T) {
+	m := newTestModel()
+	m = typeInto(m, "/")
+	m, _ = applyUpdate(m, acpUpdateMsg{
+		Type:     acp.UpdateCommands,
+		Commands: []acp.Command{{Name: "compact"}, {Name: "init"}},
+	})
+
+	if got := len(m.completion.items); got != 2 {
+		t.Errorf("items = %d, want the 2 commands that just arrived", got)
+	}
+}
+
+// Until they land, a palette holding only opentree's own commands looks like
+// the whole list, so it says what it is still waiting for.
+func TestPalette_SaysItIsStillWaitingForCommands(t *testing.T) {
+	m := typeInto(newTestModel(), "/")
+	if !strings.Contains(m.completionView(), "asking") {
+		t.Errorf("completionView() = %q, want it to say the commands are still coming", m.completionView())
+	}
+	if got, want := m.completionHeight(), len(m.completion.items)+1; got != want {
+		t.Errorf("completionHeight = %d, want %d — the footer has to fit the waiting line", got, want)
+	}
+
+	m, _ = applyUpdate(m, acpUpdateMsg{
+		Type:     acp.UpdateCommands,
+		Commands: []acp.Command{{Name: "compact"}},
+	})
+	if strings.Contains(m.completionView(), "asking") {
+		t.Error("the waiting line must go once the commands are in")
+	}
+}
+
 func TestPalette_TabAccepts(t *testing.T) {
 	m := typeInto(newPaletteModel(t), "/comp")
 	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyTab})

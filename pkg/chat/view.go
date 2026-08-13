@@ -57,6 +57,9 @@ func (m Model) completionHeight() int {
 	if len(m.completion.items) > completionWindow {
 		n++
 	}
+	if m.awaitingCommands() {
+		n++
+	}
 	return n
 }
 
@@ -116,7 +119,10 @@ func (m Model) footer() string {
 
 	var b strings.Builder
 	b.WriteString("\n")
-	if m.completion.active() {
+	// The waiting line stands on its own when the agent's commands are all
+	// there is to match — typing "/" at an agent that has sent nothing yet
+	// should not look like "/" matches nothing.
+	if m.completion.active() || m.awaitingCommands() {
 		b.WriteString(m.completionView())
 		b.WriteString("\n")
 	}
@@ -163,7 +169,20 @@ func (m Model) completionView() string {
 		lines = append(lines, helpStyle.Render(fmt.Sprintf("  %d of %d — ↑/↓ to scroll",
 			m.completion.cursor+1, len(items))))
 	}
+	if m.awaitingCommands() {
+		lines = append(lines, helpStyle.Render("  asking "+m.opts.Agent+" for its own commands…"))
+	}
 	return strings.Join(lines, "\n")
+}
+
+// awaitingCommands is whether the open palette is still short of the agent's
+// commands — they only arrive as a session update, after the session opens, so
+// a palette opened before then is a partial answer that should say so.
+//
+// ponytail: an empty list is the only signal there is. An agent that genuinely
+// advertises none keeps the waiting line; none of the six do.
+func (m Model) awaitingCommands() bool {
+	return len(m.commands) == 0 && m.completion.kind == completionCommand
 }
 
 // statusLine carries the help text, or an error when the agent is still alive

@@ -94,6 +94,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case acpUpdateMsg:
 		m = m.applyUpdate(acp.SessionUpdate(msg))
+		// The agent's commands arrive after the session opens, often while the
+		// palette is already on screen showing only opentree's own — an open
+		// palette has to take them.
+		m = m.refreshCompletion()
 		m = m.relayout()
 		return m, waitForMsg(m.msgs)
 
@@ -114,6 +118,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.note != "" {
 			m = m.appendNotice(msg.note)
 		}
+		m = m.refreshCompletion()
 		m = m.relayout()
 		return m.flushQueued()
 
@@ -486,7 +491,10 @@ func (m Model) refreshCompletion() Model {
 		m.completion = next
 		return m.relayout()
 	}
-	next.cursor = m.completion.cursor
+	// Same token, new matches: the list can grow or shrink under an open
+	// palette when the agent's commands land, so the cursor is clamped rather
+	// than trusted.
+	next.cursor = min(m.completion.cursor, max(0, len(next.items)-1))
 	m.completion = next
 	return m
 }
