@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -647,18 +648,41 @@ func TestProbe_OneAtATime(t *testing.T) {
 	}
 }
 
+// Gemini names twenty commands of its own over ACP and not one skill, so its
+// answer would read as "every skill missing". A check that cannot be run says
+// so, and leaves `v` usable once another agent is configured.
+func TestProbe_RefusesAnAgentThatDoesNotNameItsSkills(t *testing.T) {
+	m := skillsModel()
+	m.cfg.Agent.Command = "gemini"
+
+	next, _ := m.Update(keyMsg("v"))
+	m = next.(Model)
+	if m.skillProbing {
+		t.Error("started a probe against an agent with nothing to say")
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "does not name its skills") {
+		t.Errorf("err = %v, want the reason the check cannot run", m.err)
+	}
+}
+
 // --- repo skills an agent cannot reach --------------------------------------
 
 func TestBlindAgents_RepoSkillOnly(t *testing.T) {
 	m := skillsModel()
 	m.repoRoot = "/repo"
 
-	// opencode's own repository tree, which Claude Code does not read. The other
-	// direction has no case: opencode reads .claude/skills too, so a skill there
-	// is already readable by both and Scan gives it both marks.
+	// opencode's own repository tree, which no other agent reads. The other
+	// direction has fewer cases: opencode reads .claude/skills too, so a skill
+	// there is already readable by both and Scan gives it both marks.
 	repo := testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release")
-	if got := m.blindAgents(repo); len(got) != 1 || got[0] != "Claude Code" {
-		t.Errorf("blindAgents() = %v, want the agent that cannot read the repo tree", got)
+	got := m.blindAgents(repo)
+	if len(got) == 0 || slices.Contains(got, "OpenCode") {
+		t.Errorf("blindAgents() = %v, want the agents that cannot read the repo tree", got)
+	}
+	for _, agent := range config.PredefinedAgents {
+		if len(agent.Skills.RepoDirs) > 0 && agent.Name != "OpenCode" && !slices.Contains(got, agent.Name) {
+			t.Errorf("blindAgents() = %v, missing %s — it does not read .opencode/skills either", got, agent.Name)
+		}
 	}
 
 	// A machine-wide skill is already shared: agents auto-load each other's user

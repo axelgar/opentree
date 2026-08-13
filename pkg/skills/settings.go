@@ -64,7 +64,7 @@ func settingsPath(entry, repoRoot string) string {
 // readOverrides layers an agent's settings files into one map of skill name to
 // state. Later files win, which is the order the agent itself resolves them in.
 func readOverrides(spec config.SkillsSpec, repoRoot string) map[string]State {
-	if spec.OverridesKey == "" {
+	if spec.OverridesKey == "" && spec.DisabledKey == "" {
 		return nil
 	}
 	out := map[string]State{}
@@ -81,19 +81,47 @@ func readOverrides(spec config.SkillsSpec, repoRoot string) map[string]State {
 		if err := json.Unmarshal(data, &doc); err != nil {
 			continue // a settings file opentree cannot read is the agent's problem
 		}
-		raw, ok := doc[spec.OverridesKey]
-		if !ok {
-			continue
-		}
 		var overrides map[string]State
-		if err := json.Unmarshal(raw, &overrides); err != nil {
-			continue
+		if err := json.Unmarshal(doc[spec.OverridesKey], &overrides); err == nil {
+			for name, state := range overrides {
+				out[name] = state
+			}
 		}
-		for name, state := range overrides {
-			out[name] = state
+		// No later-wins here: a name missing from a list of the disabled says
+		// nothing, so a skill switched off in either file stays off.
+		for _, name := range disabledNames(doc, spec.DisabledKey) {
+			out[name] = StateOff
 		}
 	}
 	return out
+}
+
+// disabledNames reads a list of skill names from a dotted path through a
+// settings document — "skills.disabled" is Gemini's, and it keeps one at each
+// scope.
+func disabledNames(doc map[string]json.RawMessage, key string) []string {
+	if key == "" {
+		return nil
+	}
+	parts := strings.Split(key, ".")
+	raw, ok := doc[parts[0]]
+	if !ok {
+		return nil
+	}
+	for _, part := range parts[1:] {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &nested); err != nil {
+			return nil
+		}
+		if raw, ok = nested[part]; !ok {
+			return nil
+		}
+	}
+	var names []string
+	if err := json.Unmarshal(raw, &names); err != nil {
+		return nil
+	}
+	return names
 }
 
 // OverrideFile is where a change to a skill's state should be written: the file
@@ -146,8 +174,10 @@ func OverrideFile(spec config.SkillsSpec, repoRoot, skill string) string {
 // and frequently version-controlled, and reformatting all of it to change one
 // entry is not a change the user asked for.
 func SetOverride(spec config.SkillsSpec, repoRoot, skill string, state State) (string, error) {
+	// Reading a disabled list is not the same as writing one: an agent that
+	// keeps one can still be told, just not from here.
 	if spec.OverridesKey == "" {
-		return "", fmt.Errorf("this agent has no way to switch a skill off")
+		return "", fmt.Errorf("opentree cannot switch a skill off for this agent")
 	}
 	path := OverrideFile(spec, repoRoot, skill)
 	if path == "" {

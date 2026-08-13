@@ -15,19 +15,23 @@ import (
 // built-in ones fails that user silently — a short list looks exactly like a
 // machine with few skills.
 //
-// opencode is the agent that has this today: a "skills" key in opencode.json.
-// Directories named there are searched recursively rather than one level deep,
-// which is its own documented behaviour and the reason Tree carries Deep.
+// Two agents have this today, under keys of their own: "skills" in
+// opencode.json, "skillDirectories" in Copilot's settings. Both search what is
+// named there recursively rather than one level deep — observed of Copilot,
+// documented by opencode — which is the reason Tree carries Deep.
 
 // configTrees are the extra skills directories an agent's own config declares.
 func configTrees(spec config.SkillsSpec, repoRoot string) []string {
+	if spec.ConfigKey == "" {
+		return nil
+	}
 	var out []string
 	for _, entry := range spec.ConfigFiles {
 		path := settingsPath(entry, repoRoot)
 		if path == "" {
 			continue
 		}
-		for _, dir := range declaredDirs(path) {
+		for _, dir := range declaredDirs(path, spec.ConfigKey) {
 			if !slices.Contains(out, dir) {
 				out = append(out, dir)
 			}
@@ -47,24 +51,22 @@ func configTrees(spec config.SkillsSpec, repoRoot string) []string {
 // Relative entries resolve against the config file's own directory, which is
 // what makes ./skills mean the same thing to opentree as it does to the agent
 // reading it.
-func declaredDirs(path string) []string {
+func declaredDirs(path, key string) []string {
 	data, err := os.ReadFile(path) // #nosec G304 -- a config path from the agent registry
 	if err != nil {
 		return nil
 	}
-	var doc struct {
-		Skills json.RawMessage `json:"skills"`
-	}
-	if err := json.Unmarshal(stripJSONC(data), &doc); err != nil || len(doc.Skills) == 0 {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(stripJSONC(data), &doc); err != nil || len(doc[key]) == 0 {
 		return nil
 	}
 
 	var entries []string
-	if err := json.Unmarshal(doc.Skills, &entries); err != nil {
+	if err := json.Unmarshal(doc[key], &entries); err != nil {
 		var older struct {
 			Paths []string `json:"paths"`
 		}
-		if err := json.Unmarshal(doc.Skills, &older); err != nil {
+		if err := json.Unmarshal(doc[key], &older); err != nil {
 			return nil
 		}
 		entries = older.Paths

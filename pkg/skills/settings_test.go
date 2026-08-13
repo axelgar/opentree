@@ -76,6 +76,30 @@ func TestReadOverrides_LayersFiles(t *testing.T) {
 	}
 }
 
+// The other shape the same files come in: a list of the disabled, kept at each
+// scope, where a name missing from one file says nothing at all. So the two
+// union rather than the later one winning — which is what `gemini skills
+// disable` was observed to do with --scope user and --scope workspace.
+func TestReadOverrides_UnionsADisabledList(t *testing.T) {
+	dir := t.TempDir()
+	user := filepath.Join(dir, "user.json")
+	workspace := filepath.Join(dir, "workspace.json")
+	if err := os.WriteFile(user, []byte(`{"skills":{"disabled":["tdd"]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workspace, []byte(`{"skills":{"disabled":["teach"]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := config.SkillsSpec{SettingsFiles: []string{user, workspace}, DisabledKey: "skills.disabled"}
+
+	got := readOverrides(spec, "")
+	for _, name := range []string{"tdd", "teach"} {
+		if got[name] != StateOff {
+			t.Errorf("%s = %q, want off — a skill switched off at either scope stays off", name, got[name])
+		}
+	}
+}
+
 // A missing or unparseable settings file is the common case on a fresh machine,
 // and must read as "nothing overridden" rather than fail the scan.
 func TestReadOverrides_ToleratesMissingAndBroken(t *testing.T) {

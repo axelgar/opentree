@@ -9,15 +9,19 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 )
 
-// opencodeSpec is the registry's opencode entry, which owns the only config
-// mechanism for registering extra skills directories.
-func opencodeSpec(t *testing.T) config.SkillsSpec {
+// agentSpec is one registry entry's skills, by command.
+func agentSpec(t *testing.T, command string) config.SkillsSpec {
 	t.Helper()
-	a := config.FindAgent("opencode")
+	a := config.FindAgent(command)
 	if a == nil {
-		t.Fatal("registry has no opencode entry")
+		t.Fatalf("registry has no %s entry", command)
 	}
 	return a.Skills
+}
+
+func opencodeSpec(t *testing.T) config.SkillsSpec {
+	t.Helper()
+	return agentSpec(t, "opencode")
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -60,7 +64,7 @@ func TestDeclaredDirs_ArrayShape(t *testing.T) {
 	path := filepath.Join(dir, "opencode.json")
 	writeFile(t, path, `{"skills": ["./team", "/abs/tree", "https://example.com/list.json"]}`)
 
-	got := declaredDirs(path)
+	got := declaredDirs(path, "skills")
 	want := []string{filepath.Join(dir, "team"), "/abs/tree"}
 	if !slices.Equal(got, want) {
 		t.Errorf("declaredDirs() = %v, want %v (a URL is not a directory)", got, want)
@@ -74,7 +78,7 @@ func TestDeclaredDirs_ObjectShape(t *testing.T) {
 	path := filepath.Join(dir, "opencode.json")
 	writeFile(t, path, `{"skills": {"paths": ["./team"], "urls": ["https://example.com/list.json"]}}`)
 
-	got := declaredDirs(path)
+	got := declaredDirs(path, "skills")
 	if want := []string{filepath.Join(dir, "team")}; !slices.Equal(got, want) {
 		t.Errorf("declaredDirs() = %v, want %v", got, want)
 	}
@@ -87,27 +91,44 @@ func TestDeclaredDirs_ExpandsHome(t *testing.T) {
 	path := filepath.Join(dir, "opencode.json")
 	writeFile(t, path, `{"skills": ["~/elsewhere"]}`)
 
-	if got := declaredDirs(path); !slices.Equal(got, []string{filepath.Join(home, "elsewhere")}) {
+	if got := declaredDirs(path, "skills"); !slices.Equal(got, []string{filepath.Join(home, "elsewhere")}) {
 		t.Errorf("declaredDirs() = %v, want the home-relative path expanded", got)
 	}
 }
 
 func TestDeclaredDirs_ToleratesMissingAndBroken(t *testing.T) {
 	dir := t.TempDir()
-	if got := declaredDirs(filepath.Join(dir, "absent.json")); got != nil {
+	if got := declaredDirs(filepath.Join(dir, "absent.json"), "skills"); got != nil {
 		t.Errorf("an absent config gave %v, want nil", got)
 	}
 
 	broken := filepath.Join(dir, "opencode.json")
 	writeFile(t, broken, `{ not json at all`)
-	if got := declaredDirs(broken); got != nil {
+	if got := declaredDirs(broken, "skills"); got != nil {
 		t.Errorf("an unparseable config gave %v, want nil", got)
 	}
 
 	none := filepath.Join(dir, "none.json")
 	writeFile(t, none, `{"model": "anthropic/claude"}`)
-	if got := declaredDirs(none); got != nil {
+	if got := declaredDirs(none, "skills"); got != nil {
 		t.Errorf("a config with no skills key gave %v, want nil", got)
+	}
+}
+
+// Each agent keeps its registered directories under a name of its own —
+// "skills" for opencode, "skillDirectories" for Copilot — and reading the wrong
+// one finds nothing without saying so.
+func TestConfigTrees_ReadsEachAgentsOwnKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	spec := agentSpec(t, "copilot")
+	writeFile(t, filepath.Join(home, ".copilot/settings.json"),
+		`{"skillDirectories": ["/team/tree"], "skills": ["/not/this/one"]}`)
+
+	if got := configTrees(spec, ""); !slices.Equal(got, []string{"/team/tree"}) {
+		t.Errorf("configTrees() = %v, want the directory under this agent's own key", got)
 	}
 }
 

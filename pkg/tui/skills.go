@@ -260,19 +260,31 @@ func cloneSkillCmd(url, dir string) tea.Cmd {
 // Only the configured one: the answer costs a subprocess and a session, and
 // the agent opentree would launch is the one whose reading of these
 // directories decides what a workspace can do.
-func (m Model) probeSkillsCmd() tea.Cmd {
-	agent := config.FindAgent(m.cfg.Agent.Command)
-	if agent == nil {
-		return m.transientErrCmd("no agent configured to ask")
-	}
+func (m Model) probeSkillsCmd(agent config.PredefinedAgent) tea.Cmd {
 	return func() tea.Msg {
 		// Generous: a cold agent has an npm package to load and a login to
 		// check before it says anything.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		commands, err := skills.Probe(ctx, *agent, m.repoRoot)
+		commands, err := skills.Probe(ctx, agent, m.repoRoot)
 		return skillProbedMsg{agent: agent.Name, commands: commands, err: err}
 	}
+}
+
+// probeRefusal is why this agent cannot be asked, or empty when it can.
+//
+// An agent that does not put its skills among its commands would answer with a
+// list that mentions none of them, and every row would come back flagged as
+// unloaded. Refusing costs the user an answer; asking anyway would cost them
+// the truth.
+func probeRefusal(agent *config.PredefinedAgent) string {
+	switch {
+	case agent == nil:
+		return "no agent configured to ask"
+	case !agent.Skills.AdvertisesSkills:
+		return agent.Name + " does not name its skills over the protocol — nothing to check against"
+	}
+	return ""
 }
 
 // probeMismatch is what the agent's own answer says about a row that opentree's
@@ -512,10 +524,16 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.skillProbing {
 			return m, nil
 		}
+		// Refused here rather than inside the command, so the model that carries
+		// the message back is this one and not a copy of it.
+		agent := config.FindAgent(m.cfg.Agent.Command)
+		if why := probeRefusal(agent); why != "" {
+			return m, m.transientErrCmd(why)
+		}
 		m.skillProbing = true
 		return m, tea.Batch(
 			m.noticeCmd("asking "+m.cfg.Agent.Command+" what it loaded…"),
-			m.probeSkillsCmd())
+			m.probeSkillsCmd(*agent))
 	case "enter":
 		if s, ok := m.currentSkill(); ok {
 			return m, editSkillCmd(s)

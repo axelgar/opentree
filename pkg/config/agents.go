@@ -103,6 +103,16 @@ type SkillsSpec struct {
 	// agent with no way to switch a skill off.
 	OverridesKey string
 
+	// DisabledKey is the other shape the same settings files come in: a plain
+	// list of the names the agent has been told not to load, at a dotted path
+	// like "skills.disabled".
+	//
+	// A list carries less than the map — off or nothing, with no room for
+	// name-only — and it layers differently: a name absent from one file is not
+	// a claim that the skill is on, so the files union rather than the last one
+	// winning.
+	DisabledKey string
+
 	// ConfigFiles are the agent's own configuration documents, in the order it
 	// reads them, each optionally naming extra skills directories the user
 	// registered. Same path rules as SettingsFiles.
@@ -111,6 +121,17 @@ type SkillsSpec struct {
 	// a list of hardcoded directories fails, and silently: opentree would show
 	// a short list rather than an error.
 	ConfigFiles []string
+
+	// ConfigKey is the key those documents keep the directories under.
+	ConfigKey string
+
+	// AdvertisesSkills is whether the agent names its skills among the commands
+	// it sends over ACP — which is what `v` checks the list against.
+	//
+	// A claim rather than an assumption, so the zero value is the safe one: an
+	// agent nobody has asked is one `v` refuses to judge, rather than one it
+	// reports as having loaded nothing.
+	AdvertisesSkills bool
 }
 
 // PredefinedAgents is the built-in registry of known agents.
@@ -149,6 +170,8 @@ var PredefinedAgents = []PredefinedAgent{
 				"opencode.json",
 				"opencode.jsonc",
 			},
+			ConfigKey:        "skills",
+			AdvertisesSkills: true,
 		}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
 		// Claude Code's own mark, transcribed from its welcome banner, in
@@ -178,7 +201,8 @@ var PredefinedAgents = []PredefinedAgent{
 				".claude/settings.json",
 				".claude/settings.local.json",
 			},
-			OverridesKey: "skillOverrides",
+			OverridesKey:     "skillOverrides",
+			AdvertisesSkills: true,
 		}},
 	{Name: "GitHub Copilot", Command: "copilot", Description: "GitHub Copilot in the CLI",
 		// Copilot's own face, transcribed from its welcome banner, in GitHub's
@@ -192,7 +216,25 @@ var PredefinedAgents = []PredefinedAgent{
 		},
 		// Copilot serves ACP itself, and its login is a verb on the same binary
 		// rather than the `auth login` pair the other two use.
-		ACP: ACPSpec{Args: []string{"--acp"}, AuthCommand: []string{"login"}}},
+		ACP: ACPSpec{Args: []string{"--acp"}, AuthCommand: []string{"login"}},
+		// The four sources `copilot skill --help` names, confirmed by asking
+		// `copilot skill list` what it found in a directory holding one candidate
+		// tree at a time. It reads two trees it does not own — Claude Code's and
+		// the shared .agents one — and has no way to switch a skill off: its own
+		// verbs are add, list and remove.
+		Skills: SkillsSpec{
+			UserDirs: []string{"~/.copilot/skills"},
+			// Canonical first: .github/skills is Copilot's own, and the one
+			// opentree creates. The rest are read, not written to.
+			RepoDirs:     []string{".github/skills", ".agents/skills", ".claude/skills"},
+			ExternalDirs: []string{"~/.agents/skills"},
+			// `copilot skill add <dir>` records absolute paths here, and the
+			// directories are searched at any depth: a SKILL.md two levels down
+			// was listed as a skill of its own.
+			ConfigFiles:      []string{"~/.copilot/settings.json"},
+			ConfigKey:        "skillDirectories",
+			AdvertisesSkills: true,
+		}},
 	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent",
 		// Gemini CLI's sparkle and wordmark, transcribed from its splash screen,
 		// in Google's blue.
@@ -214,7 +256,27 @@ var PredefinedAgents = []PredefinedAgent{
 		// and skips the project's own agents, hooks and settings. `--skip-trust`
 		// would silence that by trusting every worktree opentree hands it, which
 		// is the user's decision to make and not opentree's.
-		ACP: ACPSpec{Args: []string{"--acp"}}},
+		ACP: ACPSpec{Args: []string{"--acp"}},
+		// Established the same way as the others, by planting a marker skill in
+		// each candidate directory and asking `gemini skills list --all` what it
+		// found. It reads the shared .agents trees and neither of Claude Code's.
+		//
+		// Two things the directories do not say. A skill it has been told to
+		// ignore is a name in a list rather than a state in a map, so DisabledKey
+		// rather than OverridesKey. And an untrusted folder costs it every
+		// project tree here — a fresh worktree sees the user's skills and none of
+		// the repository's, whatever this entry says.
+		//
+		// No AdvertisesSkills: asked over ACP, Gemini names twenty commands of
+		// its own and not one skill, trusted folder or not. `v` has nothing to
+		// check against and says so rather than reporting every skill missing.
+		Skills: SkillsSpec{
+			UserDirs:      []string{"~/.gemini/skills"},
+			RepoDirs:      []string{".gemini/skills", ".agents/skills"},
+			ExternalDirs:  []string{"~/.agents/skills"},
+			SettingsFiles: []string{"~/.gemini/settings.json", ".gemini/settings.json"},
+			DisabledKey:   "skills.disabled",
+		}},
 }
 
 // Brand is the agent's mark and colour, resolved from whatever name a

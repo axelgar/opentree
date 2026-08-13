@@ -131,7 +131,7 @@ actually use each one, and what each agent will do with it.
 - `x` - Delete a skill
 - `t` - Switch a skill off for the agents that can be told
 - `l` - Link the repository's skills to every agent and workspace that is missing them
-- `v` - Ask the agent itself what it loaded, and flag anything the list got wrong
+- `v` - Ask the agent itself what it loaded, and flag anything the list got wrong. Gemini keeps its skills out of the protocol, so it cannot be asked
 
 A `git worktree` carries only what git tracks, and most repositories leave
 their skills untracked — so opentree links the repository's skills into each
