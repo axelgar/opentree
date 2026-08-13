@@ -27,7 +27,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 
 - **Git** (2.5+) - for worktree support
 - **tmux** (3.0+) - for session orchestration
-- **OpenCode** (optional) - default coding agent ([install](https://github.com/anomalyco/opencode))
+- **A coding agent** (optional) - OpenCode (the default), Claude Code, GitHub Copilot CLI or Gemini CLI
 - **GitHub CLI** (`gh`) (optional) - for PR creation and issue fetching ([install](https://cli.github.com/))
 - **Node** (optional) - only to run Claude Code through its ACP adapter
 
@@ -170,7 +170,8 @@ Press `Enter` on a workspace to attach to its chat:
  permission needed · esc to cancel
 ```
 
-Each agent has its own mark and colour — `◆` for OpenCode, `✻` for Claude Code —
+Each agent has its own mark and colour — `◆` for OpenCode, `✻` for Claude Code,
+`◉` for GitHub Copilot, `✦` for Gemini CLI —
 so the chat header and every workspace row in the dashboard say which agent you
 are dealing with without being read word by word. An empty chat opens on the
 agent's own logo, in its own colours:
@@ -220,12 +221,13 @@ request, and `c` interrupts the current turn — the row shows what the agent is
 doing, what it's waiting on, and what it has cost. A prompt sent to a busy agent
 is queued rather than refused.
 
-**Which agents.** OpenCode serves ACP itself. Claude Code is reached through the
-`claude-agent-acp` adapter, which opentree installs on request into
+**Which agents.** OpenCode, GitHub Copilot CLI and Gemini CLI serve ACP
+themselves, so having the binary is the whole setup. Claude Code is reached
+through the `claude-agent-acp` adapter, which opentree installs on request into
 `~/.opentree/tools` rather than your global npm root — press `A` in the
 dashboard, pick Claude Code, and it offers the download (303MB, needs `node`).
 
-Those two are the whole list. opentree drives agents over ACP and nothing else,
+Those four are the whole list. opentree drives agents over ACP and nothing else,
 so an agent without an ACP server has no way in — if one ships support, it
 becomes a single registry entry and everything above applies to it unchanged.
 
@@ -336,7 +338,7 @@ base_dir = ".opentree"        # Where to store worktrees (relative to repo root)
 default_base = "main"         # Default base branch
 
 [agent]
-command = "opencode"          # Agent to run: "opencode" or "claude"
+command = "opencode"          # Agent to run: "opencode", "claude", "copilot" or "gemini"
 
 [tmux]
 session_prefix = "opentree"   # Prefix for the tmux session name
@@ -347,11 +349,11 @@ auto_push = true              # Push branch before creating a PR (set false to p
 
 ### Using Different Agents
 
-To use Claude Code instead of OpenCode:
+To use one of the others instead of OpenCode:
 
 ```toml
 [agent]
-command = "claude"
+command = "claude"            # or "copilot", or "gemini"
 ```
 
 Or press `A` in the dashboard to pick from the agents you have installed — it
@@ -440,8 +442,12 @@ globally, opentree uses that instead of fetching a second copy.
 ### The chat says the agent needs credentials
 
 The chat's stopped panel offers `[l]`, which runs the agent's own login command
-(`opencode auth login`, `claude auth login`) and restarts the session when it
-finishes. Anything else that stops an agent offers `[r]` to restart it.
+(`opencode auth login`, `claude auth login`, `copilot login`) and restarts the
+session when it finishes. Gemini CLI has no login command — it authenticates
+from inside its own TUI — so its panel names the method the agent asked for and
+leaves `[l]` off rather than offering a key that runs the wrong thing: run
+`gemini` once, log in there, then `[r]` to restart. Anything else that stops an
+agent offers `[r]` to restart it.
 
 ### "Error: gh not found"
 

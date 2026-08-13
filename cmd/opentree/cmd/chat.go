@@ -74,7 +74,7 @@ func runChat(ctx context.Context, name, version string) error {
 		Version:     version,
 		AuthCommand: agent.ACP.AuthCommand,
 		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
-		SessionID:   ws.ACPSessionID,
+		SessionID:   resumableSession(ws, agent.Command),
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -115,11 +115,32 @@ func knownSessions(ws *state.Workspace, agentCommand string) []acp.SessionInfo {
 
 	// A workspace that predates the ledger has only its current session id. It
 	// is still a conversation, and it is the one most likely to be wanted.
-	if id := ws.ACPSessionID; id != "" && !slices.ContainsFunc(out,
+	if id := resumableSession(ws, agentCommand); id != "" && !slices.ContainsFunc(out,
 		func(s acp.SessionInfo) bool { return s.SessionID == id }) {
 		out = append(out, acp.SessionInfo{SessionID: id, Cwd: ws.WorktreeDir})
 	}
 	return out
+}
+
+// resumableSession is the conversation to reopen on launch: the workspace's
+// current one, unless a different agent made it. A session id is that agent's
+// own bookkeeping, so handing OpenCode's to Copilot fails the load and reports
+// a conversation that could not be resumed — when the truthful answer is that
+// this agent has not had one here yet.
+//
+// An id recorded before opentree tracked which agent made it belongs to
+// whichever agent the workspace was already using, same as in knownSessions.
+func resumableSession(ws *state.Workspace, agentCommand string) string {
+	for _, s := range ws.ACPSessions {
+		if s.ID != ws.ACPSessionID {
+			continue
+		}
+		if s.Agent != "" && s.Agent != agentCommand {
+			return ""
+		}
+		break
+	}
+	return ws.ACPSessionID
 }
 
 // resolveACPAgent picks the agent to run. The --agent flag wins; otherwise the

@@ -180,6 +180,41 @@ var PredefinedAgents = []PredefinedAgent{
 			},
 			OverridesKey: "skillOverrides",
 		}},
+	{Name: "GitHub Copilot", Command: "copilot", Description: "GitHub Copilot in the CLI",
+		// Copilot's own face, transcribed from its welcome banner, in GitHub's
+		// purple.
+		Colour: "#A371F7", Mark: "◉",
+		Logo: []string{
+			"╭─╮╭─╮",
+			"╰─╯╰─╯",
+			"█ ▘▝ █",
+			" ▔▔▔▔",
+		},
+		// Copilot serves ACP itself, and its login is a verb on the same binary
+		// rather than the `auth login` pair the other two use.
+		ACP: ACPSpec{Args: []string{"--acp"}, AuthCommand: []string{"login"}}},
+	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent",
+		// Gemini CLI's sparkle and wordmark, transcribed from its splash screen,
+		// in Google's blue.
+		Colour: "#4285F4", Mark: "✦",
+		Logo: []string{
+			" ▝▜▄      ▗█▀▀▜▙▝█▛▀▀▌▜██▖▟██▘▜█▘▜██▖▝█▛▝█▛",
+			"   ▝▜▄    █▌     █▙▟  ▐█▝█▛▐█ ▐█ ▐█▝█▖█▌ █▌",
+			"  ▗▟▀     ▜▙ ▝█▛ █▌▝ ▖▐█   ▐█ ▐█ ▐█ ▝██▌ █▌",
+			" ▝▀        ▀▀▀▀▘▝▀▀▀▀▘▀▀▘  ▀▀▘▀▀▘▀▀▘ ▝▀▀▝▀▀",
+		},
+		// `--acp` since 0.55; `--experimental-acp` is the deprecated spelling.
+		//
+		// No AuthCommand: Gemini has no login subcommand — it authenticates from
+		// inside its own TUI — and the stopped panel is better off naming the
+		// method the agent reports than offering a key that runs the wrong thing.
+		//
+		// A fresh worktree is a folder Gemini has not been told to trust, and its
+		// trust prompt is a TUI dialog it cannot raise over ACP: it starts anyway
+		// and skips the project's own agents, hooks and settings. `--skip-trust`
+		// would silence that by trusting every worktree opentree hands it, which
+		// is the user's decision to make and not opentree's.
+		ACP: ACPSpec{Args: []string{"--acp"}}},
 }
 
 // Brand is the agent's mark and colour, resolved from whatever name a

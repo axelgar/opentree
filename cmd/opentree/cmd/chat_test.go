@@ -3,11 +3,40 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/state"
 )
+
+// A session id is the agent's own bookkeeping, so a workspace opened with a
+// second agent must not be handed the first one's conversation: the load fails
+// and the chat reports a conversation that could not be resumed, when the
+// truthful answer is that this agent has not had one here yet.
+func TestResumableSession_OnlyTheAgentThatMadeIt(t *testing.T) {
+	ws := &state.Workspace{
+		ACPSessionID: "s1",
+		ACPSessions:  []state.ACPSession{{Agent: "opencode", ID: "s1"}},
+	}
+	if got := resumableSession(ws, "copilot"); got != "" {
+		t.Errorf("resumableSession(copilot) = %q, want none — that conversation is OpenCode's", got)
+	}
+	if got := resumableSession(ws, "opencode"); got != "s1" {
+		t.Errorf("resumableSession(opencode) = %q, want s1", got)
+	}
+	if got := knownSessions(ws, "copilot"); len(got) != 0 {
+		t.Errorf("knownSessions(copilot) = %v, want none to resume", got)
+	}
+
+	// An id recorded before opentree tracked which agent made it belongs to
+	// whichever agent the workspace was already using.
+	old := &state.Workspace{ACPSessionID: "s0"}
+	if got := resumableSession(old, "gemini"); got != "s0" {
+		t.Errorf("resumableSession on a pre-ledger workspace = %q, want s0", got)
+	}
+}
 
 // resolveACPAgent decides which agent a chat window runs. It is the seam where
 // the launcher's decision and the chat's own lookup used to disagree.
@@ -99,16 +128,17 @@ func TestResolveACPAgent_RejectsUnknownAgent(t *testing.T) {
 }
 
 func TestAgentCommands(t *testing.T) {
-	got := strings.Join(config.AgentCommands(), ", ")
-	for _, want := range []string{"opencode", "claude"} {
-		if !strings.Contains(got, want) {
+	got := config.AgentCommands()
+	for _, want := range []string{"opencode", "claude", "copilot", "gemini"} {
+		if !slices.Contains(got, want) {
 			t.Errorf("AgentCommands() = %q, want it to list %q", got, want)
 		}
 	}
 	// The registry is the list of drivable agents now, so a name that left it
-	// must not still be advertised as one.
-	for _, gone := range []string{"codex", "gemini", "pi"} {
-		if strings.Contains(got, gone) {
+	// must not still be advertised as one. Matched whole rather than as a
+	// substring: "pi" is inside "copilot".
+	for _, gone := range []string{"codex", "pi"} {
+		if slices.Contains(got, gone) {
 			t.Errorf("AgentCommands() = %q, still lists %q, which has no ACP mode", got, gone)
 		}
 	}
