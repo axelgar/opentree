@@ -58,10 +58,16 @@ var (
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
-	deleteDialogStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("196")).
-				Padding(1, 3)
+	// The title chip of a destructive card. Same shape as titleStyle so the
+	// dialogs read as one family, in the colour that says what this one does.
+	dangerTitleStyle = titleStyle.
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("196"))
+
+	// The key hints inside a dialog card. helpStyle's top margin is for the
+	// bottom of a full screen; the card already puts a blank line there.
+	dialogHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262"))
 
 	confirmKeyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F4A261")).
@@ -109,6 +115,15 @@ var (
 	// status bar
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262"))
+
+	// The rule above the status bar and the numbers inside it: the bar reads
+	// as a bar when the counts stand out from their labels and the whole line
+	// is fenced off from the list above.
+	dividerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#333"))
+
+	statNumStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EEEEEE"))
 
 	// per-row action hint under the selected workspace
 	rowHintStyle = lipgloss.NewStyle().
@@ -163,10 +178,12 @@ var (
 				Foreground(lipgloss.Color("#F4A261")).
 				Bold(true)
 
-	// branch status badges
+	// branch status badges. Chips are for states that invite action (open,
+	// merged, conflicts, remote deleted); passive facts (not pushed, closed)
+	// are plain dim text — padding without a background reads as a chip that
+	// failed to load.
 	notPushedBadgeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#666")).
-				Padding(0, 1)
+				Foreground(lipgloss.Color("#666"))
 
 	pushedBadgeStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFF")).
@@ -179,8 +196,7 @@ var (
 				Padding(0, 1)
 
 	closedBadgeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888")).
-				Padding(0, 1)
+				Foreground(lipgloss.Color("#888"))
 
 	remoteDeletedBadgeStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFF")).

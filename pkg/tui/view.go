@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/axelgar/opentree/pkg/config"
 )
@@ -33,19 +34,24 @@ const (
 )
 
 func (m Model) View() string {
-	// Error log overlay
+	// Error log overlay. Full screen rather than a card — it is a twenty-entry
+	// debugging aid, not a question — but with the same bars as the diff view.
 	if m.showErrLog {
 		var sb strings.Builder
-		sb.WriteString(errLogTitleStyle.Render("Error Log") + "\n\n")
+		sb.WriteString(m.bar(errLogTitleStyle.Render("Error Log"),
+			dialogHintStyle.Render(fmt.Sprintf("%d recorded", len(m.errLog)))))
+		sb.WriteString("\n" + m.divider() + "\n")
 		if len(m.errLog) == 0 {
 			sb.WriteString(errLogLineStyle.Render("No errors recorded."))
+			sb.WriteString("\n")
 		} else {
 			for _, entry := range m.errLog {
 				sb.WriteString(errLogLineStyle.Render(entry))
 				sb.WriteString("\n")
 			}
 		}
-		sb.WriteString("\n" + helpStyle.Render("Any key to close"))
+		sb.WriteString(m.divider() + "\n")
+		sb.WriteString(m.bar(dialogHintStyle.Render("any key to close"), ""))
 		return appStyle.Render(sb.String())
 	}
 
@@ -63,25 +69,21 @@ func (m Model) View() string {
 		if agent.ACP.InstallSize != "" {
 			size = " (" + agent.ACP.InstallSize + ", needs node)"
 		}
+		body := fmt.Sprintf("%s\n%s",
+			confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
+				agent.ACPCommand()+size+"."),
+			confirmLabelStyle.Render("It installs to "+config.ToolsDir()+"."),
+		)
 		footer := fmt.Sprintf("%s %s  •  %s %s",
 			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("install and use"),
 			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
 		)
-		content := fmt.Sprintf("%s\n\n%s\n%s\n\n%s",
-			titleStyle.Render("Install adapter for "+agent.Name+"?"),
-			confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
-				agent.ACPCommand()+size+"."),
-			confirmLabelStyle.Render("It installs to "+config.ToolsDir()+"."),
-			footer,
-		)
-		return appStyle.Render(content)
+		return m.dialogCard("Install adapter for "+agent.Name+"?", body, footer, dialogAccent)
 	}
 
 	// Agent selection overlay
 	if m.agentSelecting {
 		var sb strings.Builder
-		sb.WriteString(titleStyle.Render("Select Agent"))
-		sb.WriteString("\n\n")
 		for i, agent := range config.PredefinedAgents {
 			cursor := "  "
 			style := itemStyle
@@ -105,58 +107,58 @@ func (m Model) View() string {
 			}
 
 			// Pad before styling: the escape codes count toward %-16s otherwise
-			// and the column stops lining up.
+			// and the column stops lining up. The description takes whatever the
+			// card has left, so a narrow terminal shortens it rather than
+			// wrapping one agent onto two rows and breaking the column.
+			head := fmt.Sprintf("%s%-18s %-14s %-15s ", cursor, name, agent.Command, "")
+			// The card's interior, less the row style's own border and padding.
+			room := m.dialogMaxWidth() - 2*dialogPadding - 3 - lipgloss.Width(head)
 			line := fmt.Sprintf("%s%-18s %-14s %s %s",
-				cursor, name, agent.Command, statusSt.Render(fmt.Sprintf("%-15s", status)), agent.Description)
+				cursor, name, agent.Command, statusSt.Render(fmt.Sprintf("%-15s", status)),
+				truncate(agent.Description, max(room, 8)))
 			sb.WriteString(style.Render(line))
-			sb.WriteString("\n")
+			if i < len(config.PredefinedAgents)-1 {
+				sb.WriteString("\n")
+			}
 		}
-		sb.WriteString("\n")
-		// The overlay covers the list, so a refusal has nowhere else to appear —
+		// The card covers the list, so a refusal has nowhere else to appear —
 		// without this, enter on an unusable agent looks like a dead key.
 		if m.err != nil {
-			sb.WriteString(dangerStyle.Render(m.err.Error()))
-			sb.WriteString("\n\n")
+			sb.WriteString("\n\n" + dangerStyle.Render(m.err.Error()))
 		}
-		sb.WriteString(helpStyle.Render("↑/↓ navigate • Enter select • i install adapter • Esc cancel"))
-		return appStyle.Render(sb.String())
+		return m.dialogCard("Select Agent", sb.String(),
+			dialogHintStyle.Render("↑/↓ navigate • Enter select • i install adapter • Esc cancel"),
+			dialogAccent)
 	}
 
 	// Agent permission dialog. The options are the ones the agent offered, so
 	// the list never presents a choice the agent will refuse.
 	if m.answering && m.answerPerm != nil {
 		var sb strings.Builder
-		sb.WriteString(titleStyle.Render("Agent permission: " + m.answerWs))
-		sb.WriteString("\n\n")
 		sb.WriteString(confirmLabelStyle.Render(m.answerPerm.Title))
-		sb.WriteString("\n\n")
+		sb.WriteString("\n")
 		for i, o := range m.answerPerm.Options {
 			cursor, style := "  ", itemStyle
 			if i == m.answerCursor {
 				cursor, style = "▶ ", selectedItemStyle
 			}
-			sb.WriteString(style.Render(fmt.Sprintf("%s[%d] %s", cursor, i+1, o.Name)))
-			sb.WriteString("\n")
+			sb.WriteString("\n" + style.Render(fmt.Sprintf("%s[%d] %s", cursor, i+1, o.Name)))
 		}
-		sb.WriteString("\n")
-		sb.WriteString(helpStyle.Render("↑/↓ navigate • 1-9 or Enter to answer • Esc cancel"))
-		return appStyle.Render(sb.String())
+		return m.dialogCard("Agent permission: "+m.answerWs, sb.String(),
+			dialogHintStyle.Render("↑/↓ navigate • 1-9 or Enter to answer • Esc cancel"),
+			dialogAccent)
 	}
 
 	// Message-the-agent dialog
 	if m.prompting {
-		hint := ""
+		body := m.input.View()
 		if i := m.workspaceIndex(m.promptWs); i >= 0 {
 			if h := m.workspaces[i].promptHint(); h != "" {
-				hint = rowHintStyle.Render(h) + "\n"
+				body += "\n" + rowHintStyle.Render(h)
 			}
 		}
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n%s\n%s",
-			titleStyle.Render("Message agent: "+m.promptWs),
-			m.input.View(),
-			hint,
-			helpStyle.Render("Enter to send • Esc to cancel"),
-		))
+		return m.dialogCard("Message agent: "+m.promptWs, body,
+			dialogHintStyle.Render("Enter to send • Esc to cancel"), dialogAccent)
 	}
 
 	// Diff view overlay
@@ -187,18 +189,16 @@ func (m Model) View() string {
 			sb.WriteString("\n")
 		}
 
-		scrollInfo := fmt.Sprintf("line %d/%d", offset+1, len(lines))
-		footer := fmt.Sprintf("%s  •  %s  •  %s",
-			helpStyle.Render("↑/k ↓/j scroll"),
-			helpStyle.Render("esc to close"),
-			helpStyle.Render(scrollInfo),
+		// A reader, not a card — but with the same two bars, so the keys sit on
+		// one line with the position instead of wrapping into a second.
+		header := m.bar(titleStyle.Render("Diff: "+m.diffWsName), m.diffSummary())
+		footer := m.bar(
+			dialogHintStyle.Render("↑/k ↓/j scroll  •  esc close"),
+			dialogHintStyle.Render(fmt.Sprintf("line %d/%d", offset+1, len(lines))),
 		)
-		content := fmt.Sprintf("%s\n\n%s\n%s",
-			titleStyle.Render("Diff: "+m.diffWsName),
-			sb.String(),
-			footer,
-		)
-		return appStyle.Render(content)
+		return appStyle.Render(strings.Join([]string{
+			header, m.divider(), sb.String() + m.divider(), footer,
+		}, "\n"))
 	}
 
 	// Delete confirmation dialog
@@ -218,28 +218,21 @@ func (m Model) View() string {
 			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("confirm"),
 			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
 		)
-		content := fmt.Sprintf("%s\n\n%s\n\n%s",
-			dangerStyle.Render(titleMsg),
+		// The one destructive dialog keeps the red border it already had.
+		return m.dialogCard(titleMsg,
 			confirmLabelStyle.Render("The worktree, tmux window, and all local changes will be removed."),
-			footer,
-		)
-		return appStyle.Render(deleteDialogStyle.Render(content))
+			footer, dialogDanger)
 	}
 
 	// Issue creation dialog
 	if m.creating && m.issueMode {
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
-			titleStyle.Render("Create Workspace from GitHub Issue"),
-			m.input.View(),
-			helpStyle.Render("Enter issue number • Esc to cancel"),
-		))
+		return m.dialogCard("Create Workspace from GitHub Issue", m.input.View(),
+			dialogHintStyle.Render("Enter issue number • Esc to cancel"), dialogAccent)
 	}
 
 	// Remote branch creation dialog with suggestion list
 	if m.creating && m.remoteBranchMode {
 		var sb strings.Builder
-		sb.WriteString(titleStyle.Render("Create Workspace from Remote Branch"))
-		sb.WriteString("\n\n")
 		sb.WriteString(m.input.View())
 		sb.WriteString("\n")
 		if len(m.filteredBranches) > 0 {
@@ -261,17 +254,14 @@ func (m Model) View() string {
 				sb.WriteString("\n")
 			}
 		} else if len(m.remoteBranches) == 0 {
-			sb.WriteString("\n")
-			sb.WriteString(helpStyle.Render("  loading branches…"))
-			sb.WriteString("\n")
+			sb.WriteString("\n" + dialogHintStyle.Render("  loading branches…") + "\n")
 		} else {
-			sb.WriteString("\n")
-			sb.WriteString(helpStyle.Render("  no branches match"))
-			sb.WriteString("\n")
+			sb.WriteString("\n" + dialogHintStyle.Render("  no branches match") + "\n")
 		}
-		sb.WriteString("\n")
-		sb.WriteString(helpStyle.Render("↑/↓ navigate • Tab select • Enter confirm • Esc cancel"))
-		return appStyle.Render(sb.String())
+		return m.dialogCard("Create Workspace from Remote Branch",
+			strings.TrimRight(sb.String(), "\n"),
+			dialogHintStyle.Render("↑/↓ navigate • Tab select • Enter confirm • Esc cancel"),
+			dialogAccent)
 	}
 
 	// Two-step create dialog
@@ -282,20 +272,18 @@ func (m Model) View() string {
 		} else {
 			stepLabel = fmt.Sprintf("Step 2/2 — Base branch  (branching from: %s)", m.newBranchName)
 		}
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n%s\n\n%s",
-			titleStyle.Render("Create New Workspace"),
-			stepLabelStyle.Render(stepLabel),
-			m.input.View(),
-			helpStyle.Render("Enter to continue • Esc to cancel"),
-		))
+		return m.dialogCard("Create New Workspace",
+			stepLabelStyle.Render(stepLabel)+"\n"+m.input.View(),
+			dialogHintStyle.Render("Enter to continue • Esc to cancel"), dialogAccent)
 	}
 
 	// PR content generation in progress
 	if m.prGenerating {
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s",
-			titleStyle.Render(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase)),
-			helpStyle.Render("Generating title and description from commits…"),
-		))
+		// No spinner: the tick only runs for create and delete, and a frozen
+		// spinner reads as a hang rather than as work in progress.
+		return m.dialogCard(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase),
+			pendingLabelStyle.Render("Generating title and description from commits…"),
+			"", dialogAccent)
 	}
 
 	// PR creation dialog
@@ -306,12 +294,9 @@ func (m Model) View() string {
 		} else {
 			stepLabel = fmt.Sprintf("Step 2/2 — PR body  (title: %s)", m.prTitle)
 		}
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n%s\n\n%s",
-			titleStyle.Render(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase)),
-			stepLabelStyle.Render(stepLabel),
-			m.input.View(),
-			helpStyle.Render("Enter to continue • Esc to cancel"),
-		))
+		return m.dialogCard(fmt.Sprintf("Create PR: %s → %s", m.prBranch, m.prBase),
+			stepLabelStyle.Render(stepLabel)+"\n"+m.input.View(),
+			dialogHintStyle.Render("Enter to continue • Esc to cancel"), dialogAccent)
 	}
 
 	var s strings.Builder
@@ -434,7 +419,7 @@ func (m Model) View() string {
 			}
 			// The agent leads the line: which agent a worktree runs is the one
 			// thing the row never said, and it decides how you talk to it.
-			descParts := []string{branchDisplay, ws.DiffStat, "created " + formatAge(ws.CreatedAt)}
+			descParts := []string{branchDisplay, ws.renderDiffStat(), "created " + formatAge(ws.CreatedAt)}
 			if brand := agentBrand(ws.Agent); brand != "" {
 				descParts = append([]string{brand}, descParts...)
 			}
@@ -451,7 +436,10 @@ func (m Model) View() string {
 				descParts = append(descParts, "active "+formatAge(ws.LastActivity))
 			}
 
-			desc := "  " + strings.Join(descParts, " • ")
+			// A long branch name used to push the timestamps off the right
+			// edge. ansi.Truncate because the parts carry their own colours:
+			// slicing runes here would cut through an escape sequence.
+			desc := "  " + ansi.Truncate(strings.Join(descParts, " • "), m.panelWidth()-2, "…")
 
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
 			s.WriteString("\n")
@@ -490,7 +478,9 @@ func (m Model) View() string {
 	s.WriteString(m.toastLine())
 	s.WriteString("\n")
 
-	// Status bar
+	// Status bar, fenced off from the list by a rule. The divider takes the
+	// blank line's old slot, so the chrome budget below does not change.
+	s.WriteString(m.divider())
 	s.WriteString("\n")
 	s.WriteString(m.statusBar())
 	s.WriteString("\n")
@@ -515,7 +505,8 @@ func (m Model) toastLine() string {
 	return ""
 }
 
-// statusBar renders the bottom stats line.
+// statusBar renders the bottom stats line: numbers bright, labels dim, and
+// the counts that signal work-to-do (waiting, errors) in their signal colour.
 func (m Model) statusBar() string {
 	total := len(m.workspaces)
 	active := 0
@@ -537,23 +528,46 @@ func (m Model) statusBar() string {
 		}
 	}
 	parts := []string{
-		fmt.Sprintf("%d workspaces", total),
-		fmt.Sprintf("%d active", active),
-		fmt.Sprintf("%d open PRs", openPRs),
+		stat(total, pluralLabel(total, "workspace")),
+		stat(active, "active"),
+		stat(openPRs, pluralLabel(openPRs, "open PR")),
 		// The key is inline: a status that can be changed but says not how
 		// is a dead end for anyone who hasn't opened the full help yet.
-		"sort: " + sortModeNames[m.sortMode] + " (s)",
+		statusBarStyle.Render("sort: " + sortModeNames[m.sortMode] + " (s)"),
 	}
 	if waiting > 0 {
-		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
+		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d", waiting))+
+			statusBarStyle.Render(" waiting"))
 	}
 	if len(m.selected) > 0 {
-		parts = append(parts, fmt.Sprintf("%d selected", len(m.selected)))
+		parts = append(parts, selectedMarkStyle.Render(fmt.Sprintf("%d", len(m.selected)))+
+			statusBarStyle.Render(" selected"))
 	}
 	if len(m.errLog) > 0 {
-		parts = append(parts, fmt.Sprintf("%d errors (E)", len(m.errLog)))
+		parts = append(parts, toastErrStyle.Render(fmt.Sprintf("%d", len(m.errLog)))+
+			statusBarStyle.Render(" errors (E)"))
 	}
-	return statusBarStyle.Render(strings.Join(parts, "  •  "))
+	return strings.Join(parts, statusBarStyle.Render("  •  "))
+}
+
+// stat is one bright count with its dim label, the unit the status bar and
+// the skills footer are both made of.
+func stat(n int, label string) string {
+	return statNumStyle.Render(fmt.Sprintf("%d", n)) + statusBarStyle.Render(" "+label)
+}
+
+// divider is the full-width rule fencing the status bar off from the list.
+func (m Model) divider() string {
+	return dividerStyle.Render(strings.Repeat("─", m.chromeWidth()))
+}
+
+// diffSummary is the change count in the diff view's header bar. The reader
+// is looking at a wall of hunks; the header says how much of it there is.
+func (m Model) diffSummary() string {
+	if i := m.workspaceIndex(m.diffWsName); i >= 0 {
+		return m.workspaces[i].renderDiffStat()
+	}
+	return ""
 }
 
 // visibleWorkspaces returns the sorted and filtered workspace list.
@@ -704,9 +718,10 @@ func (m Model) selectionPanels(visible []WorkspaceItem) string {
 	return b.String()
 }
 
-// branchDialogChrome is everything the suggestion list shares its screen with:
-// the title, the input, the "n more" line, the help, and the blanks between.
-const branchDialogChrome = 11
+// branchDialogChrome is everything the suggestion list shares its card with:
+// the title, the input, the "n more" line, the hints, the blanks between, and
+// the card's own border and padding.
+const branchDialogChrome = 12
 
 // branchWindow is the slice of suggestions that fits, scrolled to keep the
 // highlighted one inside it.

@@ -580,11 +580,11 @@ func (m Model) skillsView() string {
 	s.WriteString("\n\n")
 
 	if m.skillDeleting != nil {
-		return appStyle.Render(m.skillDeleteView())
+		return m.skillDeleteView()
 	}
 	if m.skillCopying != nil {
-		return appStyle.Render(m.pickTreeView("Copy "+m.skillCopying.Name+" to…",
-			m.copyTargets(*m.skillCopying)))
+		return m.pickTreeView("Copy "+m.skillCopying.Name+" to…",
+			m.copyTargets(*m.skillCopying))
 	}
 	// Typing first: the URL fills in a character at a time, so a picker drawn on
 	// "is there a URL yet" appears on the first keystroke and hides the prompt
@@ -593,8 +593,8 @@ func (m Model) skillsView() string {
 		return appStyle.Render(s.String() + m.skillAddView())
 	}
 	if m.skillAddURL != "" {
-		return appStyle.Render(m.pickTreeView("Clone "+skills.CloneName(m.skillAddURL)+" into…",
-			m.addTargets(m.skillAddURL)))
+		return m.pickTreeView("Clone "+skills.CloneName(m.skillAddURL)+" into…",
+			m.addTargets(m.skillAddURL))
 	}
 
 	if m.skillFiltering {
@@ -629,7 +629,7 @@ func (m Model) skillsView() string {
 	}
 
 	s.WriteString(m.toastLine() + "\n")
-	s.WriteString("\n" + m.skillsStatusBar() + "\n")
+	s.WriteString(m.divider() + "\n" + m.skillsStatusBar() + "\n")
 	// Two lines rather than one long one: the keys no longer fit an 80-column
 	// terminal, and a help line that wraps costs the list a row it has already
 	// budgeted for.
@@ -697,13 +697,12 @@ func (m Model) renderSkillRow(s skills.Skill, selected, isShared bool) string {
 
 func (m Model) skillDeleteView() string {
 	s := *m.skillDeleting
-	return deleteDialogStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
-		dangerStyle.Render(fmt.Sprintf("Delete skill %q?", s.Name)),
+	return m.dialogCard(fmt.Sprintf("Delete skill %q?", s.Name),
 		confirmLabelStyle.Render(s.Dir+" and everything in it will be removed."),
 		fmt.Sprintf("%s %s  •  %s %s",
 			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("confirm"),
 			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel")),
-	))
+		dialogDanger)
 }
 
 // pickTreeView is the tree picker, shared by copying a skill and cloning one:
@@ -711,16 +710,18 @@ func (m Model) skillDeleteView() string {
 // twice in two layouts would be two things to keep in step.
 func (m Model) pickTreeView(title string, targets []skillTarget) string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(title) + "\n\n")
 	for i, t := range targets {
 		cursor, style := "  ", itemStyle
 		if i == m.skillCopyCursor {
 			cursor, style = "▶ ", selectedItemStyle
 		}
-		b.WriteString(style.Render(cursor+t.Label) + "\n")
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(style.Render(cursor + t.Label))
 	}
-	b.WriteString("\n" + helpStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"))
-	return b.String()
+	return m.dialogCard(title, b.String(),
+		dialogHintStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"), dialogAccent)
 }
 
 // skillAddView prompts for the git URL to clone.
@@ -742,7 +743,7 @@ func (m Model) knownTrees() string {
 }
 
 func (m Model) skillsStatusBar() string {
-	parts := []string{plural(len(m.skills), "skill")}
+	parts := []string{stat(len(m.skills), pluralLabel(len(m.skills), "skill"))}
 	for _, agent := range config.PredefinedAgents {
 		// An agent with no skills mechanism at all is left out rather than
 		// tallied at zero: "GitHub Copilot 0" says it has somewhere to put
@@ -796,9 +797,11 @@ func (m Model) skillsStatusBar() string {
 		if unexpected > 0 {
 			label += fmt.Sprintf(" · %d unexpected", unexpected)
 		}
-		parts = append(parts, label)
+		parts = append(parts, statusBarStyle.Render(label))
 	}
-	return statusBarStyle.Render(strings.Join(parts, "  •  "))
+	// No outer wrap: an ANSI reset inside a styled part does not resume an
+	// enclosing colour, so each part and each separator styles itself.
+	return strings.Join(parts, statusBarStyle.Render("  •  "))
 }
 
 // tabBar renders the two top-level places, the active one highlighted.
@@ -813,10 +816,16 @@ func (m Model) tabBar() string {
 }
 
 func plural(n int, noun string) string {
+	return fmt.Sprintf("%d %s", n, pluralLabel(n, noun))
+}
+
+// pluralLabel is plural's label half, for the status bars — they render the
+// count themselves, in their own colour, and only want the noun agreed.
+func pluralLabel(n int, noun string) string {
 	if n == 1 {
-		return fmt.Sprintf("%d %s", n, noun)
+		return noun
 	}
-	return fmt.Sprintf("%d %ss", n, noun)
+	return noun + "s"
 }
 
 // skillNameWidth is the name column. Wide enough for almost every skill name,

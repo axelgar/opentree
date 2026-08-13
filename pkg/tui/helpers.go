@@ -105,6 +105,28 @@ func (ws WorkspaceItem) actionHint() string {
 	return ""
 }
 
+// renderDiffStat is the change summary in a row's detail line. The raw git
+// --stat sentence (" 3 files changed, 6 insertions(+)") reads as one more grey
+// word in a grey line; counts in the palette's add/remove colours are scannable
+// instead. "clean" replaces "No changes": same fact, less noise.
+func (ws WorkspaceItem) renderDiffStat() string {
+	if ws.DiffStat == "diff unavailable" {
+		return warnStyle.Render("diff unavailable")
+	}
+	if len(ws.FileChanges) == 0 {
+		return "clean"
+	}
+	added, removed := 0, 0
+	for _, f := range ws.FileChanges {
+		added += f.Added
+		removed += f.Removed
+	}
+	return fmt.Sprintf("%s · %s %s",
+		plural(len(ws.FileChanges), "file"),
+		diffAddStyle.Render(fmt.Sprintf("+%d", added)),
+		diffRemoveStyle.Render(fmt.Sprintf("-%d", removed)))
+}
+
 // renderDiffLine colorizes a single line of unified diff output.
 func renderDiffLine(line string) string {
 	switch {

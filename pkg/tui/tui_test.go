@@ -10,11 +10,13 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
 
 // ---------------------------------------------------------------------------
@@ -1664,6 +1666,132 @@ func TestView_HintAndToastFitShortTerminal(t *testing.T) {
 
 	if h := lipgloss.Height(m.View()); h > m.height {
 		t.Errorf("View() height = %d, exceeds terminal height %d", h, m.height)
+	}
+}
+
+// A branch name long enough to push the timestamps off the right edge is cut
+// to the panel. The parts carry their own colours, so this also pins that the
+// cut is ANSI-aware: a rune-slice through an escape sequence would leave the
+// rest of the screen wearing the colour it severed.
+func TestRow_LongBranchNameStaysInsideThePanel(t *testing.T) {
+	ws := testWS("ws")
+	ws.Branch = strings.Repeat("very-long-branch-name/", 12)
+	ws.Agent = "claude"
+	ws.UncommittedCount = 3
+
+	m := newTestModel(ws)
+	m.width, m.height = 100, 40
+
+	var desc string
+	for _, line := range strings.Split(m.View(), "\n") {
+		if strings.Contains(line, "very-long-branch-name") {
+			desc = strings.TrimRight(ansi.Strip(line), " ")
+		}
+	}
+	if desc == "" {
+		t.Fatalf("no detail line rendered:\n%s", m.View())
+	}
+	if w := lipgloss.Width(desc); w > m.width {
+		t.Errorf("detail line is %d columns wide in a %d-column terminal: %q", w, m.width, desc)
+	}
+	if !strings.HasSuffix(desc, "…") {
+		t.Errorf("the branch name was not cut: %q", desc)
+	}
+	// A rune-slice through one of the agent brand's escape codes would cut the
+	// line a couple of dozen columns early, long before the third repetition.
+	if n := strings.Count(desc, "very-long-branch-name/"); n < 3 {
+		t.Errorf("cut at %d repetitions, want the display width counted, not the bytes: %q", n, desc)
+	}
+}
+
+// The one dialog that can outgrow the screen: the branch list is windowed, but
+// the card's own border and padding come out of the same budget.
+func TestRemoteBranchDialog_FitsAShortTerminal(t *testing.T) {
+	for _, height := range []int{20, 24, 40} {
+		t.Run(fmt.Sprintf("h%d", height), func(t *testing.T) {
+			m := newTestModel()
+			m.height, m.width = height, 100
+			m.creating, m.remoteBranchMode = true, true
+			for i := 0; i < 200; i++ {
+				m.remoteBranches = append(m.remoteBranches, fmt.Sprintf("origin/feature-%03d", i))
+			}
+			m.filteredBranches = m.remoteBranches
+			m.branchSuggestionCursor = 150
+
+			view := m.View()
+			if h := lipgloss.Height(view); h > height {
+				t.Errorf("card is %d lines tall in a %d-line terminal", h, height)
+			}
+			if !strings.Contains(view, "feature-150") {
+				t.Error("the highlighted branch is off screen")
+			}
+		})
+	}
+}
+
+// The diff view is a reader with two bars, and the bars are chrome the content
+// budget has to leave room for.
+func TestDiffView_FitsTheTerminal(t *testing.T) {
+	ws := testWS("ws")
+	ws.FileChanges = []worktree.FileChange{{FileName: "a.go", Added: 18, Removed: 2}}
+
+	// Below minDiffHeight the reader keeps its floor of visible lines and the
+	// frame does overflow — a two-line diff view would be no use anyway.
+	for _, height := range []int{16, 24, 40} {
+		t.Run(fmt.Sprintf("h%d", height), func(t *testing.T) {
+			m := newTestModel(ws)
+			m.height, m.width = height, 100
+			m.diffViewing, m.diffWsName = true, "ws"
+			m.diffContent = strings.Repeat("+ a line\n", 200)
+
+			view := m.View()
+			if h := lipgloss.Height(view); h > height {
+				t.Errorf("diff view is %d lines tall in a %d-line terminal", h, height)
+			}
+			// Header summary and footer position, both on their own bar.
+			if !strings.Contains(view, "+18") || !strings.Contains(view, "line 1/") {
+				t.Errorf("the bars lost the summary or the position:\n%s", view)
+			}
+		})
+	}
+}
+
+// Every dialog is the same card: centred, bordered, and inside the terminal.
+func TestDialogs_AreCentredCards(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(Model) Model
+		want  string
+	}{
+		{"delete", func(m Model) Model { m.deleting, m.deleteTarget = true, "ws"; return m }, "Delete workspace"},
+		{"create", func(m Model) Model { m.creating = true; return m }, "Create New Workspace"},
+		{"issue", func(m Model) Model { m.creating, m.issueMode = true, true; return m }, "GitHub Issue"},
+		{"prompt", func(m Model) Model { m.prompting, m.promptWs = true, "ws"; return m }, "Message agent"},
+		{"agents", func(m Model) Model { m.agentSelecting = true; return m }, "Select Agent"},
+		{"pr", func(m Model) Model { m.prCreating, m.prBranch, m.prBase = true, "b", "main"; return m }, "Create PR"},
+		{"prGen", func(m Model) Model { m.prGenerating, m.prBranch, m.prBase = true, "b", "main"; return m }, "Create PR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.setup(newTestModel(testWS("ws")))
+			view := m.View()
+
+			if !strings.Contains(view, tc.want) {
+				t.Errorf("dialog lost its title %q:\n%s", tc.want, view)
+			}
+			if !strings.Contains(view, "╮") {
+				t.Errorf("dialog has no card border:\n%s", view)
+			}
+			if h := lipgloss.Height(view); h > m.height {
+				t.Errorf("dialog is %d lines tall in a %d-line terminal", h, m.height)
+			}
+			// Centred, not pinned to the left edge like the old takeovers.
+			for _, line := range strings.Split(ansi.Strip(view), "\n") {
+				if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, " ") {
+					t.Errorf("dialog is flush against the left edge: %q", line)
+					break
+				}
+			}
+		})
 	}
 }
 
