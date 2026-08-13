@@ -8,7 +8,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
@@ -81,6 +83,28 @@ func shortenPath(path string, maxLen int) string {
 	return result
 }
 
+// actionHint is the one-line "what this row can do right now" shown under the
+// selected workspace. First match wins: the point is the next action, not a
+// catalogue of every key that would work. The merged cleanup hint that used
+// to be the only state with a hint is now one case among several. Every case
+// speaks in one voice — key, then what it does — so the line reads the same
+// wherever the row happens to be.
+func (ws WorkspaceItem) actionHint() string {
+	switch {
+	case ws.pendingPermission() != nil:
+		return "a answer permission • m message • c interrupt"
+	case ws.ChatStatus != nil && ws.ChatStatus.State == chat.StateStopped:
+		return "enter attach and restart the stopped agent"
+	case ws.PRStatus == "merged":
+		return "x clean up this merged workspace"
+	case ws.PRStatus == "open":
+		return "o open PR • R send reviews • m message"
+	case ws.UncommittedCount > 0 || (ws.DiffStat != "" && ws.DiffStat != "No changes"):
+		return "p create PR • d diff • m message"
+	}
+	return ""
+}
+
 // renderDiffLine colorizes a single line of unified diff output.
 func renderDiffLine(line string) string {
 	switch {
@@ -116,8 +140,16 @@ func countUncommitted(worktreePath string) int {
 	return count
 }
 
-// openURLCmd opens a URL in the system default browser (fire-and-forget).
+// cmdStart is a variable so tests can stub the actual exec.
+var cmdStart = func(c *exec.Cmd) error { return c.Start() }
+
+// openURLCmd opens a URL in the system default browser.
 // Only opens http/https URLs to prevent command injection.
+//
+// The result comes back as a message — browserOpenedMsg or errMsg — because a
+// key that appears to do nothing is indistinguishable from a broken one, and
+// "nothing happened" used to be the only answer both on success and on a
+// missing opener.
 func openURLCmd(rawURL string) tea.Cmd {
 	return func() tea.Msg {
 		if !strings.HasPrefix(rawURL, "https://") && !strings.HasPrefix(rawURL, "http://") {
@@ -132,9 +164,40 @@ func openURLCmd(rawURL string) tea.Cmd {
 		default:
 			cmd = exec.Command("xdg-open", rawURL)
 		}
-		_ = cmd.Start()
-		return nil
+		if err := cmdStart(cmd); err != nil {
+			return errMsg{fmt.Errorf("could not open browser: %w", err)}
+		}
+		return browserOpenedMsg{url: rawURL}
 	}
+}
+
+// truncate shortens plain text to width, marking the cut. It is the package's
+// only truncator: a badge, a skill description and a toast all want the same
+// thing, and three copies of it had drifted into three different answers for
+// a narrow width. Never called on styled text: slicing runes through an escape
+// sequence would corrupt it.
+func truncate(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	if width < 1 {
+		return ""
+	}
+	if width == 1 {
+		return "…"
+	}
+	return string([]rune(s)[:width-1]) + "…"
+}
+
+// workspaceIndex is the row for a name, or -1. Commands finish long after the
+// list was built and arrive carrying only the name they were started with.
+func (m Model) workspaceIndex(name string) int {
+	for i, ws := range m.workspaces {
+		if ws.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // formatAge returns a human-readable age string for a given timestamp, or ""

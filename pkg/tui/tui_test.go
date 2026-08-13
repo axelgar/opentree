@@ -2,13 +2,16 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/state"
@@ -1397,5 +1400,312 @@ func TestSortedWorkspaces_DeterministicOnTies(t *testing.T) {
 		if first[i].Name != second[i].Name {
 			t.Fatalf("tied sort order changed across reloads: %v vs %v", first[i].Name, second[i].Name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: action feedback toasts
+// ---------------------------------------------------------------------------
+
+// TestPRCreatedMsg_ShowsNoticeWithURL: the two-step PR dialog used to close
+// into silence; the URL is the deliverable and belongs in a notice.
+func TestPRCreatedMsg_ShowsNoticeWithURL(t *testing.T) {
+	m := newTestModel(testWS("feat-x"))
+	// The handler consults the state store; a real one over a temp dir keeps
+	// the test out of the repo's own .opentree.
+	store, err := state.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("state.New: %v", err)
+	}
+	m.stateStore = store
+
+	m, _ = applyUpdate(m, prCreatedMsg{wsName: "feat-x", prURL: "https://github.com/a/b/pull/42"})
+
+	if !strings.Contains(m.notice, "https://github.com/a/b/pull/42") {
+		t.Errorf("notice = %q, want it to carry the PR URL", m.notice)
+	}
+	if !strings.Contains(m.notice, "o to open") {
+		t.Errorf("notice = %q, want it to name the key that opens the PR", m.notice)
+	}
+	if m.noticeSeq == 0 {
+		t.Error("expected the notice to be scheduled for clearing")
+	}
+}
+
+// TestDeletedWorkspaceMsg_Notice: rows used to just disappear.
+func TestDeletedWorkspaceMsg_Notice(t *testing.T) {
+	m := newTestModel(testWS("feat-a"), testWS("feat-b"))
+
+	m, _ = applyUpdate(m, deletedWorkspaceMsg{names: []string{"feat-a"}})
+	if !strings.Contains(m.notice, "feat-a") {
+		t.Errorf("notice = %q, want it to name the deleted workspace", m.notice)
+	}
+
+	m, _ = applyUpdate(m, deletedWorkspaceMsg{names: []string{"feat-a", "feat-b"}})
+	if !strings.Contains(m.notice, "2 workspaces") {
+		t.Errorf("notice = %q, want a count for a batch delete", m.notice)
+	}
+}
+
+// TestSortKey_NamesTheNewOrder: the reshuffle alone was ambiguous about what
+// had changed.
+func TestSortKey_NamesTheNewOrder(t *testing.T) {
+	m := newTestModel(testWS("a"), testWS("b"))
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+
+	if m.sortMode != sortByAge {
+		t.Fatalf("sortMode = %d, want sortByAge", m.sortMode)
+	}
+	if !strings.Contains(m.notice, "age") {
+		t.Errorf("notice = %q, want it to name the new sort order", m.notice)
+	}
+}
+
+// TestBrowserOpenedMsg_Notice: 'o' used to answer with silence either way.
+func TestBrowserOpenedMsg_Notice(t *testing.T) {
+	m := newTestModel(testWSWithPR("feat-x", "https://github.com/a/b/pull/7"))
+
+	m, _ = applyUpdate(m, browserOpenedMsg{url: "https://github.com/a/b/pull/7"})
+
+	if !strings.Contains(m.notice, "pull/7") {
+		t.Errorf("notice = %q, want it to name what was opened", m.notice)
+	}
+}
+
+// TestOpenURLCmd_StartFailureSurfaces: a missing opener used to be swallowed.
+func TestOpenURLCmd_StartFailureSurfaces(t *testing.T) {
+	orig := cmdStart
+	t.Cleanup(func() { cmdStart = orig })
+	cmdStart = func(c *exec.Cmd) error { return fmt.Errorf("no browser") }
+
+	msg := openURLCmd("https://github.com/a/b/pull/7")()
+	if _, ok := msg.(errMsg); !ok {
+		t.Errorf("msg = %T, want errMsg when the opener fails", msg)
+	}
+}
+
+// TestOpenURLCmd_SuccessReports: and a successful open used to say nothing.
+func TestOpenURLCmd_SuccessReports(t *testing.T) {
+	orig := cmdStart
+	t.Cleanup(func() { cmdStart = orig })
+	cmdStart = func(c *exec.Cmd) error { return nil }
+
+	msg := openURLCmd("https://github.com/a/b/pull/7")()
+	got, ok := msg.(browserOpenedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want browserOpenedMsg", msg)
+	}
+	if got.url != "https://github.com/a/b/pull/7" {
+		t.Errorf("url = %q, want the opened URL", got.url)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: per-row action hints
+// ---------------------------------------------------------------------------
+
+func TestActionHint_Precedence(t *testing.T) {
+	permission := &chat.Status{
+		State: chat.StateAwaiting,
+		Permission: &chat.Permission{
+			Title:   "go test ./...",
+			Options: []acp.PermissionOption{{OptionID: "once", Kind: acp.PermissionAllowOnce, Name: "Allow once"}},
+		},
+	}
+	tests := []struct {
+		name string
+		ws   WorkspaceItem
+		want string // substring; "" means no hint at all
+	}{
+		{"permission wins over everything", func() WorkspaceItem {
+			ws := testWSWithPR("a", "https://x/pr/1") // also open + changes
+			ws.ChatStatus = permission
+			return ws
+		}(), "a answer permission"},
+		{"stopped beats merged", func() WorkspaceItem {
+			ws := testWS("a")
+			ws.PRStatus = "merged"
+			ws.ChatStatus = &chat.Status{State: chat.StateStopped}
+			return ws
+		}(), "restart the stopped agent"},
+		{"merged cleanup", func() WorkspaceItem {
+			ws := testWS("a")
+			ws.PRStatus = "merged"
+			return ws
+		}(), "clean up this merged workspace"},
+		{"open PR", testWSWithPR("a", "https://x/pr/1"), "o open PR"},
+		{"uncommitted changes", func() WorkspaceItem {
+			ws := testWS("a")
+			ws.DiffStat = "No changes"
+			ws.UncommittedCount = 3
+			return ws
+		}(), "p create PR"},
+		{"committed changes", func() WorkspaceItem {
+			ws := testWS("a")
+			ws.DiffStat = "2 files changed"
+			return ws
+		}(), "p create PR"},
+		{"clean and PR-less says nothing", func() WorkspaceItem {
+			ws := testWS("a")
+			ws.DiffStat = "No changes"
+			return ws
+		}(), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.ws.actionHint()
+			if tt.want == "" {
+				if got != "" {
+					t.Errorf("actionHint = %q, want none", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("actionHint = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestActionHint_OnlyForSelectedRow: hints on every row would be noise.
+func TestActionHint_OnlyForSelectedRow(t *testing.T) {
+	// Names chosen so the default name sort puts the PR row second.
+	withPR := testWSWithPR("zzz-with-pr", "https://x/pr/1")
+	m := newTestModel(testWS("aaa-plain"), withPR)
+	m.cursor = 1
+
+	view := m.View()
+	if !strings.Contains(view, "o open PR") {
+		t.Errorf("View() missing hint for the selected row\ngot: %s", view)
+	}
+
+	m.cursor = 0
+	view = m.View()
+	if strings.Contains(view, "o open PR") {
+		t.Errorf("View() shows a hint for an unselected row\ngot: %s", view)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: message dialog pre-warnings
+// ---------------------------------------------------------------------------
+
+func TestPromptHint_States(t *testing.T) {
+	// A workspace with no chat needs an agent the registry still knows, or
+	// chatUnavailable answers with the "no longer supported" case instead.
+	noChat := testWS("nochat")
+	noChat.Agent = "claude"
+
+	cases := []struct {
+		name string
+		ws   WorkspaceItem
+		want string
+	}{
+		{"busy", wsWithChat("busy", &chat.Status{State: chat.StateWorking}), "will be queued"},
+		{"dead", wsWithChat("dead", &chat.Status{State: chat.StateStopped}), "has stopped"},
+		{"held", wsWithChat("held", &chat.Status{State: chat.StateWorking, Queued: "earlier prompt"}), "already queued"},
+		{"nochat", noChat, "not running"},
+		{"idle", wsWithChat("idle", &chat.Status{State: chat.StateIdle}), ""},
+	}
+	for _, c := range cases {
+		got := c.ws.promptHint()
+		if c.want == "" {
+			if got != "" {
+				t.Errorf("promptHint(%s) = %q, want none", c.name, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, c.want) {
+			t.Errorf("promptHint(%s) = %q, want it to contain %q", c.name, got, c.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: the toast slot never moves the list
+// ---------------------------------------------------------------------------
+
+// TestToastSlot_ListDoesNotReflow: banners used to render above the list,
+// pushing every row down for three seconds and then yanking them back.
+func TestToastSlot_ListDoesNotReflow(t *testing.T) {
+	m := newTestModel(testWS("alpha"), testWS("beta"), testWS("gamma"))
+
+	plain := m.View()
+	m.err = fmt.Errorf("something broke")
+	withErr := m.View()
+
+	rowIndex := func(view string) int { return strings.Index(view, "alpha") }
+	if rowIndex(plain) != rowIndex(withErr) {
+		t.Errorf("first row moved when the toast appeared: byte %d -> %d", rowIndex(plain), rowIndex(withErr))
+	}
+
+	// The error must land below the list and above the status bar.
+	errIdx := strings.Index(withErr, "something broke")
+	statusIdx := strings.Index(withErr, "3 workspaces")
+	if errIdx < rowIndex(withErr) || errIdx > statusIdx {
+		t.Errorf("toast not pinned between list and status bar (row %d, toast %d, status %d)",
+			rowIndex(withErr), errIdx, statusIdx)
+	}
+}
+
+// TestView_HintAndToastFitShortTerminal: with a hinted row selected, a toast
+// up, and a short terminal, the frame must still fit — an over-tall frame
+// makes bubbletea drop lines off the top.
+func TestView_HintAndToastFitShortTerminal(t *testing.T) {
+	var list []WorkspaceItem
+	for i := 0; i < 8; i++ {
+		list = append(list, testWSWithPR(fmt.Sprintf("ws-%d", i), "https://x/pr/1"))
+	}
+	m := newTestModel(list...)
+	m.height = 20 // deliberately tight
+	m.cursor = 3  // a hinted row (open PR)
+	m.notice = "a toast is up"
+
+	if h := lipgloss.Height(m.View()); h > m.height {
+		t.Errorf("View() height = %d, exceeds terminal height %d", h, m.height)
+	}
+}
+
+// TestStatusBar_NamesTheSortKey: a changeable status that doesn't name its
+// key is a dead end.
+func TestStatusBar_NamesTheSortKey(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	if !strings.Contains(m.statusBar(), "sort: name (s)") {
+		t.Errorf("statusBar() = %q, want the sort key named", m.statusBar())
+	}
+}
+
+// TestShortHelp_IncludesMessage: driving the agent without attaching is the
+// headline feature; its key belongs in the footer.
+func TestShortHelp_IncludesMessage(t *testing.T) {
+	m := newTestModel()
+	short := m.help.ShortHelpView(m.keys.ShortHelp())
+	if !strings.Contains(short, "message") {
+		t.Errorf("short help = %q, want the message key in it", short)
+	}
+	if strings.Contains(short, "remote branch") {
+		t.Errorf("short help = %q, 'r from remote branch' belongs to full help only", short)
+	}
+}
+
+// TestPromptDialog_ShowsQueueWarning: the README promises a prompt to a busy
+// agent is queued rather than refused; the dialog is where that promise
+// belongs, before the message is typed.
+func TestPromptDialog_ShowsQueueWarning(t *testing.T) {
+	m := newTestModel(wsWithChat("busy", &chat.Status{State: chat.StateWorking}))
+	m.prompting = true
+	m.promptWs = "busy"
+
+	view := m.View()
+	if !strings.Contains(view, "will be queued") {
+		t.Errorf("prompt dialog does not warn that the message will queue\ngot: %s", view)
+	}
+
+	m2 := newTestModel(wsWithChat("idle", &chat.Status{State: chat.StateIdle}))
+	m2.prompting = true
+	m2.promptWs = "idle"
+	if view := m2.View(); strings.Contains(view, "queued") {
+		t.Errorf("idle agent should get no queue warning\ngot: %s", view)
 	}
 }

@@ -28,7 +28,10 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Answer, k.Delete, k.Quit, k.Help}
+	// Messaging is in, creating from a remote branch is out: driving the
+	// agent without attaching is the everyday action, and r remains one '?'
+	// away in the full help.
+	return []key.Binding{k.New, k.Issue, k.Enter, k.Diff, k.Msg, k.Answer, k.Delete, k.Quit, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {

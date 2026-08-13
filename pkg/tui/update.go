@@ -524,6 +524,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Sort):
 			m.sortMode = (m.sortMode + 1) % 4
 			m.cursor = 0
+			// The reshuffle alone is ambiguous about what changed; name it.
+			return m, m.noticeCmd("sorted by " + sortModeNames[m.sortMode])
 		case key.Matches(msg, m.keys.Agent):
 			m.agentSelecting = true
 			m.agentCursor = 0
@@ -632,13 +634,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.wsName != "" {
 			// A refresh that read state after AddWorkspace may already have
 			// added the row; appending again would show it twice.
-			exists := false
-			for _, item := range m.workspaces {
-				if item.Name == msg.wsName {
-					exists = true
-					break
-				}
-			}
+			exists := m.workspaceIndex(msg.wsName) >= 0
 			if !exists && m.stateStore != nil {
 				if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
 					item := WorkspaceItem{
@@ -668,7 +664,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workspaceDeleting = false
 			m.workspaceDeletingName = ""
 		}
-		return m, m.loadWorkspacesCmd
+		notice := fmt.Sprintf("deleted %s", strings.Join(msg.names, ", "))
+		if len(msg.names) > 1 {
+			notice = fmt.Sprintf("deleted %d workspaces", len(msg.names))
+		}
+		return m, tea.Batch(m.loadWorkspacesCmd, m.noticeCmd(notice))
 
 	case refreshTickMsg:
 		next := tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} })
@@ -689,15 +689,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var branch, worktreeDir string
 		var wasPushed bool
-		for _, item := range m.workspaces {
-			if item.Name == msg.wsName {
-				branch = item.Branch
-				worktreeDir = item.WorktreeDir
-				wasPushed = item.BranchPushed
-				break
-			}
+		if i := m.workspaceIndex(msg.wsName); i >= 0 {
+			branch = m.workspaces[i].Branch
+			worktreeDir = m.workspaces[i].WorktreeDir
+			wasPushed = m.workspaces[i].BranchPushed
 		}
-		return m, tea.Batch(m.loadWorkspacesCmd, m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed))
+		// The URL is the deliverable of the whole flow — show it, and name the
+		// key that opens it, rather than the dialog just closing.
+		return m, tea.Batch(
+			m.loadWorkspacesCmd,
+			m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed),
+			m.noticeCmd(fmt.Sprintf("PR created: %s — o to open", truncate(msg.prURL, 60))),
+		)
 
 	case prContentGeneratedMsg:
 		// Only accept the generation we are waiting for; a stale result
@@ -741,12 +744,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ws.PRStatus = msg.prStatus
 			_ = m.stateStore.UpdateWorkspace(ws)
 		}
-		for i, item := range m.workspaces {
-			if item.Name == msg.wsName {
-				m.workspaces[i].PRURL = msg.prURL
-				m.workspaces[i].PRStatus = msg.prStatus
-				break
-			}
+		if i := m.workspaceIndex(msg.wsName); i >= 0 {
+			m.workspaces[i].PRURL = msg.prURL
+			m.workspaces[i].PRStatus = msg.prStatus
 		}
 
 	case ciStatusCheckedMsg:
@@ -772,20 +772,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			_ = m.stateStore.UpdateWorkspace(ws)
 		}
-		for i, item := range m.workspaces {
-			if item.Name == msg.wsName {
-				if !msg.status.RemoteCheckFailed {
-					m.workspaces[i].BranchPushed = msg.status.Pushed
-					m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
-				}
-				m.workspaces[i].MergeConflicts = msg.status.MergeConflicts
-				if msg.status.PRURL != "" {
-					m.workspaces[i].PRURL = msg.status.PRURL
-				}
-				if msg.status.PRState != "" {
-					m.workspaces[i].PRStatus = msg.status.PRState
-				}
-				break
+		if i := m.workspaceIndex(msg.wsName); i >= 0 {
+			if !msg.status.RemoteCheckFailed {
+				m.workspaces[i].BranchPushed = msg.status.Pushed
+				m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
+			}
+			m.workspaces[i].MergeConflicts = msg.status.MergeConflicts
+			if msg.status.PRURL != "" {
+				m.workspaces[i].PRURL = msg.status.PRURL
+			}
+			if msg.status.PRState != "" {
+				m.workspaces[i].PRStatus = msg.status.PRState
 			}
 		}
 		if msg.status.CIStatus != "" {
@@ -906,6 +903,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq == m.noticeSeq {
 			m.notice = ""
 		}
+
+	case browserOpenedMsg:
+		return m, m.noticeCmd("opened " + truncate(msg.url, 60) + " in browser")
 	}
 
 	return m, cmd

@@ -99,9 +99,9 @@ func (m Model) View() string {
 			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
 			switch {
 			case ready:
-				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#2A9D8F"))
+				statusSt = successStyle
 			case status == agentAdapterMissing:
-				statusSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#E9C46A"))
+				statusSt = warnStyle
 			}
 
 			// Pad before styling: the escape codes count toward %-16s otherwise
@@ -145,9 +145,16 @@ func (m Model) View() string {
 
 	// Message-the-agent dialog
 	if m.prompting {
-		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n\n%s",
+		hint := ""
+		if i := m.workspaceIndex(m.promptWs); i >= 0 {
+			if h := m.workspaces[i].promptHint(); h != "" {
+				hint = rowHintStyle.Render(h) + "\n"
+			}
+		}
+		return appStyle.Render(fmt.Sprintf("%s\n\n%s\n%s\n%s",
 			titleStyle.Render("Message agent: "+m.promptWs),
 			m.input.View(),
+			hint,
 			helpStyle.Render("Enter to send • Esc to cancel"),
 		))
 	}
@@ -324,18 +331,6 @@ func (m Model) View() string {
 		s.WriteString(filterPromptStyle.Render(fmt.Sprintf("filter: %q  (/ to change, esc to clear)", m.filterQuery)) + "\n\n")
 	}
 
-	// Error message (transient)
-	if m.err != nil {
-		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(fmt.Sprintf("Error: %v", m.err)))
-		s.WriteString("\n\n")
-	}
-
-	// Success notice (transient)
-	if m.notice != "" {
-		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(m.notice))
-		s.WriteString("\n\n")
-	}
-
 	visible := m.visibleWorkspaces()
 
 	// Everything below the list is built first so its height is known: the list
@@ -461,10 +456,13 @@ func (m Model) View() string {
 			s.WriteString(style.Render(fmt.Sprintf("%s\n%s", title, diffStyle.Render(desc))))
 			s.WriteString("\n")
 
-			// Merged cleanup hint
-			if ws.PRStatus == "merged" && i == m.cursor {
-				s.WriteString(mergedHintStyle.Render("  → Press x to clean up this merged workspace"))
-				s.WriteString("\n")
+			// What the selected row can do right now, in its own quiet line —
+			// the row carries state, this carries the next action.
+			if i == m.cursor {
+				if hint := ws.actionHint(); hint != "" {
+					s.WriteString(rowHintStyle.Render("  → " + hint))
+					s.WriteString("\n")
+				}
 			}
 		}
 		if end < len(visible) {
@@ -486,6 +484,12 @@ func (m Model) View() string {
 		s.WriteString("\n")
 	}
 
+	// Toast slot: one line, always rendered, pinned above the status bar.
+	// Always reserving the line is what stops a banner's arrival or clearing
+	// from moving the list.
+	s.WriteString(m.toastLine())
+	s.WriteString("\n")
+
 	// Status bar
 	s.WriteString("\n")
 	s.WriteString(m.statusBar())
@@ -495,6 +499,20 @@ func (m Model) View() string {
 	s.WriteString(m.help.View(m.keys))
 
 	return appStyle.Render(s.String())
+}
+
+// toastLine renders the transient error or notice into its fixed slot, or ""
+// when there is nothing to say. Errors win the slot: a failure is the thing
+// the user can least afford to miss.
+func (m Model) toastLine() string {
+	width := m.panelWidth() - 2 // the ✓/✕ glyph and its space
+	if m.err != nil {
+		return toastErrStyle.Render("✕ " + truncate(m.err.Error(), width))
+	}
+	if m.notice != "" {
+		return successStyle.Render("✓ " + truncate(m.notice, width))
+	}
+	return ""
 }
 
 // statusBar renders the bottom stats line.
@@ -522,7 +540,9 @@ func (m Model) statusBar() string {
 		fmt.Sprintf("%d workspaces", total),
 		fmt.Sprintf("%d active", active),
 		fmt.Sprintf("%d open PRs", openPRs),
-		"sort: " + sortModeNames[m.sortMode],
+		// The key is inline: a status that can be changed but says not how
+		// is a dead end for anyone who hasn't opened the full help yet.
+		"sort: " + sortModeNames[m.sortMode] + " (s)",
 	}
 	if waiting > 0 {
 		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
@@ -631,9 +651,16 @@ func renderCIBadge(ci string) string {
 	return ""
 }
 
+// toastLines is the height of the always-reserved feedback slot. Both lists
+// render one and both budget for it, so it is one constant rather than a
+// hand-edited number in each that has to be kept in step by memory.
+const toastLines = 1
+
 // listChromeLines is what the list must leave for the status bar, the help
-// line, the blank between them and a possible "creating…" ghost.
-const listChromeLines = 5
+// line, the blanks between them, the toast slot, and a possible "creating…"
+// ghost. The selected row's action hint adds one more line, which the ghost's
+// reserved line absorbs when no create is in flight.
+const listChromeLines = 5 + toastLines
 
 // listRowLines is the height of one workspace row: its title and its detail
 // line. The merged-workspace hint adds one more, which the budget absorbs.

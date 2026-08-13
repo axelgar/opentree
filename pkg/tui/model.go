@@ -240,6 +240,10 @@ type reviewsSentMsg struct {
 	count  int
 }
 
+// browserOpenedMsg reports that a PR URL was handed to the system browser,
+// so the dashboard can say so instead of the key answering with silence.
+type browserOpenedMsg struct{ url string }
+
 // NewModel initializes a fully-configured TUI Model.
 func NewModel() (*Model, error) {
 	// Resolve the git repository root for state persistence

@@ -376,13 +376,6 @@ func (m Model) skillsView() string {
 			fmt.Sprintf("filter: %q  (/ to change, esc to clear)", m.skillFilter)) + "\n\n")
 	}
 
-	if m.err != nil {
-		s.WriteString(dangerStyle.Render(fmt.Sprintf("Error: %v", m.err)) + "\n\n")
-	}
-	if m.notice != "" {
-		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(m.notice) + "\n\n")
-	}
-
 	visible := m.visibleSkills()
 	if len(visible) == 0 {
 		if m.skillFilter != "" {
@@ -407,6 +400,7 @@ func (m Model) skillsView() string {
 		}
 	}
 
+	s.WriteString(m.toastLine() + "\n")
 	s.WriteString("\n" + m.skillsStatusBar() + "\n")
 	s.WriteString(helpStyle.Render(
 		"↑/k ↓/j move • enter edit • t enable/disable • c copy to agent • x delete • " +
@@ -596,18 +590,9 @@ func pad(s string, width int) string {
 	return s
 }
 
-// truncate shortens plain text to width, marking the cut. Never called on
-// styled text: slicing runes through an escape sequence would corrupt it.
-func truncate(s string, width int) string {
-	if width < 4 || lipgloss.Width(s) <= width {
-		return s
-	}
-	return string([]rune(s)[:width-1]) + "…"
-}
-
 // skillsChromeLines is what the list must leave for the status bar, the help
-// line, and the blanks around them.
-const skillsChromeLines = 5
+// line, the toast slot, and the blanks around them.
+const skillsChromeLines = 5 + toastLines
 
 // skillRowLines is the height of one skill row: its title and its description.
 const skillRowLines = 2

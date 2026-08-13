@@ -41,7 +41,7 @@ func renderChatBadge(st *chat.Status) string {
 		if st.Permission != nil && st.Permission.Title != "" {
 			label += " · " + st.Permission.Title
 		}
-		return agentWaitingStyle.Render(truncateBadge(label))
+		return agentWaitingStyle.Render(truncate(label, badgeWidth))
 	case chat.StateWorking:
 		label := "working…"
 		if st.Tool != "" {
@@ -50,7 +50,7 @@ func renderChatBadge(st *chat.Status) string {
 		if st.Queued != "" {
 			label += " · 1 queued"
 		}
-		return agentWorkingStyle.Render(truncateBadge(label))
+		return agentWorkingStyle.Render(truncate(label, badgeWidth))
 	case chat.StateStopped:
 		return dangerStyle.Render("agent stopped")
 	case chat.StateStarting:
@@ -63,15 +63,9 @@ func renderChatBadge(st *chat.Status) string {
 	}
 }
 
-// truncateBadge keeps a badge from pushing the rest of the row off screen; a
-// bash command or a long path is otherwise unbounded.
-func truncateBadge(s string) string {
-	const max = 48
-	if len([]rune(s)) <= max {
-		return s
-	}
-	return string([]rune(s)[:max-1]) + "…"
-}
+// badgeWidth keeps a badge from pushing the rest of the row off screen; a bash
+// command or a long path is otherwise unbounded.
+const badgeWidth = 48
 
 // chatMeta is the cost and context line shown under a workspace running a chat.
 func chatMeta(st *chat.Status) string {
@@ -125,6 +119,26 @@ func (ws WorkspaceItem) chatUnavailable() string {
 			ws.Name, ws.Agent)
 	}
 	return fmt.Sprintf("%s's chat is not running — press enter to reopen it", ws.Name)
+}
+
+// promptHint warns the message dialog about what a send will do before it is
+// sent. A busy agent queues the prompt — the README promises it, but the
+// dialog is where the promise belongs.
+//
+// The m key already refuses to open this dialog on an unreachable agent, but a
+// refresh can kill one mid-typing; that case answers in chatUnavailable's own
+// words rather than a second set of them that drifts from the first.
+func (ws WorkspaceItem) promptHint() string {
+	if why := ws.chatUnavailable(); why != "" {
+		return why
+	}
+	switch {
+	case ws.ChatStatus.Queued != "":
+		return "another prompt is already queued — sending will be refused"
+	case ws.ChatStatus.State == chat.StateWorking || ws.ChatStatus.State == chat.StateStarting:
+		return "agent is working — your message will be queued"
+	}
+	return ""
 }
 
 // sendAgentCommand delivers one instruction to a workspace's chat process and

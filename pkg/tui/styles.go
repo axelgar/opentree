@@ -75,17 +75,27 @@ var (
 			Foreground(lipgloss.Color("#888")).
 			Italic(true)
 
+	// Palette anchors for "it worked", "it needs attention" and "it failed".
+	// Every place that means one of those three renders through these, so the
+	// program reads as one program: a CI badge, an agent's readiness in the
+	// picker and the toast slot are the same green as each other.
+	successStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2A9D8F"))
+
+	warnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#E9C46A"))
+
+	toastErrStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#E76F51"))
+
 	// CI badge styles
-	ciSuccessStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#2A9D8F")).
-			Bold(true)
+	ciSuccessStyle = successStyle.Bold(true)
 
 	ciFailureStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
-	ciPendingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E9C46A"))
+	ciPendingStyle = warnStyle
 
 	// multi-select
 	selectedMarkStyle = lipgloss.NewStyle().
@@ -100,8 +110,8 @@ var (
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262"))
 
-	// merged cleanup hint
-	mergedHintStyle = lipgloss.NewStyle().
+	// per-row action hint under the selected workspace
+	rowHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#555")).
 			Italic(true)
 
