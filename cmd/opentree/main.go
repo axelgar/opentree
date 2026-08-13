@@ -63,6 +63,7 @@ func init() {
 	rootCmd.AddCommand(cmd.AgentsCmd)
 	rootCmd.AddCommand(cmd.ReviewCmd)
 	rootCmd.AddCommand(cmd.PruneCmd)
+	rootCmd.AddCommand(cmd.SkillsCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {

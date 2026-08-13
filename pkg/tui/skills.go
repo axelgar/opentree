@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -118,6 +120,13 @@ func (m Model) copyTargets(s skills.Skill) []skillTarget {
 	return out
 }
 
+// addTargets are the trees a URL could be cloned into. The name is known
+// before the clone — it is the last element of the URL — so a tree that
+// already holds one is left out here rather than refused after the fetch.
+func (m Model) addTargets(url string) []skillTarget {
+	return m.copyTargets(skills.Skill{Name: skills.CloneName(url)})
+}
+
 // workspacesMissing counts the workspaces whose worktree cannot see a repo
 // skill tree. Only meaningful for a repo-scoped skill: a machine-wide one is
 // visible from every directory on the filesystem.
@@ -206,14 +215,24 @@ func (m Model) toggleSkill(s skills.Skill) (Model, tea.Cmd) {
 		m.noticeCmd(fmt.Sprintf("%s %s for %s", verb, s.Name, strings.Join(switched, ", "))))
 }
 
-// relinkSkillsCmd repairs every workspace that cannot see the repo's skills.
+// relinkSkillsCmd makes the links that should already exist: the repository's
+// skills bridged to every agent that reads a different tree, and then every
+// workspace pointed at them.
+//
+// One key for both because they are one gap seen from two sides — a skill the
+// list shows and an agent cannot reach — and because bridging without
+// relinking would leave the new tree missing from every existing worktree.
 func (m Model) relinkSkillsCmd() tea.Cmd {
 	return func() tea.Msg {
+		bridged, err := skills.Bridge(m.repoRoot)
+		if err != nil {
+			return errMsg{err}
+		}
 		n := 0
 		for _, ws := range m.workspaces {
-			if len(ws.MissingSkills) == 0 {
-				continue
-			}
+			// Bridging may have just created a tree this workspace has never
+			// seen, so Link is asked about every workspace rather than only the
+			// ones already known to be missing one.
 			linked, err := skills.Link(m.repoRoot, m.svc.WorktreePath(ws.Name))
 			if err != nil {
 				return errMsg{err}
@@ -222,8 +241,98 @@ func (m Model) relinkSkillsCmd() tea.Cmd {
 				n++
 			}
 		}
-		return skillsRelinkedMsg{count: n}
+		return skillsRelinkedMsg{bridged: bridged, count: n}
 	}
+}
+
+// cloneSkillCmd fetches a skill from a git URL into the chosen tree.
+func cloneSkillCmd(url, dir string) tea.Cmd {
+	return func() tea.Msg {
+		if err := skills.Clone(url, dir); err != nil {
+			return skillClonedMsg{err: err}
+		}
+		return skillClonedMsg{name: filepath.Base(dir)}
+	}
+}
+
+// probeSkillsCmd asks the configured agent what it actually loaded.
+//
+// Only the configured one: the answer costs a subprocess and a session, and
+// the agent opentree would launch is the one whose reading of these
+// directories decides what a workspace can do.
+func (m Model) probeSkillsCmd() tea.Cmd {
+	agent := config.FindAgent(m.cfg.Agent.Command)
+	if agent == nil {
+		return m.transientErrCmd("no agent configured to ask")
+	}
+	return func() tea.Msg {
+		// Generous: a cold agent has an npm package to load and a login to
+		// check before it says anything.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		commands, err := skills.Probe(ctx, *agent, m.repoRoot)
+		return skillProbedMsg{agent: agent.Name, commands: commands, err: err}
+	}
+}
+
+// probeMismatch is what the agent's own answer says about a row that opentree's
+// reading of the directories does not.
+//
+// Only the probed agent is judged, and only when it reads this skill at all.
+// The two disagreements are worth different things: a skill opentree expects to
+// be loaded and the agent has never heard of means the directory or the
+// settings have been read wrong, and a skill switched off that the agent offers
+// anyway means the override is not being honoured where opentree wrote it.
+func (m Model) probeMismatch(s skills.Skill) string {
+	if m.skillProbe == nil || !slices.Contains(s.Agents, m.skillProbed) {
+		return ""
+	}
+	switch expected, loaded := s.State(m.skillProbed) != skills.StateOff, m.skillProbe[s.Name]; {
+	case expected && !loaded:
+		return "⚠ not loaded"
+	case !expected && loaded:
+		return "⚠ still loaded"
+	}
+	return ""
+}
+
+// blindAgents are the registered agents that cannot see a repository skill and
+// could be given it.
+//
+// Repo scope only: agents auto-load each other's user trees, so a machine-wide
+// skill is already shared, and one that is not is a copy away rather than a
+// link away.
+//
+// Standard trees only, too. A skill in a directory the user registered in one
+// agent's own config is where they put it, for the agent whose config names it
+// — and Bridge could not hand it over anyway, since the other agent does not
+// search a tree the way the config-registered one is searched. Warning about
+// that would be a warning with nothing behind it.
+func (m Model) blindAgents(s skills.Skill) []string {
+	if s.Scope != skills.ScopeRepo || !m.inStandardRepoTree(s) {
+		return nil
+	}
+	var out []string
+	for _, agent := range config.PredefinedAgents {
+		if len(agent.Skills.RepoDirs) > 0 && !slices.Contains(s.Agents, agent.Name) {
+			out = append(out, agent.Name)
+		}
+	}
+	return out
+}
+
+// inStandardRepoTree reports whether a skill sits directly in one of the
+// repository trees the registry names — the ones Bridge links together.
+func (m Model) inStandardRepoTree(s skills.Skill) bool {
+	parent := filepath.Dir(s.Dir)
+	for _, agent := range config.PredefinedAgents {
+		for _, rel := range agent.Skills.RepoDirs {
+			if parent == filepath.Join(m.repoRoot, rel) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // updateSkills handles keys while the Skills tab has focus.
@@ -246,6 +355,66 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("deleted "+target.Name))
 		case "n", "esc", "q":
 			m.skillDeleting = nil
+		}
+		return m, nil
+	}
+
+	// Typing the git URL of a skill to add.
+	if m.skillAdding {
+		switch msg.String() {
+		case "enter":
+			url := strings.TrimSpace(m.skillAddURL)
+			m.skillAdding = false
+			if url == "" {
+				m.skillAddURL = ""
+				return m, nil
+			}
+			if len(m.addTargets(url)) == 0 {
+				m.skillAddURL = ""
+				return m, m.transientErrCmd(skills.CloneName(url) + " is already in every tree")
+			}
+			m.skillAddURL = url
+			m.skillCopyCursor = 0
+		case "esc":
+			m.skillAdding, m.skillAddURL = false, ""
+		case "backspace":
+			if m.skillAddURL != "" {
+				m.skillAddURL = m.skillAddURL[:len(m.skillAddURL)-1]
+			}
+		default:
+			// Every rune of the key, not one: a pasted URL arrives as a single
+			// message carrying all of it, and a URL is far more often pasted
+			// than typed.
+			if msg.Type == tea.KeyRunes {
+				m.skillAddURL += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
+
+	// Picking the tree a cloned skill lands in.
+	if m.skillAddURL != "" {
+		targets := m.addTargets(m.skillAddURL)
+		switch msg.String() {
+		case "up", "k":
+			if m.skillCopyCursor > 0 {
+				m.skillCopyCursor--
+			}
+		case "down", "j":
+			if m.skillCopyCursor < len(targets)-1 {
+				m.skillCopyCursor++
+			}
+		case "enter":
+			if m.skillCopyCursor >= len(targets) {
+				return m, nil
+			}
+			url, target := m.skillAddURL, targets[m.skillCopyCursor]
+			m.skillAddURL = ""
+			return m, tea.Batch(
+				m.noticeCmd("cloning "+truncate(url, 60)+"…"),
+				cloneSkillCmd(url, target.Dir))
+		case "esc", "q":
+			m.skillAddURL = ""
 		}
 		return m, nil
 	}
@@ -288,8 +457,8 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.skillFilter = m.skillFilter[:len(m.skillFilter)-1]
 			}
 		default:
-			if len(msg.String()) == 1 {
-				m.skillFilter += msg.String()
+			if msg.Type == tea.KeyRunes {
+				m.skillFilter += string(msg.Runes)
 			}
 		}
 		m.skillCursor = 0
@@ -317,6 +486,16 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.skillFiltering = true
 	case "r":
 		return m, m.scanSkillsCmd
+	case "a":
+		m.skillAdding, m.skillAddURL = true, ""
+	case "v":
+		if m.skillProbing {
+			return m, nil
+		}
+		m.skillProbing = true
+		return m, tea.Batch(
+			m.noticeCmd("asking "+m.cfg.Agent.Command+" what it loaded…"),
+			m.probeSkillsCmd())
 	case "enter":
 		if s, ok := m.currentSkill(); ok {
 			return m, editSkillCmd(s)
@@ -366,7 +545,18 @@ func (m Model) skillsView() string {
 		return appStyle.Render(m.skillDeleteView())
 	}
 	if m.skillCopying != nil {
-		return appStyle.Render(m.skillCopyView())
+		return appStyle.Render(m.pickTreeView("Copy "+m.skillCopying.Name+" to…",
+			m.copyTargets(*m.skillCopying)))
+	}
+	// Typing first: the URL fills in a character at a time, so a picker drawn on
+	// "is there a URL yet" appears on the first keystroke and hides the prompt
+	// still collecting the rest of it.
+	if m.skillAdding {
+		return appStyle.Render(s.String() + m.skillAddView())
+	}
+	if m.skillAddURL != "" {
+		return appStyle.Render(m.pickTreeView("Clone "+skills.CloneName(m.skillAddURL)+" into…",
+			m.addTargets(m.skillAddURL)))
 	}
 
 	if m.skillFiltering {
@@ -402,9 +592,12 @@ func (m Model) skillsView() string {
 
 	s.WriteString(m.toastLine() + "\n")
 	s.WriteString("\n" + m.skillsStatusBar() + "\n")
+	// Two lines rather than one long one: the keys no longer fit an 80-column
+	// terminal, and a help line that wraps costs the list a row it has already
+	// budgeted for.
 	s.WriteString(helpStyle.Render(
-		"↑/k ↓/j move • enter edit • t enable/disable • c copy to agent • x delete • " +
-			"l link worktrees • / filter • r rescan • tab workspaces"))
+		"↑/k ↓/j move • enter edit • a add from git • c copy • x delete • t on/off\n" +
+			"l link • v verify with agent • / filter • r rescan • tab workspaces"))
 	return appStyle.Render(s.String())
 }
 
@@ -423,14 +616,34 @@ func (m Model) renderSkillRow(s skills.Skill, selected, isShared bool) string {
 		skillNameWidth, truncate(s.Name, skillNameWidth),
 		pad(agentMarks(s), skillAgentWidth),
 		skillScopeStyle.Render(s.Scope.String()))
+
+	var tags []string
 	if tag := stateTag(s); tag != "" {
-		title += "  " + skillOffStyle.Render(tag)
+		tags = append(tags, skillOffStyle.Render(tag))
 	}
 	if isShared {
-		title += "  " + sharedTagStyle.Render("duplicate")
+		tags = append(tags, sharedTagStyle.Render("duplicate"))
 	}
 	if n := m.workspacesMissing(s); n > 0 {
-		title += "  " + uncommittedStyle.Render(fmt.Sprintf("⚠ missing in %s (l to link)", plural(n, "workspace")))
+		tags = append(tags, uncommittedStyle.Render(fmt.Sprintf("⚠ %s missing", plural(n, "worktree"))))
+	}
+	for _, name := range m.blindAgents(s) {
+		mark, _, _ := config.Brand(name)
+		tags = append(tags, uncommittedStyle.Render("⚠ invisible to "+mark))
+	}
+	if tag := m.probeMismatch(s); tag != "" {
+		tags = append(tags, dangerStyle.Render(tag))
+	}
+
+	// Appended while they fit, rather than all of them: a title that wrapped
+	// would make the row three lines tall and scroll the list past the bottom
+	// of the frame, since the window arithmetic below counts two.
+	for _, tag := range tags {
+		if lipgloss.Width(title)+lipgloss.Width(tag)+4 > m.panelWidth() {
+			title += " …"
+			break
+		}
+		title += "  " + tag
 	}
 
 	// Descriptions run to a paragraph — the convention is that an agent reads
@@ -455,19 +668,27 @@ func (m Model) skillDeleteView() string {
 	))
 }
 
-func (m Model) skillCopyView() string {
-	s := *m.skillCopying
+// pickTreeView is the tree picker, shared by copying a skill and cloning one:
+// both end in "which of these directories does it go in", and answering it
+// twice in two layouts would be two things to keep in step.
+func (m Model) pickTreeView(title string, targets []skillTarget) string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Copy "+s.Name+" to…") + "\n\n")
-	for i, t := range m.copyTargets(s) {
+	b.WriteString(titleStyle.Render(title) + "\n\n")
+	for i, t := range targets {
 		cursor, style := "  ", itemStyle
 		if i == m.skillCopyCursor {
 			cursor, style = "▶ ", selectedItemStyle
 		}
 		b.WriteString(style.Render(cursor+t.Label) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("↑/↓ navigate • Enter copy • Esc cancel"))
+	b.WriteString("\n" + helpStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"))
 	return b.String()
+}
+
+// skillAddView prompts for the git URL to clone.
+func (m Model) skillAddView() string {
+	return filterPromptStyle.Render("clone skill from") + " " + m.skillAddURL + "█\n\n" +
+		diffStyle.Render("  A repository whose root holds a SKILL.md. Esc cancels.")
 }
 
 // knownTrees names where skills live, for the empty state — an empty list
@@ -499,6 +720,23 @@ func (m Model) skillsStatusBar() string {
 			label = lipgloss.NewStyle().Foreground(lipgloss.Color(colour)).Render(label)
 		}
 		parts = append(parts, label)
+	}
+
+	// What the agent itself confirmed, kept on screen rather than announced and
+	// forgotten: the counts to its left are opentree's reading of the
+	// documentation, and this is the one number that was checked.
+	if m.skillProbe != nil {
+		confirmed, expected := 0, 0
+		for _, s := range m.skills {
+			if !slices.Contains(s.Agents, m.skillProbed) || s.State(m.skillProbed) == skills.StateOff {
+				continue
+			}
+			expected++
+			if m.skillProbe[s.Name] {
+				confirmed++
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s confirmed %d/%d", m.skillProbed, confirmed, expected))
 	}
 	return statusBarStyle.Render(strings.Join(parts, "  •  "))
 }
@@ -590,9 +828,9 @@ func pad(s string, width int) string {
 	return s
 }
 
-// skillsChromeLines is what the list must leave for the status bar, the help
-// line, the toast slot, and the blanks around them.
-const skillsChromeLines = 5 + toastLines
+// skillsChromeLines is what the list must leave for the status bar, the two
+// help lines, the toast slot, and the blanks around them.
+const skillsChromeLines = 6 + toastLines
 
 // skillRowLines is the height of one skill row: its title and its description.
 const skillRowLines = 2

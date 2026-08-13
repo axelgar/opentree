@@ -486,3 +486,152 @@ func TestToggle_RefusesWithoutAMechanism(t *testing.T) {
 		t.Error("toggling a skill with no override mechanism gave no explanation")
 	}
 }
+
+// --- adding a skill from a git URL -----------------------------------------
+
+func TestSkillsAdd_TypesAUrlThenPicksATree(t *testing.T) {
+	m := skillsModel()
+	next, _ := m.Update(keyMsg("a"))
+	m = next.(Model)
+	if !m.skillAdding {
+		t.Fatal("a did not open the URL prompt")
+	}
+
+	for _, k := range []string{"g", "i", "t", ":", "x"} {
+		next, _ = m.Update(keyMsg(k))
+		m = next.(Model)
+	}
+	if m.skillAddURL != "git:x" {
+		t.Fatalf("typed URL = %q, want %q", m.skillAddURL, "git:x")
+	}
+	// Still the prompt, showing what has been typed. A picker drawn as soon as
+	// there is any URL at all replaces the prompt on the first keystroke, and
+	// the rest is typed into a screen that gives no sign of receiving it.
+	if view := m.View(); !strings.Contains(view, "clone skill from") || !strings.Contains(view, "git:x") {
+		t.Errorf("the prompt stopped showing what is being typed:\n%s", view)
+	}
+
+	next, _ = m.Update(keyMsg("enter"))
+	m = next.(Model)
+	if m.skillAdding {
+		t.Error("enter left the prompt open")
+	}
+	if m.skillAddURL != "git:x" {
+		t.Errorf("URL lost on the way to the picker: %q", m.skillAddURL)
+	}
+	if !strings.Contains(m.View(), "Clone x into") {
+		t.Errorf("the tree picker did not open:\n%s", m.View())
+	}
+}
+
+func TestSkillsAdd_EscCancelsEitherStep(t *testing.T) {
+	m := skillsModel()
+	next, _ := m.Update(keyMsg("a"))
+	next, _ = next.(Model).Update(keyMsg("esc"))
+	if got := next.(Model); got.skillAdding || got.skillAddURL != "" {
+		t.Error("esc did not close the URL prompt")
+	}
+
+	m = skillsModel()
+	m.skillAddURL = "https://example.com/a-skill"
+	next, _ = m.Update(keyMsg("esc"))
+	if next.(Model).skillAddURL != "" {
+		t.Error("esc did not close the tree picker")
+	}
+}
+
+// An empty URL is a cancelled prompt, not a clone of nothing.
+func TestSkillsAdd_EmptyUrlDoesNothing(t *testing.T) {
+	m := skillsModel()
+	m.skillAdding = true
+	next, _ := m.Update(keyMsg("enter"))
+	if got := next.(Model); got.skillAdding || got.skillAddURL != "" {
+		t.Error("an empty URL opened the picker")
+	}
+}
+
+// --- the agent's own answer ------------------------------------------------
+
+// The two disagreements worth reporting, and the three cases that are not.
+func TestProbeMismatch(t *testing.T) {
+	skill := testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release")
+	off := testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release")
+	off.States = map[string]skills.State{"Claude Code": skills.StateOff}
+
+	tests := []struct {
+		name  string
+		skill skills.Skill
+		probe map[string]bool
+		want  string
+	}{
+		{"not asked yet", skill, nil, ""},
+		{"agrees it is loaded", skill, map[string]bool{"release": true}, ""},
+		{"expected but absent", skill, map[string]bool{}, "⚠ not loaded"},
+		{"switched off and gone", off, map[string]bool{}, ""},
+		{"switched off but offered anyway", off, map[string]bool{"release": true}, "⚠ still loaded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := skillsModel(tt.skill)
+			m.skillProbe, m.skillProbed = tt.probe, "Claude Code"
+			if got := m.probeMismatch(tt.skill); got != tt.want {
+				t.Errorf("probeMismatch() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// An agent is only judged on skills it can actually see.
+func TestProbeMismatch_IgnoresAnotherAgentsSkill(t *testing.T) {
+	s := testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release")
+	m := skillsModel(s)
+	m.skillProbe, m.skillProbed = map[string]bool{}, "Claude Code"
+	if got := m.probeMismatch(s); got != "" {
+		t.Errorf("probeMismatch() = %q for a skill the probed agent does not read", got)
+	}
+}
+
+func TestProbe_OneAtATime(t *testing.T) {
+	m := skillsModel()
+	m.skillProbing = true
+	if _, cmd := m.Update(keyMsg("v")); cmd != nil {
+		t.Error("v started a second probe while one was already running")
+	}
+}
+
+// --- repo skills an agent cannot reach --------------------------------------
+
+func TestBlindAgents_RepoSkillOnly(t *testing.T) {
+	m := skillsModel()
+	m.repoRoot = "/repo"
+
+	// opencode's own repository tree, which Claude Code does not read. The other
+	// direction has no case: opencode reads .claude/skills too, so a skill there
+	// is already readable by both and Scan gives it both marks.
+	repo := testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release")
+	if got := m.blindAgents(repo); len(got) != 1 || got[0] != "Claude Code" {
+		t.Errorf("blindAgents() = %v, want the agent that cannot read the repo tree", got)
+	}
+
+	// A machine-wide skill is already shared: agents auto-load each other's user
+	// trees, and the answer for one that does not is a copy, not a link.
+	user := testSkill("research", "Claude Code", skills.ScopeUser, "/home/.claude/skills/research")
+	if got := m.blindAgents(user); len(got) != 0 {
+		t.Errorf("blindAgents() = %v for a user-scoped skill, want none", got)
+	}
+
+	// A directory the user registered in one agent's own config is where they
+	// put it, for that agent — and it is not a tree Bridge could hand over.
+	registered := testSkill("deep", "OpenCode", skills.ScopeRepo, "/repo/team/nested/deep")
+	if got := m.blindAgents(registered); len(got) != 0 {
+		t.Errorf("blindAgents() = %v for a config-registered tree, want none — nothing would fix it", got)
+	}
+}
+
+func TestSkillsView_WarnsWhenAnAgentCannotSeeARepoSkill(t *testing.T) {
+	m := skillsModel(testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release"))
+	m.repoRoot = "/repo"
+	if !strings.Contains(m.View(), "invisible to") {
+		t.Errorf("the row does not say the other agent cannot use it:\n%s", m.View())
+	}
+}

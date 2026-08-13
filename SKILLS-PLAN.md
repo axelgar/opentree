@@ -1,7 +1,7 @@
 # opentree × Skills — Design & Plan
 
-> Status: **commits 1–5 implemented**, uncommitted on `feat/acp-integration`.
-> `make check` green. Commits 6 (CLI) and 7 (plugin skills) not started.
+> Status: **commits 1–6 and 8–10 implemented**. `make check` green.
+> Commit 7 (plugin skills) not started.
 > Companion to [ACP-PLAN.md](ACP-PLAN.md).
 > Scope: skills only. MCP is sketched at the end, not planned.
 
@@ -42,25 +42,34 @@ agent cooperation whatsoever.
 frontmatter carrying `name:` and `description:`. Identical across all four
 agents that have the feature. One reader covers all of them.
 
-**3. The directories.** Transcribed from opencode 1.18.16's own embedded
-documentation, which is the authority for its half:
+**3. The directories.** Established by asking each running agent what it had
+loaded from a directory holding one candidate tree at a time — the same check
+`v` performs — after its documentation twice turned out not to match it:
 
-| Agent | User | Repo | Also auto-loads |
+| Agent | User | Repo | Also reads, at both scopes |
 |---|---|---|---|
 | Claude Code | `~/.claude/skills/` | `.claude/skills/` | — |
-| OpenCode | `~/.config/opencode/skill(s)/` | `.opencode/skill(s)/` | `~/.claude/skills/`, `~/.agents/skills/` |
+| OpenCode | `~/.config/opencode/skill(s)/` | `.opencode/skill(s)/` | `.claude/skills/`, `.agents/skills/` |
 
-Two things here were wrong in the first draft and are the reason the tab
-initially reported "OpenCode 0" while opencode was visibly offering the same
-skills as slash commands:
+Three things here were wrong in earlier drafts, each of them the tab stating
+something the agent contradicted out loud:
 
 - **`skill(s)`** — opencode reads both the singular and plural spelling of its
-  own trees.
+  own trees. The first draft read only one and reported "OpenCode 0" while
+  opencode was offering those skills as slash commands.
 - **Agents read each other's directories.** A skills tree has readers, not an
   owner, and the same `SKILL.md` is commonly usable from every agent at once.
-  Note the asymmetry: opencode auto-loads Claude Code's *user* tree but not its
-  *repo* tree, so a skill in `.claude/skills` is invisible to opencode — which
-  the badges now say.
+- **opencode reads the external trees at repository scope too.** Its embedded
+  documentation lists them under `~/` only, so the first cut of the bridge
+  warned that `.claude/skills/release` was invisible to opencode — while
+  opencode was answering to `/release` in a workspace one keypress away. The
+  asymmetry is real but runs the other way: **Claude Code** reads only
+  `.claude/skills`, so a project skill kept under `.opencode/skills` is the one
+  with a reader missing.
+
+That last one is why `v` exists. Every directory in this table is observed
+rather than contracted, and the documentation for one of them was wrong in the
+direction that produces a confident false warning rather than an empty list.
 
 Claude Code also exposes 38 plugin skills, and they are **not listed** — dropped
 during implementation once the layout turned out to have no contract. Five
@@ -74,10 +83,15 @@ marketplaces on this machine use four different shapes:
 ```
 
 A glob wide enough to catch all of them also catches the `.openclaw` copies
-inside the ponytail repo, which would render six duplicate rows. Reading them
-correctly means parsing `installed_plugins.json` and each plugin's manifest —
-a feature in its own right, for skills opentree could only ever list, never
-manage. Its own commit if it is ever wanted.
+inside the ponytail repo, which would render six duplicate rows.
+
+**That reasoning was wrong**, and is left here because the conclusion still
+holds for a different reason. Those four shapes are what `plugins/marketplaces/`
+looks like — git clones, which are checkouts rather than an install layout.
+`plugins/installed_plugins.json` carries an explicit `installPath` per plugin
+and `installPath/skills/` is uniform across all 37. There is a contract; it is
+simply not in the directory the first pass looked at. Still its own commit,
+because these are skills opentree could only ever list and never manage.
 
 `~/.codex/skills/` and `~/.gemini/skills/` also exist on this machine, but
 opentree cannot launch either agent, so listing their skills would be inventory
@@ -209,7 +223,7 @@ not a rewrite — decision 9 of the ACP plan, applied again.
 | 1 | Skills tab is a **top-level tab**, not an overlay. Overlays are for transient things. |
 | 2 | One row per skill **directory**, badged with every agent that reads it. Answers "shared across" with no second view, and keeps `x` unambiguous. |
 | 2a | Skills reachable by two paths are **collapsed on the resolved path**, and the surviving row is the real directory. |
-| 3 | Plugin skills are **not listed at all** — four directory shapes, no contract, and nothing opentree could do with them but print them. |
+| 3 | Plugin skills are **not listed yet** — read-only, nothing opentree could do with them but print them, and `installed_plugins.json` is a commit of its own. |
 | 4 | Frontmatter parsed by hand. `name` and `description`, first line only. **No YAML dependency.** |
 | 5 | Worktrees get repo skills by **symlink**, not copy. Always current, no drift, one syscall. |
 | 6 | opentree links **only when the repo does not track the skills dir.** If `.claude/skills` is committed, git already propagates it and opentree stays out of the way. |
@@ -221,6 +235,11 @@ not a rewrite — decision 9 of the ACP plan, applied again.
 | 12 | `t` writes `off`, and toggling back **clears the entry** rather than writing `on` — `on` is not always the default, and would silently promote a `disable-model-invocation` skill to fully automatic. |
 | 13 | Only the overrides object is rewritten, spliced in by byte range. A whole-document rewrite would reorder 10 of the 12 top-level keys in a file the user hand-maintains and probably has in git. |
 | 14 | The override is written to **the file already holding one** for that skill, falling back to the first source. That is the file observation proves is honoured; nothing proves a higher-precedence `on` beats a lower-precedence `off`. |
+| 15 | Bridging repository trees is **explicit, never automatic.** A worktree is opentree's own directory and linking inside it is housekeeping; the repository root is the user's, and a new directory there is theirs to ask for. |
+| 16 | The bridge is a **relative** symlink, so it means the same thing from a worktree and can be committed with the skills it points at — at which point opentree has nothing left to do, same as decision 6. |
+| 17 | A **config-registered** directory is searched at any depth; the standard trees are listed one level down. That is each agent's own documented behaviour, and walking the standard trees would list a skill's reference material as skills. |
+| 18 | `v` probes **only the configured agent.** The answer costs a subprocess and a real session, and the agent opentree would launch is the one whose reading of these directories decides what a workspace can do. |
+| 19 | The probe **flags rows, never corrects them.** Being told something disagrees is the useful part; opentree guessing which side is right would replace one confident wrong answer with another. |
 
 ### On decision 5, symlink vs copy
 
@@ -252,8 +271,11 @@ Each commit is green on its own and ships something.
 | 3 | Tab bar and read-only Skills tab: rows, badges, footer tally, scroll window, filter. | `pkg/tui/skills.go` (new), `model.go`, `view.go`, `update.go`, `keys.go`, `styles.go` | done |
 | 4 | Mutations: `enter` edit, `x` delete with confirm, `c` copy to another agent, `l` relink worktrees. `⚠ no repo skills` badge in the Workspaces list. | `pkg/tui/skills.go`, `view.go` | done |
 | 5 | **Availability, not just presence.** Read `skillOverrides` and `disable-model-invocation`; grey the mark of an agent that has a skill off, tag the row, count only what will load. `t` toggles. | `pkg/skills/settings.go` (new), `skills.go`, `pkg/config/agents.go`, `pkg/tui/skills.go` | done |
-| 6 | `opentree skills` / `skills list` / `skills sync` for the CLI, matching the existing subcommand pattern. | `cmd/opentree/cmd/skills.go` | not started |
+| 6 | `opentree skills list` / `skills sync` for the CLI, matching the existing subcommand pattern. | `cmd/opentree/cmd/skills.go` | done |
 | 7 | Plugin skills via `plugins/installed_plugins.json` — 37 more, and each entry carries an explicit `installPath`. | `pkg/skills/plugins.go` | not started |
+| 8 | **`a` adds a skill from a git URL.** The other half of decision 9; `c` shipped without it. | `pkg/skills/skills.go`, `pkg/tui/skills.go` | done |
+| 9 | **Bridge the repository trees.** A project skill under `.opencode/skills` or `.agents/skills` is invisible to Claude Code; `l` and `skills sync` link them. | `pkg/skills/link.go` | done |
+| 10 | **Registered directories, and ground truth.** Read the trees an agent's own config declares; `v` asks the agent what it actually loaded. | `pkg/skills/config.go`, `probe.go` | done |
 
 Commit 2 is the one that matters. If the sequence stalls after it, the real bug
 is already fixed.
@@ -293,6 +315,48 @@ ACP plan; here it merges four.
 - **`$EDITOR` is split on whitespace.** `code --wait` and `nvim -u NONE` are
   ordinary values; passing the whole string as the binary name looks for a file
   named after the flags.
+
+### Found while closing the gaps
+
+- **The overrides are read correctly.** `v` against both agents returned
+  `OpenCode 21/21` and `Claude Code 8/8` with no row flagged either way. That is
+  the first evidence the fourteen `off` overrides are read from the file that
+  actually decides — decision 14 was written because nothing proved it, and now
+  something does. For this machine's layout rather than in general, which is why
+  `v` exists rather than a note here.
+- **But the directories were not.** The user pressed `/release` in a workspace
+  and opencode ran it, on a row the tab had just labelled `⚠ invisible to ◆`.
+  Probing a directory holding one candidate tree at a time settled it: opencode
+  reads `.claude/skills` and `.agents/skills` at repository scope as well as
+  under `~/`, which its own documentation does not say. The warning was
+  backwards, and `Bridge` now has one direction rather than two — `.opencode`
+  and `.agents` trees need handing to Claude Code, and nothing needs handing to
+  opencode.
+
+  Worth noting how it was caught. Neither the probe nor the tests found it: the
+  probe agreed with the tab, because the tab never claimed opencode *would* load
+  `release` and so never checked whether it had. A cross-check only covers what
+  the list asserts. What found it was a person looking at two screens at once,
+  which is the argument for the tab naming the agents at all.
+- **A prompt cannot be drawn on "is there a value yet".** The URL prompt and its
+  tree picker were selected in that order, so the picker replaced the prompt on
+  the first keystroke and the rest of the URL went into a screen giving no sign
+  of receiving it. Caught by typing into it; the test only looked after the
+  prompt was submitted, where both orderings agree.
+- **A pasted URL is one key.** bubbletea delivers a paste as a single message
+  carrying every rune, so an input appending only `len(msg.String()) == 1`
+  ignores it entirely — and a URL is far more often pasted than typed. The
+  filter had the same bug and got the same fix.
+- **Only warn about a gap something can close.** The first cut flagged every
+  repository skill an agent could not read, including ones in a directory the
+  user registered in the *other* agent's config. Those are agent-specific by
+  construction and `Bridge` could not hand them over anyway — a warning with
+  nothing behind it, on screen before it was noticed.
+- **opencode's config takes two shapes.** `skills` is a flat array of paths and
+  URLs now and was `{paths, urls}` before; opencode migrates one to the other,
+  and opentree reads both, because a config written a version ago is not a
+  config with no skills in it. The file may also be `.jsonc`, which is what the
+  comment stripper is for.
 
 ## Not built
 

@@ -77,6 +77,8 @@ opentree attach feat/add-auth    # Attach to tmux window
 opentree diff feat/add-auth      # Review changes
 opentree pr feat/add-auth        # Create GitHub PR
 opentree delete feat/add-auth    # Clean up workspace
+opentree skills list             # See every agent skill on this machine
+opentree skills sync             # Give every agent and workspace the repo's skills
 ```
 
 ## Usage
@@ -108,12 +110,33 @@ opentree
 - `/` - Filter workspaces by name
 - `s` - Cycle sort order (name → age → activity → PR)
 - `E` - Toggle error log
+- `tab` - Switch between Workspaces and Skills
 - `?` - Toggle full help
 - `q` - Quit
 
 Each row also carries what its agent is doing — working, waiting on a
 permission, stopped — plus cost and context use, read live from the chat's
 control socket. Open PRs show **CI check status** badges.
+
+### Skills
+
+Skills are a filesystem convention rather than anything an agent exposes over
+its API — a directory holding a `SKILL.md` — so opentree reads them directly.
+Press `tab` for the inventory: every skill on the machine, which agents can
+actually use each one, and what each agent will do with it.
+
+- `enter` - Open the SKILL.md in `$EDITOR`
+- `a` - Add a skill from a git URL
+- `c` - Copy a skill into another agent's directory
+- `x` - Delete a skill
+- `t` - Switch a skill off for the agents that can be told
+- `l` - Link the repository's skills to every agent and workspace that is missing them
+- `v` - Ask the agent itself what it loaded, and flag anything the list got wrong
+
+A `git worktree` carries only what git tracks, and most repositories leave
+their skills untracked — so opentree links the repository's skills into each
+workspace it creates. `opentree skills sync` repairs workspaces that predate
+this, and `opentree skills list` prints the same inventory for a script.
 
 ### Talking to the agent
 

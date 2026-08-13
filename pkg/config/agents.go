@@ -102,6 +102,15 @@ type SkillsSpec struct {
 	// OverridesKey is the object mapping skill name to state. Empty for an
 	// agent with no way to switch a skill off.
 	OverridesKey string
+
+	// ConfigFiles are the agent's own configuration documents, in the order it
+	// reads them, each optionally naming extra skills directories the user
+	// registered. Same path rules as SettingsFiles.
+	//
+	// A user who keeps their skills somewhere else entirely is exactly the user
+	// a list of hardcoded directories fails, and silently: opentree would show
+	// a short list rather than an error.
+	ConfigFiles []string
 }
 
 // PredefinedAgents is the built-in registry of known agents.
@@ -117,13 +126,29 @@ var PredefinedAgents = []PredefinedAgent{
 			"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
 		},
 		ACP: ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}},
-		// Paths transcribed from opencode 1.18.16's own embedded documentation,
-		// which spells its own trees "skill(s)" — both singular and plural are
+		// opencode spells its own trees "skill(s)" — both singular and plural are
 		// read — and auto-loads two it does not own.
+		//
+		// It loads those two at *repository* scope as well, which its own
+		// documentation does not say: the table in its embedded docs lists the
+		// external trees under `~/` only. Established by asking a running
+		// opencode what it had loaded from a directory holding nothing but
+		// .claude/skills, which is the same check `v` performs in the tab.
 		Skills: SkillsSpec{
-			UserDirs:     []string{"~/.config/opencode/skills", "~/.config/opencode/skill"},
-			RepoDirs:     []string{".opencode/skills", ".opencode/skill"},
+			UserDirs: []string{"~/.config/opencode/skills", "~/.config/opencode/skill"},
+			// Canonical first: it is where opentree puts a new skill. The rest
+			// are read, not written to.
+			RepoDirs:     []string{".opencode/skills", ".opencode/skill", ".claude/skills", ".agents/skills"},
 			ExternalDirs: []string{"~/.claude/skills", "~/.agents/skills"},
+			// opencode registers extra skills directories under "skills" in its
+			// own config, global first and then the project's, and reads either
+			// spelling of the file.
+			ConfigFiles: []string{
+				"~/.config/opencode/opencode.json",
+				"~/.config/opencode/opencode.jsonc",
+				"opencode.json",
+				"opencode.jsonc",
+			},
 		}},
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
 		// Claude Code's own mark, transcribed from its welcome banner, in

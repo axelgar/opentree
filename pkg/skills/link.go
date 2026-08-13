@@ -69,6 +69,63 @@ func Link(repoRoot, worktreePath string) ([]string, error) {
 	return linked, errors.Join(errs...)
 }
 
+// Bridge points every agent's repository skills tree at the one this
+// repository actually has, and reports the trees it created.
+//
+// Which agent reads which repository tree is not symmetric. opencode reads
+// .claude/skills and .agents/skills as well as its own; Claude Code reads only
+// .claude/skills. So a project skill kept under .opencode/skills is one the
+// list shows, that opentree links into every worktree, and that Claude Code
+// working there still cannot use.
+//
+// A relative link, so it means the same thing from a worktree and survives
+// being committed: a repository that tracks its skills can track the bridge
+// with them, and then opentree has nothing left to do.
+//
+// Not automatic, unlike Link. A worktree is opentree's own directory and
+// linking inside it is housekeeping; the repository root is the user's, and a
+// new directory there is theirs to ask for.
+func Bridge(repoRoot string) ([]string, error) {
+	have := repoTrees(repoRoot)
+	if len(have) == 0 {
+		return nil, nil // no project skills to share
+	}
+	src := filepath.Join(repoRoot, have[0])
+
+	var made []string
+	var errs []error
+	for _, agent := range config.PredefinedAgents {
+		if len(agent.Skills.RepoDirs) == 0 {
+			continue
+		}
+		if slices.ContainsFunc(agent.Skills.RepoDirs, func(d string) bool { return slices.Contains(have, d) }) {
+			continue // this agent already reads a tree of its own
+		}
+		// The canonical spelling only. The alternates exist so an existing
+		// directory is found, not so opentree can invent one.
+		rel := agent.Skills.RepoDirs[0]
+		dst := filepath.Join(repoRoot, rel)
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		target, err := filepath.Rel(filepath.Dir(dst), src)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := os.Symlink(target, dst); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		made = append(made, rel)
+	}
+	return made, errors.Join(errs...)
+}
+
 // Missing reports the repository skill trees a worktree cannot see — what the
 // list warns about and what relinking would repair.
 //

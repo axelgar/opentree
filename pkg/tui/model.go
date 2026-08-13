@@ -169,6 +169,18 @@ type Model struct {
 	skillCopying    *skills.Skill
 	skillCopyCursor int
 
+	// adding a skill from a git URL, in two steps: skillAdding while the URL is
+	// being typed, then the same tree picker a copy uses while skillAddURL
+	// holds it.
+	skillAdding bool
+	skillAddURL string
+
+	// what the agent itself says it loaded, against which the rest of this tab
+	// is opentree's reading of the documentation. Nil until asked.
+	skillProbe   map[string]bool
+	skillProbed  string // the agent the answer came from
+	skillProbing bool
+
 	help help.Model
 	keys keyMap
 
@@ -185,7 +197,19 @@ type skillsScannedMsg struct {
 	skills []skills.Skill
 }
 type skillEditedMsg struct{ err error }
-type skillsRelinkedMsg struct{ count int }
+type skillsRelinkedMsg struct {
+	bridged []string // repo trees pointed at the one the repository has
+	count   int      // workspaces repaired
+}
+type skillClonedMsg struct {
+	name string
+	err  error
+}
+type skillProbedMsg struct {
+	agent    string
+	commands map[string]bool
+	err      error
+}
 
 type remoteBranchesLoadedMsg struct {
 	branches []string

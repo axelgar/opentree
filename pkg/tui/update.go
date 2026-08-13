@@ -893,11 +893,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.scanSkillsCmd
 
 	case skillsRelinkedMsg:
-		if msg.count == 0 {
-			return m, m.transientErrCmd("no workspace was missing the repo's skills")
+		var done []string
+		if len(msg.bridged) > 0 {
+			done = append(done, "created "+strings.Join(msg.bridged, ", "))
 		}
-		return m, tea.Batch(m.loadWorkspacesCmd,
-			m.noticeCmd(fmt.Sprintf("linked skills into %s", plural(msg.count, "workspace"))))
+		if msg.count > 0 {
+			done = append(done, "linked skills into "+plural(msg.count, "workspace"))
+		}
+		if len(done) == 0 {
+			return m, m.transientErrCmd("every agent and workspace already sees the repo's skills")
+		}
+		// Rescanned as well as reloaded: a bridge is a new tree, and the agent
+		// reading it is a mark the rows do not carry yet.
+		return m, tea.Batch(m.loadWorkspacesCmd, m.scanSkillsCmd,
+			m.noticeCmd(strings.Join(done, " • ")))
+
+	case skillClonedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd(msg.err.Error())
+		}
+		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("cloned into "+msg.name))
+
+	case skillProbedMsg:
+		m.skillProbing = false
+		if msg.err != nil {
+			return m, m.transientErrCmd(msg.agent + ": " + msg.err.Error())
+		}
+		m.skillProbe, m.skillProbed = msg.commands, msg.agent
+		return m, m.noticeCmd(fmt.Sprintf("%s advertises %s",
+			msg.agent, plural(len(msg.commands), "command")))
 
 	case clearNoticeMsg:
 		if msg.seq == m.noticeSeq {

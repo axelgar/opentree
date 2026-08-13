@@ -9,6 +9,7 @@ package skills
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -74,6 +75,13 @@ type Tree struct {
 	Dir    string
 	Scope  Scope
 	Agents []string
+	// Deep searches the tree at any depth rather than listing it one level
+	// down. True only for a directory the user registered in their own config:
+	// that is a place to look, and the agent reading it searches it for
+	// **/SKILL.md. The standard trees are listed one level deep, because there
+	// a nested SKILL.md is a skill's own reference material rather than a
+	// second skill.
+	Deep bool
 }
 
 // Trees is every skills directory opentree knows about, each with its readers
@@ -82,7 +90,7 @@ func Trees(repoRoot string) []Tree {
 	var out []Tree
 	index := map[string]int{} // dir -> position in out
 
-	add := func(dir string, scope Scope, agent string) {
+	add := func(dir string, scope Scope, agent string, deep bool) {
 		if dir == "" {
 			return
 		}
@@ -93,23 +101,36 @@ func Trees(repoRoot string) []Tree {
 			return
 		}
 		index[dir] = len(out)
-		out = append(out, Tree{Dir: dir, Scope: scope, Agents: []string{agent}})
+		out = append(out, Tree{Dir: dir, Scope: scope, Agents: []string{agent}, Deep: deep})
 	}
 
 	for _, agent := range config.PredefinedAgents {
 		for _, dir := range agent.Skills.UserDirs {
-			add(ExpandUserDir(dir), ScopeUser, agent.Name)
+			add(ExpandUserDir(dir), ScopeUser, agent.Name, false)
 		}
 		for _, dir := range agent.Skills.ExternalDirs {
-			add(ExpandUserDir(dir), ScopeUser, agent.Name)
+			add(ExpandUserDir(dir), ScopeUser, agent.Name, false)
 		}
 		if repoRoot != "" {
 			for _, dir := range agent.Skills.RepoDirs {
-				add(filepath.Join(repoRoot, dir), ScopeRepo, agent.Name)
+				add(filepath.Join(repoRoot, dir), ScopeRepo, agent.Name, false)
 			}
+		}
+		for _, dir := range configTrees(agent.Skills, repoRoot) {
+			add(dir, treeScope(dir, repoRoot), agent.Name, true)
 		}
 	}
 	return out
+}
+
+// treeScope places a registered directory. Inside the repository it is the
+// project's, and a worktree that cannot see it is missing something; anywhere
+// else it belongs to the machine and every directory on it can see the skill.
+func treeScope(dir, repoRoot string) Scope {
+	if repoRoot != "" && strings.HasPrefix(dir, repoRoot+string(filepath.Separator)) {
+		return ScopeRepo
+	}
+	return ScopeUser
 }
 
 // Scan finds every skill opentree can see, once each.
@@ -213,6 +234,9 @@ func registryIndex(name string) int {
 // read lists the skills in one tree. A tree no agent ever created is not an
 // error — most of these directories are absent on any given machine.
 func read(tree Tree) []Skill {
+	if tree.Deep {
+		return walk(tree)
+	}
 	entries, err := os.ReadDir(tree.Dir)
 	if err != nil {
 		return nil
@@ -222,28 +246,53 @@ func read(tree Tree) []Skill {
 		// No IsDir check: a skill symlinked in from a dotfiles repo reports as a
 		// link rather than a directory, and reading through it is the whole
 		// point. A plain file simply fails the read below.
-		skillDir := filepath.Join(tree.Dir, e.Name())
-		data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
-		if err != nil {
-			continue
+		if skill, ok := skillAt(filepath.Join(tree.Dir, e.Name()), tree); ok {
+			out = append(out, skill)
 		}
-		meta := frontmatter(string(data))
-		if meta.name == "" {
-			meta.name = e.Name()
-		}
-		out = append(out, Skill{
-			Name:        meta.name,
-			Description: meta.description,
-			ManualOnly:  meta.manualOnly,
-			Dir:         skillDir,
-			// Cloned: the caller merges readers into this slice when another
-			// tree turns out to hold the same skill, and appending into the
-			// tree's own would leak that into every other skill it holds.
-			Agents: slices.Clone(tree.Agents),
-			Scope:  tree.Scope,
-		})
 	}
 	return out
+}
+
+// walk finds skills at any depth, which is how an agent reads a directory its
+// user registered rather than one it defines itself.
+func walk(tree Tree) []Skill {
+	var out []Skill
+	_ = filepath.WalkDir(tree.Dir, func(path string, d os.DirEntry, err error) error {
+		// Errors are skipped rather than returned: an unreadable subdirectory
+		// should cost its own skills, not the whole tree's.
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		if skill, ok := skillAt(filepath.Dir(path), tree); ok {
+			out = append(out, skill)
+		}
+		return nil
+	})
+	return out
+}
+
+// skillAt reads one candidate directory. Anything without a readable SKILL.md
+// is not a skill and is not an error either — trees hold ordinary files.
+func skillAt(dir string, tree Tree) (Skill, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md")) // #nosec G304 -- a directory under a registered skills tree
+	if err != nil {
+		return Skill{}, false
+	}
+	meta := frontmatter(string(data))
+	if meta.name == "" {
+		meta.name = filepath.Base(dir)
+	}
+	return Skill{
+		Name:        meta.name,
+		Description: meta.description,
+		ManualOnly:  meta.manualOnly,
+		Dir:         dir,
+		// Cloned: the caller merges readers into this slice when another tree
+		// turns out to hold the same skill, and appending into the tree's own
+		// would leak that into every other skill it holds.
+		Agents: slices.Clone(tree.Agents),
+		Scope:  tree.Scope,
+	}, true
 }
 
 // skillMeta is what the list needs out of a SKILL.md's frontmatter.
@@ -348,4 +397,63 @@ func CopyTo(s Skill, dir string) error {
 		return err
 	}
 	return nil
+}
+
+// Clone installs a skill from a git repository — the other way a skill arrives,
+// alongside copying one that is already here.
+//
+// The .git directory is kept, so `git -C <dir> pull` updates the skill later.
+// opentree records no provenance of its own and there is no registry to
+// re-fetch from; the clone is the only thing that remembers where the skill
+// came from.
+func Clone(url, dir string) error {
+	name := CloneName(url)
+	if name == "" {
+		return fmt.Errorf("%q does not name a skill", url)
+	}
+	dst := filepath.Join(dir, name)
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("%s already exists", dst)
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	// #nosec G702 -- the URL is the user's own, typed into their own terminal,
+	// and "--" ends the option list so it cannot become a git flag.
+	cmd := exec.Command("git", "clone", "--depth", "1", "--", url, dst)
+	// A private repository over https would otherwise sit waiting for a
+	// password on a terminal the TUI has taken over, with nothing on screen to
+	// say so. Failing is the recoverable outcome.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.RemoveAll(dst)
+		msg := strings.TrimSpace(string(out))
+		if i := strings.LastIndex(msg, "\n"); i >= 0 {
+			msg = msg[i+1:] // git's own last word is the useful one
+		}
+		return fmt.Errorf("git clone: %s", msg)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "SKILL.md")); err != nil {
+		// A repository of several skills, or not a skill at all. Either way no
+		// agent would load what was just cloned, and leaving it behind would
+		// put a row in the list that means nothing.
+		_ = os.RemoveAll(dst)
+		return fmt.Errorf("%s has no SKILL.md at its root", url)
+	}
+	return nil
+}
+
+// cloneName is the directory a URL clones into: its last path element, without
+// the .git suffix. Anything hidden or with no name at all is refused rather
+// than guessed at — the name becomes a directory under the user's skills.
+func CloneName(url string) string {
+	name := strings.TrimSuffix(strings.TrimRight(url, "/"), ".git")
+	if i := strings.LastIndexAny(name, "/:"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" || strings.HasPrefix(name, ".") {
+		return ""
+	}
+	return name
 }
