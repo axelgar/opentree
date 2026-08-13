@@ -186,7 +186,7 @@ agent's own logo, in its own colours:
 | --- | --- |
 | `enter` | send |
 | `ctrl+j` | newline |
-| `/` | slash commands — the agent's own, plus `/resume`, `/model` and the rest |
+| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn |
@@ -441,13 +441,20 @@ globally, opentree uses that instead of fetching a second copy.
 
 ### The chat says the agent needs credentials
 
-The chat's stopped panel offers `[l]`, which runs the agent's own login command
-(`opencode auth login`, `claude auth login`, `copilot login`) and restarts the
-session when it finishes. Gemini CLI has no login command — it authenticates
-from inside its own TUI — so its panel names the method the agent asked for and
-leaves `[l]` off rather than offering a key that runs the wrong thing: run
-`gemini` once, log in there, then `[r]` to restart. Anything else that stops an
-agent offers `[r]` to restart it.
+The chat's stopped panel offers `[l]`. What that does depends on how the agent
+logs in, and opentree takes the agent's word for it in this order: a command the
+agent names itself (Copilot sends its own path and `login`), the command opentree
+has recorded for it (`opencode auth login`, `claude auth login`), or the login
+performed over the protocol. Gemini CLI takes the last route and offers four
+ways in — Google account, Gemini API key, Vertex AI, gateway — so `[l]` opens a
+picker. A terminal login hands the window to the agent and restarts it when it
+finishes; a protocol login happens inside the running agent and needs no restart.
+
+Credentials also go wrong while an agent is perfectly happy to answer: a token
+expires, a key is revoked, a login lands on the wrong account. `/login` reaches
+the same picker mid-conversation, and the conversation survives it.
+
+Anything else that stops an agent offers `[r]` to restart it.
 
 ### "Error: gh not found"
 
