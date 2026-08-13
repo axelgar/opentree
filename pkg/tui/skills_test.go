@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/skills"
 )
 
@@ -581,13 +582,60 @@ func TestProbeMismatch(t *testing.T) {
 	}
 }
 
-// An agent is only judged on skills it can actually see.
+// A row naming other agents is only quiet while the probed agent stays quiet
+// about it too.
 func TestProbeMismatch_IgnoresAnotherAgentsSkill(t *testing.T) {
 	s := testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release")
 	m := skillsModel(s)
 	m.skillProbe, m.skillProbed = map[string]bool{}, "Claude Code"
 	if got := m.probeMismatch(s); got != "" {
-		t.Errorf("probeMismatch() = %q for a skill the probed agent does not read", got)
+		t.Errorf("probeMismatch() = %q for a skill the probed agent neither reads nor claims", got)
+	}
+}
+
+// The bug this check exists for, as it actually happened: opentree credited
+// .claude/skills to Claude Code alone, and opencode was answering to /release
+// from a workspace. The first version of the probe was silent here, because it
+// only judged rows that named the agent it was asking.
+func TestProbeMismatch_FlagsAnAgentReadingATreeTheListDoesNotCredit(t *testing.T) {
+	s := testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release")
+	m := skillsModel(s)
+	m.skillProbe, m.skillProbed = map[string]bool{"release": true}, "OpenCode"
+
+	got := m.probeMismatch(s)
+	if got == "" {
+		t.Fatal("probeMismatch() was silent about an agent reading a skill the row says it cannot")
+	}
+	mark, _, _ := config.Brand("OpenCode")
+	if !strings.Contains(got, mark) {
+		t.Errorf("probeMismatch() = %q, want it to name the agent doing the reading", got)
+	}
+}
+
+func TestSkillsStatusBar_CountsWhatTheListDoesNotClaim(t *testing.T) {
+	m := skillsModel(
+		testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release"),
+		testSkill("research", "OpenCode", skills.ScopeUser, "/home/.config/opencode/skills/research"),
+	)
+	m.skillProbe, m.skillProbed = map[string]bool{"release": true, "research": true}, "OpenCode"
+
+	bar := m.skillsStatusBar()
+	if !strings.Contains(bar, "confirmed 1/1") {
+		t.Errorf("status bar = %q, want the skill it does claim confirmed", bar)
+	}
+	if !strings.Contains(bar, "1 unexpected") {
+		t.Errorf("status bar = %q, want the skill it does not claim counted", bar)
+	}
+}
+
+// A clean probe says so without a second number: "confirmed 2/2 · 0 unexpected"
+// reads as a finding rather than as nothing to report.
+func TestSkillsStatusBar_QuietWhenNothingIsUnexpected(t *testing.T) {
+	m := skillsModel(testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release"))
+	m.skillProbe, m.skillProbed = map[string]bool{"release": true}, "OpenCode"
+
+	if bar := m.skillsStatusBar(); strings.Contains(bar, "unexpected") {
+		t.Errorf("status bar = %q, want no second number when there is nothing in it", bar)
 	}
 }
 
@@ -633,5 +681,20 @@ func TestSkillsView_WarnsWhenAnAgentCannotSeeARepoSkill(t *testing.T) {
 	m.repoRoot = "/repo"
 	if !strings.Contains(m.View(), "invisible to") {
 		t.Errorf("the row does not say the other agent cannot use it:\n%s", m.View())
+	}
+}
+
+// The registry holds agents opentree can launch but which have no skills
+// mechanism. Tallying one at zero says it has somewhere to put skills and
+// nothing in it, which is not the same as having no such concept.
+func TestSkillsStatusBar_SkipsAgentsWithoutSkills(t *testing.T) {
+	m := skillsModel(testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release"))
+	bar := m.skillsStatusBar()
+	for _, agent := range config.PredefinedAgents {
+		named := strings.Contains(bar, agent.Name)
+		has := len(agent.Skills.UserDirs) > 0 || len(agent.Skills.RepoDirs) > 0
+		if named != has {
+			t.Errorf("%s named in the tally: %v, want %v\n%s", agent.Name, named, has, bar)
+		}
 	}
 }

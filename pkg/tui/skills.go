@@ -278,16 +278,36 @@ func (m Model) probeSkillsCmd() tea.Cmd {
 // probeMismatch is what the agent's own answer says about a row that opentree's
 // reading of the directories does not.
 //
-// Only the probed agent is judged, and only when it reads this skill at all.
-// The two disagreements are worth different things: a skill opentree expects to
-// be loaded and the agent has never heard of means the directory or the
-// settings have been read wrong, and a skill switched off that the agent offers
-// anyway means the override is not being honoured where opentree wrote it.
+// Three disagreements, worth different things. A skill opentree expects to be
+// loaded and the agent has never heard of means a directory or an override has
+// been read wrong. One switched off that the agent offers anyway means the
+// override is not honoured where opentree wrote it. And one the agent reads at
+// all, on a row saying it cannot, means the directory the skill sits in is read
+// by an agent the registry does not credit.
+//
+// That third case is the one this check exists for. Judging only the agents a
+// row already names is how the first version of `v` agreed with a tab that had
+// just called a skill invisible to opencode while opencode was answering to it:
+// the list was never asked about the claim it had not made.
 func (m Model) probeMismatch(s skills.Skill) string {
-	if m.skillProbe == nil || !slices.Contains(s.Agents, m.skillProbed) {
+	if m.skillProbe == nil {
 		return ""
 	}
-	switch expected, loaded := s.State(m.skillProbed) != skills.StateOff, m.skillProbe[s.Name]; {
+	loaded := m.skillProbe[s.Name]
+
+	if !slices.Contains(s.Agents, m.skillProbed) {
+		if !loaded {
+			return ""
+		}
+		// Stated as the observation rather than the cause. It may be a missing
+		// registry entry, a tree opentree does not know, or a skill sharing a
+		// name with one of the agent's own commands — and guessing between
+		// those is what produced the wrong answer in the first place.
+		mark, _, _ := config.Brand(m.skillProbed)
+		return "⚠ " + mark + " reads it anyway"
+	}
+
+	switch expected := s.State(m.skillProbed) != skills.StateOff; {
 	case expected && !loaded:
 		return "⚠ not loaded"
 	case !expected && loaded:
@@ -706,6 +726,13 @@ func (m Model) knownTrees() string {
 func (m Model) skillsStatusBar() string {
 	parts := []string{plural(len(m.skills), "skill")}
 	for _, agent := range config.PredefinedAgents {
+		// An agent with no skills mechanism at all is left out rather than
+		// tallied at zero: "GitHub Copilot 0" says it has somewhere to put
+		// skills and nothing in it, which is a different thing from having no
+		// such concept.
+		if len(agent.Skills.UserDirs) == 0 && len(agent.Skills.RepoDirs) == 0 {
+			continue
+		}
 		// Counts what the agent will actually load, not what is installed for
 		// it — the whole point of reading the overrides.
 		n := 0
@@ -726,9 +753,20 @@ func (m Model) skillsStatusBar() string {
 	// forgotten: the counts to its left are opentree's reading of the
 	// documentation, and this is the one number that was checked.
 	if m.skillProbe != nil {
-		confirmed, expected := 0, 0
+		confirmed, expected, unexpected := 0, 0, 0
 		for _, s := range m.skills {
-			if !slices.Contains(s.Agents, m.skillProbed) || s.State(m.skillProbed) == skills.StateOff {
+			// Read by an agent this row does not name. Counted separately
+			// because it answers a different question: the ratio says whether
+			// what the list claims is true, and this says whether it is
+			// complete. Only the first was ever checked, and a row can be
+			// wrong without making any claim to check.
+			if !slices.Contains(s.Agents, m.skillProbed) {
+				if m.skillProbe[s.Name] {
+					unexpected++
+				}
+				continue
+			}
+			if s.State(m.skillProbed) == skills.StateOff {
 				continue
 			}
 			expected++
@@ -736,7 +774,11 @@ func (m Model) skillsStatusBar() string {
 				confirmed++
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%s confirmed %d/%d", m.skillProbed, confirmed, expected))
+		label := fmt.Sprintf("%s confirmed %d/%d", m.skillProbed, confirmed, expected)
+		if unexpected > 0 {
+			label += fmt.Sprintf(" · %d unexpected", unexpected)
+		}
+		parts = append(parts, label)
 	}
 	return statusBarStyle.Render(strings.Join(parts, "  •  "))
 }
