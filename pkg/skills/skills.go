@@ -182,15 +182,30 @@ func Scan(repoRoot string) []Skill {
 }
 
 // applyStates works out what each agent that can see this skill will actually
-// do with it: its own settings override if there is one, the skill's own
-// request not to be model-invoked if there is not, and otherwise plain on.
+// do with it: its own settings override if there is one, then the two things
+// that leave a skill loaded but out of the model's reach, and otherwise plain
+// on.
+//
+// A skill with no description is one of those two. The description is what a
+// model matches a skill against, so a skill without one is filtered out of what
+// the agent offers it — the same place `disable-model-invocation` puts a skill,
+// reached by accident rather than on purpose. Both agents still advertise such
+// a skill as a command, which is how it stays slash-invocable and why it cannot
+// be reported as simply absent.
+//
+// Applied to every agent, on opencode's documentation and the shape of the
+// format rather than on a probe: available_commands says whether a skill is
+// loaded, not whether the model may reach for it, so `v` cannot settle this one
+// either way. Understating is the safe direction — a row that says "manual" for
+// a skill the model would have used costs less than one promising a capability
+// that is not there.
 func applyStates(skill *Skill, overrides map[string]map[string]State) {
 	skill.States = make(map[string]State, len(skill.Agents))
 	for _, agent := range skill.Agents {
 		switch state, ok := overrides[agent][skill.Name]; {
 		case ok:
 			skill.States[agent] = state
-		case skill.ManualOnly:
+		case skill.ManualOnly, skill.Description == "":
 			skill.States[agent] = StateManualOnly
 		default:
 			skill.States[agent] = StateOn

@@ -390,3 +390,47 @@ func TestScan_KeepsGenuinelyDifferentSkillsOfTheSameName(t *testing.T) {
 		t.Fatalf("Scan = %+v, want both kept — they are different files", got)
 	}
 }
+
+// A skill with no description is loaded and answers to its name, but has
+// nothing for a model to match against — so the agent does not offer it
+// unaided. That is the state disable-model-invocation asks for, reached by
+// omission rather than on purpose, and a row calling it plain "on" promises a
+// capability that is not there.
+func TestScan_ADescriptionlessSkillIsManualOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	tree := filepath.Join(home, ".claude", "skills")
+	writeSkill(t, tree, "bare", "---\nname: bare\n---\n\nBody with no description.\n")
+	writeSkill(t, tree, "described", "---\nname: described\ndescription: Says what it does.\n---\n")
+
+	for _, s := range Scan("") {
+		want := StateOn
+		if s.Name == "bare" {
+			want = StateManualOnly
+		}
+		if got := s.State("Claude Code"); got != want {
+			t.Errorf("%s: State = %q, want %q", s.Name, got, want)
+		}
+	}
+}
+
+// An explicit override still wins. The missing description is a default, not a
+// verdict, and a user who wrote a state into settings meant it.
+func TestScan_AnOverrideBeatsTheMissingDescription(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	writeSkill(t, filepath.Join(home, ".claude", "skills"), "bare", "---\nname: bare\n---\n")
+	writeSettings(t, filepath.Join(home, ".claude"), `{"skillOverrides": {"bare": "off"}}`)
+
+	found := Scan("")
+	if len(found) != 1 {
+		t.Fatalf("Scan() = %d skills, want 1", len(found))
+	}
+	if got := found[0].State("Claude Code"); got != StateOff {
+		t.Errorf("State = %q, want the override to win", got)
+	}
+}

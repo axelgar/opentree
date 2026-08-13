@@ -240,6 +240,10 @@ not a rewrite — decision 9 of the ACP plan, applied again.
 | 17 | A **config-registered** directory is searched at any depth; the standard trees are listed one level down. That is each agent's own documented behaviour, and walking the standard trees would list a skill's reference material as skills. |
 | 18 | `v` probes **only the configured agent.** The answer costs a subprocess and a real session, and the agent opentree would launch is the one whose reading of these directories decides what a workspace can do. |
 | 19 | The probe **flags rows, never corrects them.** Being told something disagrees is the useful part; opentree guessing which side is right would replace one confident wrong answer with another. |
+| 20 | The probe also judges rows that **do not name the agent it asked**. Checking only the claims the list makes is how it stayed silent through the one bug it was built to catch. Two numbers, because "is what I claim true" and "is what I claim complete" are different questions. |
+| 21 | Built-in commands share the skill namespace, so a skill named `review` or `init` will false-positive on decision 20. **Shipped noisy rather than not shipped** — the false-negative rate in that direction was total. The fix, if it annoys: probe an empty directory once for a baseline and subtract it. |
+| 22 | **No description means manual-only**, for every agent, on documentation and the shape of the format rather than on a probe — `available_commands` cannot distinguish loaded from model-invocable. Understating is the safe direction here, and the row prints "no description" beside the tag, so the two causes of `manual` stay apart on screen. |
+| 23 | An agent with **no skills mechanism at all is left out of the tally**, not tallied at zero. Zero says it has somewhere to put skills and nothing in it. |
 
 ### On decision 5, symlink vs copy
 
@@ -276,6 +280,8 @@ Each commit is green on its own and ships something.
 | 8 | **`a` adds a skill from a git URL.** The other half of decision 9; `c` shipped without it. | `pkg/skills/skills.go`, `pkg/tui/skills.go` | done |
 | 9 | **Bridge the repository trees.** A project skill under `.opencode/skills` or `.agents/skills` is invisible to Claude Code; `l` and `skills sync` link them. | `pkg/skills/link.go` | done |
 | 10 | **Registered directories, and ground truth.** Read the trees an agent's own config declares; `v` asks the agent what it actually loaded. | `pkg/skills/config.go`, `probe.go` | done |
+| 11 | **`v` checks the direction it could not see.** An agent reading a skill on a row that says it cannot is flagged and counted. | `pkg/tui/skills.go` | done |
+| 12 | **A skill with no description is manual, not automatic.** Nothing for a model to match on is the same place `disable-model-invocation` leads. | `pkg/skills/skills.go` | done |
 
 Commit 2 is the one that matters. If the sequence stalls after it, the real bug
 is already fixed.
@@ -357,6 +363,25 @@ ACP plan; here it merges four.
   and opentree reads both, because a config written a version ago is not a
   config with no skills in it. The file may also be `.jsonc`, which is what the
   comment stripper is for.
+
+### Found while widening the check
+
+- **A descriptionless skill is still a command.** Both agents advertise one, so
+  it is loaded and answers to `/name` — which rules out reporting it as absent,
+  and leaves manual-only as the state that describes it. Established by probing
+  a fixture holding one skill with a description and one without, because the
+  documentation for this had already been wrong once.
+- **The probe cannot confirm decision 22, and that is a property of ACP.**
+  `available_commands` distinguishes loaded from not-loaded and nothing finer,
+  so both `on` and `user-invocable-only` look identical over the wire. The only
+  remaining confirmation is asking a running agent to name the skills it can
+  use, which costs a prompt and a human reading the answer.
+- **The tally named agents that have no skills.** The registry regained GitHub
+  Copilot and Gemini CLI while this was being written, neither with a skills
+  spec, and the footer dutifully reported `◉ GitHub Copilot 0`. Zero is a claim:
+  it says there is somewhere to put skills and nothing is in it. Caught by
+  reading the screen after an unrelated change, which is the third time on this
+  feature that the bug was visible before it was noticed.
 
 ## Not built
 
