@@ -1780,6 +1780,93 @@ func TestWheel_ScrollsTheConversation(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Scroll pill
+// ---------------------------------------------------------------------------
+
+// scrolledModel is a chat with more log than fits, scrolled off the bottom.
+func scrolledModel(t *testing.T) Model {
+	t.Helper()
+	m := newTestModel()
+	for i := 0; i < 200; i++ {
+		m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, fmt.Sprintf("line %d", i)))
+		m, _ = applyUpdate(m, textUpdate(acp.UpdateUserMessage, "next"))
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("a fresh log should follow the agent to the bottom")
+	}
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.viewport.AtBottom() {
+		t.Fatal("the log is too short to scroll, so this proves nothing")
+	}
+	return m
+}
+
+// At the bottom there is nothing to say, and the line the pill would take
+// belongs to the conversation.
+func TestScrollPill_SilentAtTheBottom(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, "hello"))
+
+	if pill := m.scrollPill(); pill != "" {
+		t.Errorf("scrollPill() = %q at the bottom, want nothing", pill)
+	}
+	if strings.Contains(m.View(), "pgdn") {
+		t.Errorf("the pill is on screen at the bottom:\n%s", m.View())
+	}
+}
+
+func TestScrollPill_SaysWhereYouAreAndWhichKey(t *testing.T) {
+	m := scrolledModel(t)
+
+	if !strings.Contains(m.View(), "scrolled up") || !strings.Contains(m.View(), "pgdn") {
+		t.Errorf("no pill after scrolling up:\n%s", m.View())
+	}
+	if m.newBelow {
+		t.Error("nothing arrived, so this is a read-back, not missed activity")
+	}
+}
+
+// The position alone is not the news. Something arriving while you are reading
+// history is, and it reads differently.
+func TestScrollPill_NamesNewActivity(t *testing.T) {
+	m := scrolledModel(t)
+	m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, "an answer you cannot see"))
+
+	if !m.newBelow {
+		t.Fatal("content arrived below the fold and went unannounced")
+	}
+	if !strings.Contains(m.View(), "new activity") {
+		t.Errorf("the pill still reads as a plain scroll position:\n%s", m.View())
+	}
+
+	// Back at the bottom the news is spent.
+	m.viewport.GotoBottom()
+	m = m.relayout()
+	if m.newBelow {
+		t.Error("newBelow survived a return to the bottom")
+	}
+	if strings.Contains(m.View(), "new activity") {
+		t.Errorf("the pill outlived the thing it was announcing:\n%s", m.View())
+	}
+}
+
+// The pill costs a footer line, and a footer that grows without a relayout is
+// a viewport drawn over the input box.
+func TestScrollPill_DoesNotOverlapTheInput(t *testing.T) {
+	m := scrolledModel(t)
+
+	lines := strings.Split(m.View(), "\n")
+	if h := len(lines); h > m.height {
+		t.Errorf("View() is %d lines in a %d-line terminal", h, m.height)
+	}
+	// The status line is the last thing drawn, whatever the footer is showing.
+	last := lipgloss.NewStyle().Render(lines[len(lines)-1])
+	if !strings.Contains(last, "send") {
+		t.Errorf("last line is %q, want the status line", last)
+	}
+}
+
 // A click is not a scroll, and the chat has nothing to do with it.
 func TestWheel_ClicksAreIgnored(t *testing.T) {
 	m := newTestModel()

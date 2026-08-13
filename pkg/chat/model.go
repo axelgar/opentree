@@ -436,6 +436,12 @@ type Model struct {
 	// into one log, and both loading a session that allows exactly one client.
 	restarting bool
 
+	// newBelow is whether the log grew while the reader was scrolled up. The
+	// scroll position alone does not say that: reading back through history is
+	// not the same situation as the agent answering somewhere off screen, and
+	// only the second one is worth interrupting the read for.
+	newBelow bool
+
 	width, height int
 	ready         bool
 	err           error

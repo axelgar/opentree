@@ -48,8 +48,35 @@ func (m Model) footerHeight() int {
 	case overlayHelp:
 		return lipgloss.Height(m.helpView())
 	default:
-		return inputHeight + 2 + m.completionHeight()
+		// lipgloss.Height("") is 1, so the pill is counted by presence.
+		pill := 0
+		if m.scrollPill() != "" {
+			pill = 1
+		}
+		return inputHeight + 2 + m.completionHeight() + pill
 	}
+}
+
+// scrollPill tells the reader they are not looking at the end of the log, and
+// which key gets them back. Empty at the bottom, where there is nothing to say
+// — so it costs a footer line only while it is earning one.
+func (m Model) scrollPill() string {
+	if m.viewport.AtBottom() {
+		return ""
+	}
+	text := "↓ scrolled up · pgdn to bottom"
+	if m.newBelow {
+		text = "↓ new activity · pgdn to jump"
+	}
+	pill := helpStyle.Render(text)
+	if m.newBelow {
+		pill = flagStyle.Render(text)
+	}
+	// Right-aligned, against the input box below it rather than the log above.
+	if gap := m.width - lipgloss.Width(pill) - 1; gap > 0 {
+		return strings.Repeat(" ", gap) + pill
+	}
+	return pill
 }
 
 // completionHeight is how many lines the palette occupies: the visible window,
@@ -123,6 +150,10 @@ func (m Model) footer() string {
 
 	var b strings.Builder
 	b.WriteString("\n")
+	if pill := m.scrollPill(); pill != "" {
+		b.WriteString(pill)
+		b.WriteString("\n")
+	}
 	// The waiting line stands on its own when the agent's commands are all
 	// there is to match — typing "/" at an agent that has sent nothing yet
 	// should not look like "/" matches nothing.

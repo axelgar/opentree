@@ -90,7 +90,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
+		return m.relayout(), cmd
 
 	case acpUpdateMsg:
 		m = m.applyUpdate(acp.SessionUpdate(msg))
@@ -380,21 +380,24 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	// Scrolling relayouts because the footer grows a line when the reader
+	// leaves the bottom. Without it the viewport keeps its old height and
+	// overlaps the input box.
 	case key.Matches(msg, m.keys.PageUp):
 		m.viewport.PageUp()
-		return m, nil
+		return m.relayout(), nil
 
 	case key.Matches(msg, m.keys.PageDown):
 		m.viewport.PageDown()
-		return m, nil
+		return m.relayout(), nil
 
 	case key.Matches(msg, m.keys.ScrollUp):
 		m.viewport.HalfPageUp()
-		return m, nil
+		return m.relayout(), nil
 
 	case key.Matches(msg, m.keys.ScrollDn):
 		m.viewport.HalfPageDown()
-		return m, nil
+		return m.relayout(), nil
 
 	case key.Matches(msg, m.keys.Send):
 		text := strings.TrimSpace(m.input.Value())
@@ -895,9 +898,20 @@ func (m Model) relayout() Model {
 		atBottom = true
 	}
 	m.viewport.Width, m.viewport.Height = m.width, height
+
+	// Every path that adds to the log comes through here, so this is the one
+	// place that can tell "the reader scrolled up" from "the reader scrolled up
+	// and then the agent said something".
+	before := m.viewport.TotalLineCount()
 	m.viewport.SetContent(m.renderLog())
-	if atBottom {
+	switch {
+	case atBottom:
 		m.viewport.GotoBottom()
+	case m.viewport.TotalLineCount() > before:
+		m.newBelow = true
+	}
+	if m.viewport.AtBottom() {
+		m.newBelow = false
 	}
 	return m
 }
