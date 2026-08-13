@@ -66,6 +66,10 @@ type Options struct {
 	// launch resumes it rather than forgetting, and so it can be found again by
 	// name once it is no longer the current one.
 	SaveSession func(acp.SessionInfo) error
+
+	// ForgetSession drops one from that record, for a conversation the agent
+	// itself no longer has. Offering it again would resume into "not found".
+	ForgetSession func(id string) error
 }
 
 // acpBinary is the program to spawn: the resolver when one is set, otherwise
@@ -173,10 +177,55 @@ func Run(ctx context.Context, opts Options) error {
 	final, err := p(m).Run()
 	close(quit)
 	if fm, ok := final.(Model); ok && fm.client != nil {
+		fm.endSession()
 		_ = fm.client.Close()
 	}
 	return err
 }
+
+// closeTimeout bounds the goodbye. The process is killed immediately after, so
+// an agent that will not answer costs nothing worth waiting on.
+const closeTimeout = 2 * time.Second
+
+// endSession tells the agent the conversation is over, for the agents that take
+// being told. Everything opentree holds is on disk by now; this is the agent's
+// own bookkeeping, and the alternative is a SIGKILL with no warning.
+//
+// A conversation nobody had is dropped from the ledger as well. Copilot deletes
+// an empty session when it is closed — reasonably, there is nothing in it — and
+// an id offered afterwards resumes into "not found", which reads to the user as
+// a conversation that was lost rather than one that never existed.
+func (m Model) endSession() {
+	say, forget := m.closeOnExit()
+	if !say {
+		return
+	}
+	// A context of its own: the chat's is a parent of everything that has just
+	// been torn down, and may already be cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+
+	if err := m.client.CloseSession(ctx, m.sessionID); err != nil {
+		return
+	}
+	if forget && m.opts.ForgetSession != nil {
+		_ = m.opts.ForgetSession(m.sessionID)
+	}
+}
+
+// closeOnExit is what leaving the chat owes the agent: whether there is a
+// conversation to say goodbye to, and whether its id survives the goodbye.
+func (m Model) closeOnExit() (say, forget bool) {
+	if m.sessionID == "" || !m.canCloseSession || m.client == nil {
+		return false, false
+	}
+	return true, !m.spoken()
+}
+
+// spoken reports whether this conversation has anything in it — a prompt sent,
+// or a history resumed. It rides on titled because the two answer the same
+// question: a conversation is named after the first thing said to it.
+func (m Model) spoken() bool { return m.titled }
 
 // Mouse cell motion is not about clicking — it is what makes the terminal hand
 // scroll events to the program instead of scrolling its own buffer. Without it
@@ -305,6 +354,10 @@ type Model struct {
 	// either session/load or session/resume. An agent that cannot should be
 	// told so rather than asked and refused.
 	canResume bool
+
+	// canCloseSession is the agent's sessionCapabilities.close, which decides
+	// whether leaving the chat says goodbye or just kills the process.
+	canCloseSession bool
 
 	// canListSessions is the agent's sessionCapabilities.list. Without it
 	// /resume falls back to the conversations opentree recorded itself, which
@@ -513,6 +566,7 @@ func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 	m.authMethods = info.AuthMethods
 	m.canResume = info.AgentCapabilities.CanReopen()
 	m.canListSessions = info.AgentCapabilities.CanList()
+	m.canCloseSession = info.AgentCapabilities.CanClose()
 	m.canSendImages = info.AgentCapabilities.PromptCapabilities.Image
 	if info.AgentInfo != nil {
 		m.agentVersion = info.AgentInfo.Version

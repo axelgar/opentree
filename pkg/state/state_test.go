@@ -524,6 +524,32 @@ func TestRecordSession_UpsertsWithoutErasing(t *testing.T) {
 	}
 }
 
+// An agent discards a session that was opened and never used. Keeping the id
+// would offer a conversation that resumes into "not found", which reads as one
+// that was lost rather than one nobody ever had.
+func TestForgetSession_FallsBackToTheOneBefore(t *testing.T) {
+	ws := &Workspace{Name: "fix-auth"}
+	ws.RecordSession(ACPSession{ID: "ses_a", Title: "the auth bug"})
+	ws.RecordSession(ACPSession{ID: "ses_b"})
+
+	ws.ForgetSession("ses_b")
+	if len(ws.ACPSessions) != 1 || ws.ACPSessions[0].ID != "ses_a" {
+		t.Fatalf("ACPSessions = %+v, want only the conversation that happened", ws.ACPSessions)
+	}
+	if ws.ACPSessionID != "ses_a" {
+		t.Errorf("ACPSessionID = %q, want the real conversation before it", ws.ACPSessionID)
+	}
+
+	// The last one out leaves the workspace with nothing to resume, which is
+	// true and better than a dangling id.
+	ws.ForgetSession("ses_a")
+	if ws.ACPSessionID != "" || len(ws.ACPSessions) != 0 {
+		t.Errorf("ledger = %q %+v, want it empty", ws.ACPSessionID, ws.ACPSessions)
+	}
+
+	ws.ForgetSession("") // no id is a no-op, not a wipe
+}
+
 // Whichever conversation was recorded last is the one this workspace is in, so
 // closing the window and coming back lands where it left off.
 func TestRecordSession_TracksTheCurrentOne(t *testing.T) {

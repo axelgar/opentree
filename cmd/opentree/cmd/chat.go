@@ -86,6 +86,10 @@ func runChat(ctx context.Context, name, version string) error {
 			})
 			return store.UpdateWorkspace(ws)
 		},
+		ForgetSession: func(id string) error {
+			ws.ForgetSession(id)
+			return store.UpdateWorkspace(ws)
+		},
 	})
 }
 

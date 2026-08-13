@@ -307,6 +307,18 @@ func (c *Client) ListSessions(ctx context.Context, cwd, cursor string) (*ListSes
 	return &resp, nil
 }
 
+// CloseSession tells the agent a conversation is over, so it can let go of
+// whatever it was holding for it. Only available where Capabilities().CanClose()
+// is set.
+//
+// It is not a delete: a conversation with something in it loads again
+// afterwards, verified against Copilot 1.0.79. One with nothing in it does not —
+// Copilot drops an empty session on close, which is the right thing for a
+// conversation nobody had, and means a caller must stop offering that id.
+func (c *Client) CloseSession(ctx context.Context, sessionID string) error {
+	return c.call(ctx, methodSessionClose, CloseSessionRequest{SessionID: sessionID}, nil)
+}
+
 // SetConfigOption changes an agent-declared control — model, reasoning effort,
 // session mode — and returns the resulting set.
 func (c *Client) SetConfigOption(ctx context.Context, sessionID, configID, value string) ([]ConfigOption, error) {

@@ -547,6 +547,64 @@ func TestAuthMethods_WithoutATerminalCommand(t *testing.T) {
 	}
 }
 
+// Closing is not deleting — except for a session with nothing in it, which
+// Copilot drops. Either way the client's job is to say so and move on.
+func TestCloseSession_RoundTrip(t *testing.T) {
+	f := newFakeAgent(t, Handlers{})
+
+	errc := make(chan error, 1)
+	go func() { errc <- f.client.CloseSession(context.Background(), "ses_1") }()
+
+	req := f.next()
+	if req["method"] != methodSessionClose {
+		t.Fatalf("method = %v, want %s", req["method"], methodSessionClose)
+	}
+	if params := req["params"].(map[string]any); params["sessionId"] != "ses_1" {
+		t.Errorf("sessionId = %v, want ses_1", params["sessionId"])
+	}
+	f.reply(req, `{}`)
+
+	if err := <-errc; err != nil {
+		t.Errorf("CloseSession: %v", err)
+	}
+}
+
+// The capability is presence, not a boolean: Copilot sends close, Gemini does
+// not, and opentree must not send a method the agent never advertised.
+func TestCanClose_FromWhatTheAgentSent(t *testing.T) {
+	for _, tt := range []struct {
+		fixture string
+		want    bool
+	}{
+		{"initialize_copilot.json", true},
+		{"initialize_gemini.json", false},
+	} {
+		var env struct {
+			Result InitializeResponse `json:"result"`
+		}
+		if err := json.Unmarshal(readFixture(t, tt.fixture), &env); err != nil {
+			t.Fatalf("unmarshal %s: %v", tt.fixture, err)
+		}
+		if got := env.Result.AgentCapabilities.CanClose(); got != tt.want {
+			t.Errorf("%s: CanClose() = %v, want %v", tt.fixture, got, tt.want)
+		}
+	}
+}
+
+// What the agent printed outside the protocol is kept for whoever asks, and a
+// client with no process behind it has nothing to report rather than a panic.
+func TestStderr_TailAndZeroValue(t *testing.T) {
+	f := newFakeAgent(t, Handlers{})
+	f.client.stderr.drain(strings.NewReader("first\n\nsecond\nthird\n"))
+
+	if got := f.client.Stderr(); got != "first\nsecond\nthird" {
+		t.Errorf("Stderr() = %q, want the lines it was given without the blank", got)
+	}
+	if got := (&Client{}).Stderr(); got != "" {
+		t.Errorf("zero client Stderr() = %q, want empty", got)
+	}
+}
+
 func TestCall_AgentError(t *testing.T) {
 	f := newFakeAgent(t, Handlers{})
 

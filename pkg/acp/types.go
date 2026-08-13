@@ -18,6 +18,7 @@ const (
 	methodSessionLoad       = "session/load"
 	methodSessionResume     = "session/resume"
 	methodSessionList       = "session/list"
+	methodSessionClose      = "session/close"
 	methodSessionPrompt     = "session/prompt"
 	methodSessionCancel     = "session/cancel"
 	methodSetConfigOption   = "session/set_config_option"
@@ -87,6 +88,7 @@ type PromptCapabilities struct {
 type SessionCapabilities struct {
 	List   *Capability `json:"list,omitempty"`
 	Resume *Capability `json:"resume,omitempty"`
+	Close  *Capability `json:"close,omitempty"`
 }
 
 // Capability is an ACP capability object. It carries nothing — being there is
@@ -101,6 +103,9 @@ func (c AgentCapabilities) CanList() bool { return c.SessionCapabilities.List !=
 func (c AgentCapabilities) CanReopen() bool {
 	return c.LoadSession || c.SessionCapabilities.Resume != nil
 }
+
+// CanClose reports whether the agent takes being told a conversation is over.
+func (c AgentCapabilities) CanClose() bool { return c.SessionCapabilities.Close != nil }
 
 // AuthMethod describes one way to authenticate. Some are a login the client
 // asks the agent to perform — Gemini offers four, and its Google one opens a
@@ -202,6 +207,12 @@ type ListSessionsRequest struct {
 type ListSessionsResponse struct {
 	Sessions   []SessionInfo `json:"sessions"`
 	NextCursor string        `json:"nextCursor,omitempty"`
+}
+
+// CloseSessionRequest ends one conversation. The agent keeps it — see
+// CloseSession for the one exception the wire has.
+type CloseSessionRequest struct {
+	SessionID string `json:"sessionId"`
 }
 
 // SessionInfo is one conversation the agent kept. Title is its own summary of

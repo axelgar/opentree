@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -98,6 +99,24 @@ func (w *Workspace) RecordSession(s ACPSession) {
 	w.ACPSessions = append(w.ACPSessions, s)
 	if len(w.ACPSessions) > maxRecordedSessions {
 		w.ACPSessions = w.ACPSessions[len(w.ACPSessions)-maxRecordedSessions:]
+	}
+}
+
+// ForgetSession drops a conversation the agent no longer has, so nothing offers
+// to reopen it. The workspace falls back to the most recent one left rather than
+// to nothing: an agent that discarded an empty session did not discard the real
+// conversation before it.
+func (w *Workspace) ForgetSession(id string) {
+	if id == "" {
+		return
+	}
+	w.ACPSessions = slices.DeleteFunc(w.ACPSessions, func(s ACPSession) bool { return s.ID == id })
+	if w.ACPSessionID != id {
+		return
+	}
+	w.ACPSessionID = ""
+	if n := len(w.ACPSessions); n > 0 {
+		w.ACPSessionID = w.ACPSessions[n-1].ID
 	}
 }
 
