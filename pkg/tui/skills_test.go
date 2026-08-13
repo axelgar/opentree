@@ -48,6 +48,37 @@ func TestTab_SwitchesBetweenPlaces(t *testing.T) {
 	}
 }
 
+// Arrows walk the tab bar the way it looks like they should.
+func TestArrows_SwitchBetweenPlaces(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	next, _ := m.Update(keyMsg("right"))
+	m = next.(Model)
+	if m.tab != tabSkills {
+		t.Fatal("right did not open the Skills tab")
+	}
+	next, _ = m.Update(keyMsg("left"))
+	if next.(Model).tab != tabWorkspaces {
+		t.Error("left did not return to Workspaces")
+	}
+}
+
+// esc is a step back, not an exit, while the Skills tab has focus.
+func TestEsc_StepsBackFromSkillsButQuitsFromWorkspaces(t *testing.T) {
+	m := skillsModel()
+	next, cmd := m.Update(keyMsg("esc"))
+	if next.(Model).tab != tabWorkspaces {
+		t.Error("esc did not return to Workspaces")
+	}
+	if cmd != nil && cmd() == (tea.QuitMsg{}) {
+		t.Error("esc quit from the Skills tab")
+	}
+
+	_, cmd = newTestModel(testWS("alpha")).Update(keyMsg("esc"))
+	if cmd == nil || cmd() != (tea.QuitMsg{}) {
+		t.Error("esc did not quit from the Workspaces tab")
+	}
+}
+
 // Both tabs are always named, so the second place is discoverable rather than
 // hidden behind a key nobody presses.
 func TestTabBar_NamesBothPlaces(t *testing.T) {

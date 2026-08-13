@@ -121,12 +121,14 @@ var keys = keyMap{
 		key.WithHelp("E", "error log"),
 	),
 	Tab: key.NewBinding(
-		key.WithKeys("tab"),
-		key.WithHelp("tab", "skills"),
+		key.WithKeys("tab", "left", "right"),
+		key.WithHelp("tab/←→", "skills"),
 	),
 	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
-		key.WithHelp("q", "quit"),
+		// esc is the way out of the workspace list; from Skills it only steps
+		// back a tab, which that tab handles before this binding is consulted.
+		key.WithKeys("q", "ctrl+c", "esc"),
+		key.WithHelp("q/esc", "quit"),
 	),
 	Help: key.NewBinding(
 		key.WithKeys("?"),

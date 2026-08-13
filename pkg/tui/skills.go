@@ -499,7 +499,7 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	visible := m.visibleSkills()
 	switch msg.String() {
-	case "tab", "shift+tab", "esc":
+	case "tab", "shift+tab", "left", "right", "esc":
 		if msg.String() == "esc" && m.skillFilter != "" {
 			m.skillFilter = ""
 			m.skillCursor = 0
