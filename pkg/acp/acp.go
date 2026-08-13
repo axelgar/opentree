@@ -214,6 +214,17 @@ func (c *Client) Initialize(ctx context.Context, clientName, version string) (*I
 // Capabilities is what the agent advertised at initialize, zero until then.
 func (c *Client) Capabilities() AgentCapabilities { return c.caps }
 
+// Authenticate asks the agent to log itself in by one of the methods it
+// declared. It returns when the agent says it is done, which for a browser flow
+// is after the user has finished in the browser — no timeout is imposed here,
+// because the only honest one is however long that takes.
+//
+// A successful return is the agent's word, not proof: Copilot answers {} to a
+// method id that does not exist. What proves it is the next session/new.
+func (c *Client) Authenticate(ctx context.Context, methodID string) error {
+	return c.call(ctx, methodAuthenticate, AuthenticateRequest{MethodID: methodID}, nil)
+}
+
 // NewSession opens a fresh conversation rooted at cwd.
 func (c *Client) NewSession(ctx context.Context, cwd string) (*NewSessionResponse, error) {
 	var resp NewSessionResponse

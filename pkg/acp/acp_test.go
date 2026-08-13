@@ -477,6 +477,76 @@ func TestInitialize_RoundTrip(t *testing.T) {
 	}
 }
 
+// Authenticate carries a method id and nothing else, which is the whole of what
+// ACP gives a client to log an agent in with.
+func TestAuthenticate_RoundTrip(t *testing.T) {
+	f := newFakeAgent(t, Handlers{})
+
+	errc := make(chan error, 1)
+	go func() { errc <- f.client.Authenticate(context.Background(), "oauth-personal") }()
+
+	req := f.next()
+	if req["method"] != methodAuthenticate {
+		t.Fatalf("method = %v, want %s", req["method"], methodAuthenticate)
+	}
+	if params := req["params"].(map[string]any); params["methodId"] != "oauth-personal" {
+		t.Errorf("methodId = %v, want oauth-personal", params["methodId"])
+	}
+	// Gemini answers a browser flow with a bare result and no body.
+	f.reply(req, `null`)
+
+	if err := <-errc; err != nil {
+		t.Errorf("Authenticate: %v", err)
+	}
+}
+
+// Copilot names the binary to run in _meta, absolute, because the agent knows
+// where it lives and the client's PATH may not.
+func TestAuthMethod_TerminalAuth(t *testing.T) {
+	var env struct {
+		Result InitializeResponse `json:"result"`
+	}
+	if err := json.Unmarshal(readFixture(t, "initialize_copilot.json"), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(env.Result.AuthMethods) != 1 {
+		t.Fatalf("authMethods = %d, want 1", len(env.Result.AuthMethods))
+	}
+
+	cmd, args, ok := env.Result.AuthMethods[0].TerminalAuth()
+	if !ok {
+		t.Fatal("expected a terminal-auth command")
+	}
+	if !filepath.IsAbs(cmd) || filepath.Base(cmd) != "copilot" {
+		t.Errorf("command = %q, want an absolute path to copilot", cmd)
+	}
+	if strings.Join(args, " ") != "login" {
+		t.Errorf("args = %v, want [login]", args)
+	}
+}
+
+// Gemini's four are logins it performs itself, so none of them names a command
+// and the client has to ask over the protocol.
+func TestAuthMethods_WithoutATerminalCommand(t *testing.T) {
+	var env struct {
+		Result InitializeResponse `json:"result"`
+	}
+	if err := json.Unmarshal(readFixture(t, "initialize_gemini.json"), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(env.Result.AuthMethods) != 4 {
+		t.Fatalf("authMethods = %d, want 4", len(env.Result.AuthMethods))
+	}
+	for _, a := range env.Result.AuthMethods {
+		if a.ID == "" || a.Name == "" {
+			t.Errorf("method %+v needs an id to send and a name to show", a)
+		}
+		if _, _, ok := a.TerminalAuth(); ok {
+			t.Errorf("%s reports a terminal command; none of Gemini's does", a.ID)
+		}
+	}
+}
+
 func TestCall_AgentError(t *testing.T) {
 	f := newFakeAgent(t, Handlers{})
 

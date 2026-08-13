@@ -320,6 +320,7 @@ type Model struct {
 	configOptions []acp.ConfigOption
 	settings      settings
 	sessions      sessions
+	login         login
 
 	// titled is whether the current conversation already has a name in the
 	// ledger, which stops the first prompt of a resumed session from renaming
@@ -369,6 +370,12 @@ type Model struct {
 	// dead means the agent process is gone and only restart or quit apply.
 	dead     bool
 	authNeed bool
+
+	// loggingIn is set while the agent is authenticating itself over the
+	// protocol, which for a browser flow is as long as the browser takes. The
+	// panel says so rather than offering [l] again: nothing on screen would
+	// otherwise change between pressing it and the browser opening.
+	loggingIn bool
 
 	// restarting is set between asking for a new agent and getting one. Bubble
 	// Tea runs every command on its own goroutine, so without it a second press
@@ -446,8 +453,9 @@ func (b brand) paint(s lipgloss.Style) lipgloss.Style {
 func (m Model) adapterMissing() bool { return m.client == nil }
 
 // canLogIn reports whether logging in is a remedy for the current state, which
-// takes both an agent asking for credentials and a command to give them with.
-func (m Model) canLogIn() bool { return m.authNeed && len(m.opts.AuthCommand) > 0 }
+// takes both an agent asking for credentials and a way to give them: a command
+// to run, or a login the agent will perform on request.
+func (m Model) canLogIn() bool { return m.authNeed && m.canAuthenticate() }
 
 // perm is the escalation on screen: the oldest one still unanswered.
 func (m Model) perm() *permissionMsg {
@@ -463,6 +471,7 @@ type overlay int
 const (
 	overlayNone overlay = iota
 	overlayPermission
+	overlayLogin
 	overlayStopped
 	overlaySettings
 	overlaySessions
@@ -481,6 +490,10 @@ func (m Model) overlay() overlay {
 	switch {
 	case m.perm() != nil:
 		return overlayPermission
+	// Above the stopped panel it was opened from, which is still true underneath
+	// it — an agent wanting credentials is exactly when this picker is up.
+	case m.login.open:
+		return overlayLogin
 	case m.stopped():
 		return overlayStopped
 	case m.settings.open:

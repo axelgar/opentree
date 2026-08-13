@@ -248,6 +248,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.restarting = true
 		return m, tea.Batch(tea.EnableMouseCellMotion, m.restartCmd())
 
+	case authenticatedMsg:
+		m.loggingIn = false
+		if msg.err != nil {
+			// The agent's own words: "Gemini API key is missing or not
+			// configured" is the whole answer, and opentree has nothing to add.
+			m.err = msg.err
+			return m.relayout(), nil
+		}
+		// This agent logged itself in, so unlike the terminal flow there is no
+		// restart to do — the process holding the new credentials is the one
+		// already running.
+		m.dead, m.authNeed, m.err = false, false, nil
+
+		// A conversation that already exists keeps going under the new
+		// credentials; reopening it would replay its whole history into a log
+		// that already has it. Only a chat that never got a session — which is
+		// what a login blocks — has one to start, and that is also the answer to
+		// whether the login took: an agent that only claimed to log in fails here.
+		if m.sessionID != "" {
+			return m.appendNotice("logged in to " + m.opts.Agent).relayout(), nil
+		}
+		return m.relayout(), m.startSession()
+
 	case errMsg:
 		m.err = msg.err
 		m.authNeed = msg.auth
@@ -293,6 +316,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.overlay() {
 	case overlayPermission:
 		return m.handlePermissionKey(msg)
+	case overlayLogin:
+		return m.handleLoginKey(msg)
 	case overlayStopped:
 		return m.handleStoppedKey(msg)
 	case overlaySettings:
@@ -622,7 +647,7 @@ func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, leave
 
 	case key.Matches(msg, m.keys.Login) && m.canLogIn():
-		return m, m.authCmd()
+		return m.startLogin()
 
 	case key.Matches(msg, m.keys.Restart):
 		if m.restarting {
@@ -634,11 +659,10 @@ func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// authCmd hands the terminal to the agent's own login flow. opentree cannot
-// perform the login itself — ACP only reports that one is needed — but it does
-// own a terminal, which is exactly what the agent asks for.
-func (m Model) authCmd() tea.Cmd {
-	c := exec.Command(m.opts.Command, m.opts.AuthCommand...) // #nosec G204 -- from the agent registry, not user input
+// authCmd hands the terminal to a login flow that wants one, which opentree
+// owns and the agent does not.
+func (m Model) authCmd(r authRemedy) tea.Cmd {
+	c := exec.Command(r.command, r.args...) // #nosec G204 -- from the agent registry or the agent's own _meta
 	c.Dir = m.opts.Cwd
 	return tea.ExecProcess(c, func(err error) tea.Msg { return authDoneMsg{err: err} })
 }

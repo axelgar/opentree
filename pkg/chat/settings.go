@@ -225,6 +225,11 @@ var clientCommandTable = []struct {
 	desc:      "reopen an earlier conversation",
 	available: Model.canPickSession,
 	run:       Model.openSessions,
+}, {
+	name:      "login",
+	desc:      "log in again, or as somebody else",
+	available: Model.canAuthenticate,
+	run:       Model.startLogin,
 }}
 
 // clientCommandList is opentree's own slash commands, in the order the palette

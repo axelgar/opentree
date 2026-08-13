@@ -39,6 +39,8 @@ func (m Model) footerHeight() int {
 		return m.settingsHeight()
 	case overlaySessions:
 		return m.sessionsHeight()
+	case overlayLogin:
+		return m.loginHeight()
 	case overlayStopped:
 		return len(m.stoppedLines()) + 4
 	case overlayPermission:
@@ -109,6 +111,8 @@ func (m Model) footer() string {
 		return m.settingsView()
 	case overlaySessions:
 		return m.sessionsView()
+	case overlayLogin:
+		return m.loginView()
 	case overlayStopped:
 		return m.stoppedView()
 	case overlayPermission:
@@ -243,9 +247,11 @@ func (m Model) stoppedLines() []string {
 	if m.opts.InstallHint != "" && m.adapterMissing() {
 		lines = append(lines, noticeStyle.Render(m.opts.InstallHint))
 	}
-	if m.canLogIn() {
+	if m.loggingIn {
+		actions = append(actions, noticeStyle.Render("logging in…"))
+	} else if m.canLogIn() {
 		actions = append(actions, permKeyStyle.Render("[l]")+" "+
-			permLabelStyle.Render(m.opts.Command+" "+strings.Join(m.opts.AuthCommand, " ")))
+			permLabelStyle.Render(m.loginAction()))
 	}
 	// A restart already under way says so instead of offering itself again: the
 	// panel is otherwise identical before and after the key, which is what made

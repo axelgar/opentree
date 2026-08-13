@@ -13,6 +13,7 @@ const ProtocolVersion = 1
 // JSON key on the wire is camelCase.
 const (
 	methodInitialize        = "initialize"
+	methodAuthenticate      = "authenticate"
 	methodSessionNew        = "session/new"
 	methodSessionLoad       = "session/load"
 	methodSessionResume     = "session/resume"
@@ -101,13 +102,53 @@ func (c AgentCapabilities) CanReopen() bool {
 	return c.LoadSession || c.SessionCapabilities.Resume != nil
 }
 
-// AuthMethod describes one way to authenticate. opencode offers exactly one,
-// and its description is an instruction to run a command in a terminal rather
-// than anything the client can perform itself.
+// AuthMethod describes one way to authenticate. Some are a login the client
+// asks the agent to perform — Gemini offers four, and its Google one opens a
+// browser from inside the agent's own process — and some are an instruction to
+// go and run a command, which opencode's description says in prose.
 type AuthMethod struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+
+	// Meta is the agent's own extension block, kept raw because every agent
+	// puts something different in it and none of it is in the schema.
+	Meta json.RawMessage `json:"_meta,omitempty"`
+}
+
+// TerminalAuth is the command this method wants run in a terminal, from the
+// terminal-auth extension Copilot sends. It carries the running agent's own
+// absolute path, which beats a bare name: a binary reachable by the agent is
+// not necessarily on the PATH opentree was started with.
+//
+// Executing it is not a capability opentree is granting away. The agent is
+// already running as the user and could spawn it unasked; what a client adds is
+// a terminal to run it in, which is the whole reason the extension exists.
+func (a AuthMethod) TerminalAuth() (command string, args []string, ok bool) {
+	if len(a.Meta) == 0 {
+		return "", nil, false
+	}
+	var meta struct {
+		Terminal *struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"terminal-auth"`
+	}
+	if err := json.Unmarshal(a.Meta, &meta); err != nil || meta.Terminal == nil {
+		return "", nil, false
+	}
+	if meta.Terminal.Command == "" {
+		return "", nil, false
+	}
+	return meta.Terminal.Command, meta.Terminal.Args, true
+}
+
+// AuthenticateRequest asks the agent to log itself in one of the ways it
+// declared at initialize. The id is all it carries: ACP has nowhere to put a
+// key or a password, so a method that needs one reads it from the environment
+// the agent was started in.
+type AuthenticateRequest struct {
+	MethodID string `json:"methodId"`
 }
 
 // ---------------------------------------------------------------------------
