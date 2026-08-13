@@ -44,7 +44,7 @@ func (m Model) settingsRows() []completionItem {
 	if !m.settings.choosingValue() {
 		rows := make([]completionItem, 0, len(m.configOptions))
 		for _, o := range m.configOptions {
-			rows = append(rows, completionItem{value: o.Name, desc: o.CurrentValue})
+			rows = append(rows, completionItem{value: o.Name, desc: valueLabel(o)})
 		}
 		return rows
 	}
@@ -324,6 +324,27 @@ func (m Model) openSettingsAt(configID string) (tea.Model, tea.Cmd) {
 // agent can change it on its own, so more than one place needs to name it.
 const categoryMode = "mode"
 
+// valueLabel is what to show for an option's current setting, which is normally
+// the value itself: agents spell these to be read, and "build", "low" and a
+// model id are all better on screen than the prose names beside them.
+//
+// ACP's own ids for the well-known session modes are URLs, though, and Copilot
+// uses them — which put
+// "https://agentclientprotocol.com/protocol/session-modes#agent" in the flag
+// beside the input, where it meant "Agent". A value carrying a scheme is an id
+// and never a label, so that one takes the name the agent gave it instead.
+func valueLabel(o acp.ConfigOption) string {
+	if !strings.Contains(o.CurrentValue, "://") {
+		return o.CurrentValue
+	}
+	for _, v := range o.Options {
+		if v.Value == o.CurrentValue && v.Name != "" {
+			return v.Name
+		}
+	}
+	return o.CurrentValue
+}
+
 // nextMode is the mode that follows the current one, or ok=false when the agent
 // declares no mode to cycle.
 func nextMode(options []acp.ConfigOption) (configID, value string, ok bool) {
@@ -381,7 +402,7 @@ func (m Model) flagsSummary() []string {
 		if !ok || o.CurrentValue == "" {
 			continue
 		}
-		ordered[rank] = o.CurrentValue
+		ordered[rank] = valueLabel(o)
 	}
 
 	out := make([]string, 0, len(ordered))
@@ -401,7 +422,7 @@ func (m Model) currentValues(model bool) []string {
 		if (o.Category == "model") != model || o.CurrentValue == "" {
 			continue
 		}
-		out = append(out, o.CurrentValue)
+		out = append(out, valueLabel(o))
 	}
 	return out
 }

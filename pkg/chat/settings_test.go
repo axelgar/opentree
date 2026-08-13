@@ -440,6 +440,33 @@ func TestFlagsSummary_OnlyTheSettingsWorthPermanentSpace(t *testing.T) {
 	}
 }
 
+// A value is a wire id, and ACP's own spelling for a well-known mode is a URL.
+// Copilot uses it, and the flag beside the input is no place for one.
+func TestFlagsSummary_ShowsTheNameNotTheWireValue(t *testing.T) {
+	const agentMode = "https://agentclientprotocol.com/protocol/session-modes#agent"
+	m := newTestModel()
+	m.configOptions = []acp.ConfigOption{
+		{ID: "mode", Category: "mode", CurrentValue: agentMode, Options: []acp.ConfigOptionValue{
+			{Value: agentMode, Name: "Agent"},
+			{Value: "https://agentclientprotocol.com/protocol/session-modes#plan", Name: "Plan"},
+		}},
+		{ID: "reasoning_effort", Category: "thought_level", CurrentValue: "medium"},
+	}
+	if got := m.flagsSummary(); strings.Join(got, " · ") != "Agent · medium" {
+		t.Errorf("flags = %v, want [Agent medium] — the name the agent gave the mode, not its id", got)
+	}
+
+	// A value the agent never listed is all there is to show.
+	m.configOptions = []acp.ConfigOption{
+		{ID: "mode", Category: "mode", CurrentValue: "build", Options: []acp.ConfigOptionValue{
+			{Value: "plan", Name: "Plan"},
+		}},
+	}
+	if got := m.flagsSummary(); len(got) != 1 || got[0] != "build" {
+		t.Errorf("flags = %v, want the raw value back when no option matches it", got)
+	}
+}
+
 func TestFlagsSummary_ModeLeadsRegardlessOfDeclarationOrder(t *testing.T) {
 	m := newTestModel()
 	m.configOptions = []acp.ConfigOption{
