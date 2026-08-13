@@ -173,6 +173,27 @@ func TestScan_WalksARegisteredDirectory(t *testing.T) {
 	}
 }
 
+// Walked at any depth, but not into a skill. A SKILL.md inside a directory that
+// is already a skill is that skill's reference material — Copilot lists the
+// outer one and not the inner, and a row for the inner would promise something
+// no agent will load.
+func TestScan_DoesNotWalkIntoASkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	repo := t.TempDir()
+
+	writeSkill(t, filepath.Join(repo, "team"), "outer", "---\nname: outer\ndescription: The skill.\n---\n")
+	writeSkill(t, filepath.Join(repo, "team", "outer"), "examples", "---\nname: inner\ndescription: Material.\n---\n")
+	writeFile(t, filepath.Join(repo, "opencode.json"), `{"skills": ["./team"]}`)
+
+	for _, s := range Scan(repo) {
+		if s.Name == "inner" {
+			t.Errorf("Scan() listed a SKILL.md nested inside %s", filepath.Dir(s.Dir))
+		}
+	}
+}
+
 // Only registered trees are walked. A SKILL.md nested inside a standard tree is
 // a skill's own reference material, and listing it would put a row in front of
 // the user that no agent will ever load.

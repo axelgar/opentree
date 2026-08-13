@@ -278,12 +278,34 @@ func walk(tree Tree) []Skill {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
-		if skill, ok := skillAt(filepath.Dir(path), tree); ok {
+		dir := filepath.Dir(path)
+		// Depth is not the same as nesting. Copilot listed a SKILL.md two
+		// directories down as a skill of its own, and one inside a skill it had
+		// already found not at all — that one is the outer skill's own reference
+		// material, which is the same rule the standard trees follow.
+		if insideASkill(dir, tree.Dir) {
+			return nil
+		}
+		if skill, ok := skillAt(dir, tree); ok {
 			out = append(out, skill)
 		}
 		return nil
 	})
 	return out
+}
+
+// insideASkill reports whether anything between dir and the tree root is itself
+// a skill.
+func insideASkill(dir, root string) bool {
+	for parent := filepath.Dir(dir); strings.HasPrefix(parent, root); parent = filepath.Dir(parent) {
+		if _, err := os.Stat(filepath.Join(parent, "SKILL.md")); err == nil {
+			return true
+		}
+		if parent == root {
+			break
+		}
+	}
+	return false
 }
 
 // skillAt reads one candidate directory. Anything without a readable SKILL.md
