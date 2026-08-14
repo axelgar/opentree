@@ -286,6 +286,150 @@ func TestSkillsDelete_CancelKeepsTheSkill(t *testing.T) {
 	}
 }
 
+// writeSkillDir puts a SKILL.md on disk and returns the directory holding it.
+func writeSkillDir(t *testing.T, root, name string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\nname: "+name+"\n---\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A skill in three trees is three directories, and taking it out of two of
+// them is an ordinary thing to want.
+func TestSkillsDelete_PicksAmongTheCopies(t *testing.T) {
+	root := t.TempDir()
+	a := writeSkillDir(t, filepath.Join(root, "a"), "wrangler")
+	b := writeSkillDir(t, filepath.Join(root, "b"), "wrangler")
+	c := writeSkillDir(t, filepath.Join(root, "c"), "wrangler")
+
+	m := skillsModel(
+		testSkill("wrangler", "OpenCode", skills.ScopeUser, a),
+		testSkill("wrangler", "Claude Code", skills.ScopeUser, b),
+		testSkill("wrangler", "Gemini CLI", skills.ScopeUser, c))
+
+	next, _ := m.Update(keyMsg("x"))
+	m = next.(Model)
+	if !m.skillDeleteChoosing {
+		t.Fatal("x did not offer the copies")
+	}
+	// The row x was pressed on opens ticked, so ticking a second one adds to
+	// it rather than replacing it.
+	if m.skillCopyCursor != 0 || !m.skillChosen[a] {
+		t.Fatalf("picker opened on row %d with %v, want the cursor's own row ticked",
+			m.skillCopyCursor, m.skillChosen)
+	}
+
+	next, _ = m.Update(keyMsg("down")) // onto b
+	next, _ = next.(Model).Update(keyMsg(" "))
+	m = next.(Model)
+	next, _ = m.Update(keyMsg("enter"))
+	m = next.(Model)
+
+	if m.skillDeleteChoosing || m.skillDeleting == nil {
+		t.Fatal("enter did not move on to the confirmation")
+	}
+	if _, err := os.Stat(b); err != nil {
+		t.Fatal("deleted before confirming")
+	}
+
+	next, _ = m.Update(keyMsg("y"))
+	for _, gone := range []string{a, b} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s survived: %v", gone, err)
+		}
+	}
+	if _, err := os.Stat(c); err != nil {
+		t.Errorf("the unticked copy was removed as well: %v", err)
+	}
+	if next.(Model).skillDeleting != nil {
+		t.Error("confirmation stayed open")
+	}
+}
+
+// Space unticks as well, so the row x opened on can be dropped in favour of
+// another — the picker is the choice, not a confirmation of one already made.
+func TestSkillsDelete_TheOpeningRowCanBeUnticked(t *testing.T) {
+	root := t.TempDir()
+	a := writeSkillDir(t, filepath.Join(root, "a"), "wrangler")
+	b := writeSkillDir(t, filepath.Join(root, "b"), "wrangler")
+
+	m := skillsModel(
+		testSkill("wrangler", "OpenCode", skills.ScopeUser, a),
+		testSkill("wrangler", "Claude Code", skills.ScopeUser, b))
+
+	next, _ := m.Update(keyMsg("x"))
+	next, _ = next.(Model).Update(keyMsg(" ")) // untick a
+	m = next.(Model)
+
+	// Nothing ticked is not "the row under the cursor" here — the picker opened
+	// with one ticked, so unticking them all is a deliberate "none of these".
+	next, _ = m.Update(keyMsg("enter"))
+	if !next.(Model).skillDeleteChoosing {
+		t.Fatal("enter with nothing ticked left the picker")
+	}
+
+	next, _ = next.(Model).Update(keyMsg("down")) // onto b
+	next, _ = next.(Model).Update(keyMsg(" "))    // tick b
+	next, _ = next.(Model).Update(keyMsg("enter"))
+	_, _ = next.(Model).Update(keyMsg("y"))
+
+	if _, err := os.Stat(a); err != nil {
+		t.Errorf("the unticked copy was removed: %v", err)
+	}
+	if _, err := os.Stat(b); !os.IsNotExist(err) {
+		t.Error("the ticked copy survived")
+	}
+}
+
+// Esc in the picker is a step back out of the whole thing, and nothing on disk
+// has been touched by then.
+func TestSkillsDelete_EscAbandonsThePicker(t *testing.T) {
+	root := t.TempDir()
+	a := writeSkillDir(t, filepath.Join(root, "a"), "wrangler")
+	b := writeSkillDir(t, filepath.Join(root, "b"), "wrangler")
+
+	m := skillsModel(
+		testSkill("wrangler", "OpenCode", skills.ScopeUser, a),
+		testSkill("wrangler", "Claude Code", skills.ScopeUser, b))
+	next, _ := m.Update(keyMsg("x"))
+	next, _ = next.(Model).Update(keyMsg("esc"))
+	m = next.(Model)
+
+	if m.skillDeleteChoosing || m.skillDeleting != nil || m.skillChosen != nil {
+		t.Error("esc left the delete flow half open")
+	}
+	for _, kept := range []string{a, b} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Errorf("%s was removed: %v", kept, err)
+		}
+	}
+}
+
+// Deleting is per directory, and one directory is frequently every agent's —
+// the confirmation has to say so, because that is the question people press x
+// hoping to answer.
+func TestSkillsDelete_SaysWhenOneDirectoryServesSeveralAgents(t *testing.T) {
+	dir := writeSkillDir(t, t.TempDir(), "shared")
+	s := testSkill("shared", "OpenCode", skills.ScopeUser, dir)
+	s.Agents = []string{"OpenCode", "Claude Code"}
+
+	m := skillsModel(s)
+	next, _ := m.Update(keyMsg("x"))
+	m = next.(Model)
+	if m.skillDeleteChoosing {
+		t.Fatal("one copy drew a picker for a choice that does not exist")
+	}
+	if !strings.Contains(m.View(), "all of them lose it") {
+		t.Errorf("the confirmation did not say who loses the skill:\n%s", m.View())
+	}
+}
+
 // The warning is what tells you the agent in a worktree is working without the
 // repository's skills; without it nothing on the row would say so.
 func TestWorkspaceRow_WarnsWhenSkillsAreMissing(t *testing.T) {
@@ -691,6 +835,123 @@ func TestSkillsAdd_EscCancelsEveryStep(t *testing.T) {
 	next, _ = m.Update(keyMsg("esc"))
 	if next.(Model).skillAddURL != "" {
 		t.Error("esc did not close the tree picker")
+	}
+}
+
+// space picks a second tree, and enter then applies to every ticked one — with
+// none ticked it stays the row under the cursor, which is the common pick.
+func TestSkillsPicker_TicksMoreThanOneTree(t *testing.T) {
+	m := skillsModel()
+	m.skillAddURL = "https://example.com/a-skill"
+	m.skillCopyCursor, m.skillChosen = 0, map[string]bool{}
+	targets := m.addTargets()
+	if len(targets) < 2 {
+		t.Fatalf("the picker offers %d trees, want at least 2", len(targets))
+	}
+
+	if got := m.chosenTargets(targets); len(got) != 1 || got[0].Dir != targets[0].Dir {
+		t.Fatalf("with nothing ticked, chose %+v, want the cursor row", got)
+	}
+
+	next, _ := m.Update(keyMsg(" "))
+	next, _ = next.(Model).Update(keyMsg("down"))
+	next, _ = next.(Model).Update(keyMsg(" "))
+	m = next.(Model)
+
+	got := m.chosenTargets(targets)
+	if len(got) != 2 || got[0].Dir != targets[0].Dir || got[1].Dir != targets[1].Dir {
+		t.Fatalf("chose %+v, want the first two trees", got)
+	}
+	if !strings.Contains(m.View(), "✓") {
+		t.Errorf("the picker did not mark the ticked trees:\n%s", m.View())
+	}
+}
+
+// The columns have to hold still as the cursor moves. The selected row's style
+// draws a left border the unselected rows' does not, which shifted the whole
+// row one column right and set the marks wandering down the list.
+func TestSkillsPicker_ColumnsHoldStillUnderTheCursor(t *testing.T) {
+	m := skillsModel()
+	m.skillAddURL = "https://example.com/a-skill"
+	m.skillChosen = map[string]bool{}
+	targets := m.addTargets()
+	if len(targets) < 2 {
+		t.Fatalf("the picker offers %d trees, want at least 2", len(targets))
+	}
+
+	// Measured on the rendered line, not on what went into it: the styles are
+	// the whole point and the content was never the part that moved.
+	col := func(cursor int) int {
+		m.skillCopyCursor = cursor
+		for _, line := range strings.Split(m.View(), "\n") {
+			if i := strings.Index(line, targets[0].Label); i >= 0 {
+				return lipgloss.Width(line[:i])
+			}
+		}
+		t.Fatalf("the row for %q was not rendered", targets[0].Label)
+		return -1
+	}
+	if selected, unselected := col(0), col(1); selected != unselected {
+		t.Errorf("row sits at column %d under the cursor and %d away from it",
+			selected, unselected)
+	}
+}
+
+// Two trees with a reader in common are two copies of one skill, so the picker
+// has to say who reads what: ~/.claude/skills is opencode's as well.
+func TestSkillsPicker_NamesWhoReadsEachTree(t *testing.T) {
+	m := skillsModel()
+	m.skillAddURL = "https://example.com/a-skill"
+	m.skillChosen = map[string]bool{}
+
+	var claudeUserTree skillTarget
+	for _, target := range m.addTargets() {
+		if target.Label == "Claude Code · user" {
+			claudeUserTree = target
+		}
+	}
+	if claudeUserTree.Dir == "" {
+		t.Fatal("Claude Code's user tree was not offered")
+	}
+	if !slices.Contains(claudeUserTree.Agents, "OpenCode") ||
+		!slices.Contains(claudeUserTree.Agents, "Claude Code") {
+		t.Fatalf("readers = %v, want both agents that read it", claudeUserTree.Agents)
+	}
+
+	claudeMark, _, _ := config.Brand("Claude Code")
+	openMark, _, _ := config.Brand("OpenCode")
+	for _, line := range strings.Split(m.View(), "\n") {
+		if !strings.Contains(line, "Claude Code · user") {
+			continue
+		}
+		if !strings.Contains(line, claudeMark) || !strings.Contains(line, openMark) {
+			t.Errorf("row does not name both readers: %q", line)
+		}
+		return
+	}
+	t.Error("the row was not rendered")
+}
+
+// u re-checks a skill with the site that published it, one check at a time: a
+// second would race the first over the directory it is replacing.
+func TestSkills_UpdateChecksOnceAtATime(t *testing.T) {
+	m := skillsModel(testSkill("wrangler", "Claude Code", skills.ScopeUser, t.TempDir()))
+	next, cmd := m.Update(keyMsg("u"))
+	m = next.(Model)
+	if cmd == nil || !m.skillUpdating {
+		t.Fatal("u did not start a check")
+	}
+	if _, again := m.Update(keyMsg("u")); again != nil {
+		t.Error("a second u started another check")
+	}
+
+	next, _ = m.Update(skillUpdatedMsg{name: "wrangler"})
+	m = next.(Model)
+	if m.skillUpdating {
+		t.Error("the check stayed marked in flight")
+	}
+	if !strings.Contains(m.View(), "up to date") {
+		t.Errorf("view did not report the skill unchanged:\n%s", m.View())
 	}
 }
 

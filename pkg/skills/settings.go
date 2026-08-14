@@ -3,9 +3,11 @@ package skills
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/axelgar/opentree/pkg/config"
@@ -161,6 +163,143 @@ func OverrideFile(spec config.SkillsSpec, repoRoot, skill string) string {
 	return fallback
 }
 
+// SetState switches a skill off for one agent, or clears what switched it off,
+// by whichever mechanism that agent has. Callers should not have to know which
+// shape a given agent keeps its answer in.
+func SetState(spec config.SkillsSpec, repoRoot, skill string, state State) (string, error) {
+	switch {
+	case spec.OverridesKey != "":
+		return SetOverride(spec, repoRoot, skill, state)
+	case spec.DisabledKey != "":
+		return SetDisabled(spec, repoRoot, skill, state)
+	}
+	return "", fmt.Errorf("opentree cannot switch a skill off for this agent")
+}
+
+// SetDisabled switches a skill off for an agent that keeps a list of the
+// disabled rather than a map of states, or takes it off that list again.
+//
+// A list carries less than a map: a name is on it or it is not, so off and
+// default are the only two things it can say. Anything else is refused rather
+// than approximated into the nearest thing the list can hold.
+//
+// Turning a skill back on clears it from every file that names it, not only
+// from the one an addition would go to. The files union when read — a name
+// missing from one says nothing about the others — so clearing the
+// repository's while the user's still lists it would report a skill as on that
+// the agent goes on ignoring.
+func SetDisabled(spec config.SkillsSpec, repoRoot, skill string, state State) (string, error) {
+	if spec.DisabledKey == "" {
+		return "", fmt.Errorf("opentree cannot switch a skill off for this agent")
+	}
+	if state != "" && state != StateOff {
+		return "", fmt.Errorf("this agent keeps a list of the disabled, which cannot say %q", state)
+	}
+	if state == StateOff {
+		return setDisabledIn(disabledFile(spec, repoRoot, skill), spec.DisabledKey, skill, true)
+	}
+
+	var written string
+	var errs []error
+	for _, entry := range spec.SettingsFiles {
+		path := settingsPath(entry, repoRoot)
+		if path == "" || !slices.Contains(disabledIn(path, spec.DisabledKey), skill) {
+			continue
+		}
+		switch p, err := setDisabledIn(path, spec.DisabledKey, skill, false); {
+		case err != nil:
+			errs = append(errs, err)
+		case written == "":
+			written = p
+		}
+	}
+	return written, errors.Join(errs...)
+}
+
+// disabledFile is where a name should be added: the file already listing it,
+// and otherwise the first the agent reads — the same rule OverrideFile
+// follows, and for the same reason.
+func disabledFile(spec config.SkillsSpec, repoRoot, skill string) string {
+	fallback := ""
+	for _, entry := range spec.SettingsFiles {
+		path := settingsPath(entry, repoRoot)
+		if path == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = path
+		}
+		if slices.Contains(disabledIn(path, spec.DisabledKey), skill) {
+			return path
+		}
+	}
+	return fallback
+}
+
+// disabledIn is one file's list of the disabled, empty when the file is absent
+// or keeps none.
+func disabledIn(path, key string) []string {
+	data, err := os.ReadFile(path) // #nosec G304 -- a settings path from the agent registry
+	if err != nil {
+		return nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	return disabledNames(doc, key)
+}
+
+// setDisabledIn adds or removes one name in one file's list.
+func setDisabledIn(path, key, skill string, add bool) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("no settings file to write")
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- a settings path from the agent registry
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		data = []byte("{}")
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return "", fmt.Errorf("%s is not readable as JSON: %w", path, err)
+	}
+
+	names := disabledNames(doc, key)
+	switch i := slices.Index(names, skill); {
+	case add && i < 0:
+		names = append(names, skill)
+	case !add && i >= 0:
+		names = slices.Delete(names, i, i+1)
+	default:
+		return path, nil // already saying what it was asked to say
+	}
+	// Never null: an agent reading its own settings back should find a list
+	// where it left one, even after the last name comes off.
+	if names == nil {
+		names = []string{}
+	}
+
+	// Two-space indent, as many levels in as the path is deep, to match the
+	// document around it. A list nested under "skills" is not at the margin,
+	// and marshalling it as if it were leaves the file looking edited.
+	keyPath := strings.Split(key, ".")
+	value, err := json.MarshalIndent(names, strings.Repeat("  ", len(keyPath)), "  ")
+	if err != nil {
+		return "", err
+	}
+	updated, err := replacePath(data, keyPath, value)
+	if err != nil {
+		return "", err
+	}
+	if err := writeFileAtomic(path, updated); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // SetOverride records a skill's state in the agent's settings, or clears the
 // override when state is empty.
 //
@@ -222,6 +361,39 @@ func SetOverride(spec config.SkillsSpec, repoRoot, skill string, state State) (s
 		return "", err
 	}
 	return path, nil
+}
+
+// replacePath swaps the value at a dotted path, leaving every other byte of
+// the document alone — including the members either side of it at every level.
+//
+// A missing leaf is inserted into the deepest object that does exist. A branch
+// that does not exist at all is written whole, which is the only case where
+// opentree chooses the shape of anything it did not find.
+func replacePath(data []byte, path []string, value []byte) ([]byte, error) {
+	if len(path) == 1 {
+		return replaceKey(data, path[0], value)
+	}
+	start, end, found, err := valueSpan(data, path[0])
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		for i := len(path) - 1; i > 0; i-- {
+			indent := strings.Repeat("  ", i)
+			value = fmt.Appendf(nil, "{\n%s  %q: %s\n%s}", indent, path[i], value, indent)
+		}
+		return replaceKey(data, path[0], value)
+	}
+	// Recursing on the sub-object's own bytes, then splicing it back: the
+	// offsets a nested span reports are its own, and the outer start is what
+	// puts them back where they came from.
+	inner, err := replacePath(data[start:end], path[1:], value)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]byte{}, data[:start]...)
+	out = append(out, inner...)
+	return append(out, data[end:]...), nil
 }
 
 // replaceKey swaps one top-level key's value in a JSON object, leaving every

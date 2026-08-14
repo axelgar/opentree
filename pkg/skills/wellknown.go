@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -38,7 +39,24 @@ const (
 	maxArtifact = 10 << 20
 	maxExtract  = 25 << 20
 	maxFiles    = 1000
+
+	// sourceFile records which index a skill came from, so the same site can be
+	// asked the same question again later. A cloned skill has its .git for
+	// that; one taken from an index would otherwise have nothing, and being
+	// able to re-check the digest is most of the reason to prefer an index.
+	//
+	// Hidden, because the directory belongs to the agent that reads it and a
+	// visible file in there is one the agent may pick up as the skill's own.
+	sourceFile = ".opentree-source.json"
 )
+
+// source is sourceFile's contents.
+type source struct {
+	Index  string `json:"index"`
+	Name   string `json:"name"`
+	Digest string `json:"digest"`
+	Type   string `json:"type"`
+}
 
 // An Entry is one skill a site offers. Description is carried so the picker can
 // show what a skill is for before it is on disk — the same line the agent will
@@ -106,22 +124,76 @@ func Discover(ctx context.Context, site string) ([]Entry, error) {
 	return out, nil
 }
 
-// Install downloads one entry into its own directory under dir.
-func Install(ctx context.Context, e Entry, dir string) error {
+// Install downloads one entry into its own directory under each of the given
+// trees.
+//
+// Fetched once and copied into the rest: agents read each other's directories
+// unevenly, so covering all of them takes more than one tree — and the same
+// artifact pulled once per tree is the same bytes over the wire as many times
+// as there are agents. Each copy carries the source file with it, so all of
+// them can be updated later.
+func Install(ctx context.Context, e Entry, dirs ...string) error {
 	name := safeName(e.Name)
 	if name == "" || e.index == nil {
 		return fmt.Errorf("%q did not come from a skills index", e.Name)
 	}
+	if len(dirs) == 0 {
+		return fmt.Errorf("%s: nowhere to install it", e.Name)
+	}
+	dst := filepath.Join(dirs[0], name)
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("%s already exists", dst)
+	}
+	if err := fetchInto(ctx, e, dst); err != nil {
+		return err
+	}
+	return CopyTo(Skill{Name: e.Name, Dir: dst}, dirs[1:]...)
+}
+
+// Update re-checks an installed skill against the site that published it, and
+// replaces it when the published bytes have changed. It reports whether
+// anything changed.
+//
+// The digest is what makes this cheap: an unchanged skill is settled by the
+// index alone, with nothing downloaded and nothing on disk touched. That is
+// the check a clone cannot do — git has to fetch before it can tell.
+func Update(ctx context.Context, dir string) (bool, error) {
+	src, ok := readSource(dir)
+	if !ok {
+		// A clone is not a dead end, it just updates somewhere else — and the
+		// command that does it is worth naming rather than leaving to be
+		// guessed at.
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return false, fmt.Errorf("%s was cloned — `git -C %s pull` updates it", filepath.Base(dir), dir)
+		}
+		return false, fmt.Errorf("%s did not come from a site that publishes skills", filepath.Base(dir))
+	}
+	// Discover takes a site and reduces it to the origin, so handing it the
+	// recorded index URL asks the same host the same question.
+	entries, err := Discover(ctx, src.Index)
+	if err != nil {
+		return false, err
+	}
+	i := slices.IndexFunc(entries, func(e Entry) bool { return e.Name == src.Name })
+	if i < 0 {
+		return false, fmt.Errorf("%s no longer publishes %s", indexHost(src.Index), src.Name)
+	}
+	if strings.EqualFold(entries[i].Digest, src.Digest) {
+		return false, nil
+	}
+	if err := checkUnedited(dir, src); err != nil {
+		return false, err
+	}
+	return true, replace(ctx, entries[i], dir)
+}
+
+// fetchInto downloads one entry into a directory of its own, leaving nothing
+// behind if any part of it fails.
+func fetchInto(ctx context.Context, e Entry, dst string) error {
 	artifact, err := url.Parse(e.URL)
 	if err != nil {
 		return fmt.Errorf("%s: %s is not a URL", e.Name, e.URL)
 	}
-
-	dst := filepath.Join(dir, name)
-	if _, err := os.Stat(dst); err == nil {
-		return fmt.Errorf("%s already exists", dst)
-	}
-
 	body, err := fetch(ctx, e.index.ResolveReference(artifact), maxArtifact)
 	if err != nil {
 		return err
@@ -143,10 +215,12 @@ func Install(ctx context.Context, e Entry, dir string) error {
 		err = untar(body, dst)
 	}
 	if err == nil {
-		_, err = os.Stat(filepath.Join(dst, "SKILL.md"))
-		if err != nil {
+		if _, statErr := os.Stat(filepath.Join(dst, "SKILL.md")); statErr != nil {
 			err = fmt.Errorf("%s arrived without a SKILL.md", e.Name)
 		}
+	}
+	if err == nil {
+		err = writeSource(dst, e)
 	}
 	if err != nil {
 		// Half an unpacked archive would show up in the list as a skill with
@@ -155,6 +229,100 @@ func Install(ctx context.Context, e Entry, dir string) error {
 		return err
 	}
 	return nil
+}
+
+// replace swaps a fresh copy in for one already on disk.
+//
+// The new copy is complete and verified before the old one is moved, and the
+// old one is moved rather than deleted, so a failed rename can put it back.
+// Neither temporary outlives the call, which matters more than it looks: the
+// scan reads every directory in a tree, so one left behind would list as a
+// second skill by the same name.
+func replace(ctx context.Context, e Entry, dir string) error {
+	// Siblings, because a rename has to stay on one filesystem.
+	fresh := filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".new")
+	old := filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".old")
+	_ = os.RemoveAll(fresh)
+	_ = os.RemoveAll(old)
+	defer func() {
+		_ = os.RemoveAll(fresh)
+		_ = os.RemoveAll(old)
+	}()
+
+	if err := fetchInto(ctx, e, fresh); err != nil {
+		return err
+	}
+	if err := os.Rename(dir, old); err != nil {
+		return err
+	}
+	if err := os.Rename(fresh, dir); err != nil {
+		_ = os.Rename(old, dir)
+		return err
+	}
+	return nil
+}
+
+// checkUnedited refuses to replace a skill that has been changed here since it
+// was installed. There is no version control under a skills directory and no
+// copy anywhere else, so an overwrite is the one mistake nothing can undo.
+//
+// Only a single-file skill can be checked: its digest is the digest of the
+// SKILL.md itself, so the file either still hashes to what was installed or it
+// does not. An archive's digest is over the tarball, and nothing on disk
+// corresponds to it without unpacking the old one again — so an edited bundle
+// is replaced silently. That is the honest limit rather than a check that only
+// looks like one.
+func checkUnedited(dir string, src source) error {
+	if src.Type != typeSkillMD {
+		return nil
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "SKILL.md")) // #nosec G304 -- the skill's own directory
+	if err != nil {
+		return err
+	}
+	if verify(body, src.Digest) != nil {
+		return fmt.Errorf("%s has been edited here — delete it to take the published version", src.Name)
+	}
+	return nil
+}
+
+// writeSource records where a skill was taken from, alongside the skill.
+func writeSource(dst string, e Entry) error {
+	data, err := json.Marshal(source{
+		Index:  e.index.String(),
+		Name:   e.Name,
+		Digest: e.Digest,
+		Type:   e.Type,
+	})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dst, sourceFile), data, 0600)
+}
+
+// readSource is what a directory records about where it came from, and false
+// when it came from somewhere that records nothing — a git clone, or a skill
+// written by hand.
+func readSource(dir string) (source, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, sourceFile)) // #nosec G304 -- the skill's own directory
+	if err != nil {
+		return source{}, false
+	}
+	var s source
+	if err := json.Unmarshal(data, &s); err != nil || s.Index == "" || s.Name == "" {
+		return source{}, false
+	}
+	return s, true
+}
+
+// indexHost names a recorded index the way an error should, falling back to
+// the whole URL when it cannot be parsed — it was written by an earlier run of
+// this program, so an unusable one is worth showing in full.
+func indexHost(index string) string {
+	if u, err := url.Parse(index); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return index
 }
 
 // indexURL is the index a site would publish at, or an error if the argument

@@ -254,6 +254,52 @@ func TestCopyTo(t *testing.T) {
 	}
 }
 
+// Several trees at once, and one that refuses is not the others' problem: each
+// is a separate agent getting a separate copy, not a step in one operation.
+func TestCopyTo_KeepsGoingPastAnOccupiedTree(t *testing.T) {
+	root := t.TempDir()
+	dir := writeSkill(t, filepath.Join(root, "src"), "shared", "---\nname: shared\n---\n")
+	a, b, c := filepath.Join(root, "a"), filepath.Join(root, "b"), filepath.Join(root, "c")
+	writeSkill(t, b, "shared", "---\nname: mine\n---\n")
+
+	err := CopyTo(Skill{Name: "shared", Dir: dir}, a, b, c)
+	if err == nil {
+		t.Fatal("the occupied tree was not reported")
+	}
+	for _, tree := range []string{a, c} {
+		if _, err := os.Stat(filepath.Join(tree, "shared", "SKILL.md")); err != nil {
+			t.Errorf("%s did not get its copy: %v", tree, err)
+		}
+	}
+	// And the one already holding a skill by that name still holds its own.
+	got, err := os.ReadFile(filepath.Join(b, "shared", "SKILL.md"))
+	if err != nil || string(got) != "---\nname: mine\n---\n" {
+		t.Errorf("the occupied tree was overwritten: %q, %v", got, err)
+	}
+}
+
+// Several copies at once, and one that cannot be removed does not spare the
+// rest: each directory is its own removal.
+func TestDelete_Several(t *testing.T) {
+	root := t.TempDir()
+	a := writeSkill(t, filepath.Join(root, "a"), "shared", "---\nname: shared\n---\n")
+	c := writeSkill(t, filepath.Join(root, "c"), "shared", "---\nname: shared\n---\n")
+
+	err := Delete(
+		Skill{Name: "shared", Dir: a},
+		Skill{Name: "shared"}, // no directory: reported, not fatal to the others
+		Skill{Name: "shared", Dir: c},
+	)
+	if err == nil {
+		t.Error("the skill with no directory was not reported")
+	}
+	for _, dir := range []string{a, c} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived: %v", dir, err)
+		}
+	}
+}
+
 func TestDelete(t *testing.T) {
 	dir := writeSkill(t, t.TempDir(), "doomed", "---\nname: doomed\n---\n")
 	if err := Delete(Skill{Name: "doomed", Dir: dir}); err != nil {

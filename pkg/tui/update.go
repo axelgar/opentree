@@ -910,9 +910,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case skillClonedMsg:
 		if msg.err != nil {
-			return m, m.transientErrCmd(msg.err.Error())
+			// Rescanned even so: several trees can be chosen at once, and one
+			// that refused does not mean none of them took it.
+			return m, tea.Batch(m.scanSkillsCmd, m.transientErrCmd(msg.err.Error()))
 		}
-		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("added "+msg.name))
+		added := "added " + msg.name
+		if msg.trees > 1 {
+			added += " to " + plural(msg.trees, "tree")
+		}
+		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd(added))
 
 	case skillsDiscoveredMsg:
 		// The flow can be abandoned while the request is still out, and a
@@ -938,6 +944,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+
+	case skillUpdatedMsg:
+		m.skillUpdating = false
+		if msg.err != nil {
+			return m, m.transientErrCmd(msg.err.Error())
+		}
+		if !msg.changed {
+			return m, m.noticeCmd(msg.name + " is up to date")
+		}
+		// Rescanned: the new version's frontmatter is what the row shows, and
+		// the name and description in it are the parts that may have moved.
+		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("updated "+msg.name))
 
 	case skillProbedMsg:
 		m.skillProbing = false

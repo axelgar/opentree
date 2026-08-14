@@ -161,13 +161,21 @@ type Model struct {
 	tab int
 
 	// skills tab
-	skills          []skills.Skill
-	skillCursor     int
-	skillFilter     string
-	skillFiltering  bool
-	skillDeleting   *skills.Skill
-	skillCopying    *skills.Skill
-	skillCopyCursor int
+	skills         []skills.Skill
+	skillCursor    int
+	skillFilter    string
+	skillFiltering bool
+	skillDeleting  *skills.Skill
+	// skillDeleteChoosing is the step before the confirmation, drawn only when
+	// the skill is in more than one tree: which copies of it go.
+	skillDeleteChoosing bool
+	skillCopying        *skills.Skill
+	skillCopyCursor     int
+
+	// skillChosen is the tree picker's ticked set, keyed by directory so it
+	// survives the cursor moving. Empty means "the row under the cursor",
+	// which is what one pick stays: ticking is for the second tree onwards.
+	skillChosen map[string]bool
 
 	// adding a skill, in up to four steps: skillAdding while the address is
 	// being typed, skillDiscovering while the site is asked what it publishes,
@@ -179,6 +187,10 @@ type Model struct {
 	skillDiscovering bool
 	skillEntries     []skills.Entry
 	skillEntry       *skills.Entry
+
+	// skillUpdating is one re-check in flight. A second one on the same row
+	// would race the first over the directory it is swapping.
+	skillUpdating bool
 
 	// what the agent itself says it loaded, against which the rest of this tab
 	// is opentree's reading of the documentation. Nil until asked.
@@ -207,8 +219,9 @@ type skillsRelinkedMsg struct {
 	count   int      // workspaces repaired
 }
 type skillClonedMsg struct {
-	name string
-	err  error
+	name  string
+	trees int // how many trees it landed in
+	err   error
 }
 
 // skillsDiscoveredMsg is what a site answered when asked for its skill index.
@@ -223,6 +236,15 @@ type skillProbedMsg struct {
 	agent    string
 	commands map[string]bool
 	err      error
+}
+
+// skillUpdatedMsg is what the publisher said about an installed skill.
+// changed is false when the digest still matched, which is the usual answer
+// and the one that costs nothing.
+type skillUpdatedMsg struct {
+	name    string
+	changed bool
+	err     error
 }
 
 type remoteBranchesLoadedMsg struct {

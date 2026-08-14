@@ -271,6 +271,186 @@ func TestSettingsPath(t *testing.T) {
 	}
 }
 
+// geminiSettings is the other shape people keep: a list of the disabled nested
+// a level down, with hand-ordered keys either side of it at both levels.
+const geminiSettings = `{
+  "theme": "GitHub",
+  "skills": {
+    "folders": ["~/work/skills"],
+    "disabled": [
+      "tdd"
+    ]
+  },
+  "selectedAuthType": "oauth-personal"
+}
+`
+
+func geminiSpec(paths ...string) config.SkillsSpec {
+	return config.SkillsSpec{SettingsFiles: paths, DisabledKey: "skills.disabled"}
+}
+
+func TestSetDisabled_AddsAName(t *testing.T) {
+	path := writeSettings(t, t.TempDir(), geminiSettings)
+	spec := geminiSpec(path)
+
+	if _, err := SetDisabled(spec, "", "teach", StateOff); err != nil {
+		t.Fatalf("SetDisabled: %v", err)
+	}
+	got := readOverrides(spec, "")
+	for _, name := range []string{"tdd", "teach"} {
+		if got[name] != StateOff {
+			t.Errorf("%s = %q, want off", name, got[name])
+		}
+	}
+
+	// Everything around it keeps its bytes — at both levels, since the list is
+	// nested and the keys beside it are the user's own.
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{
+		`"theme": "GitHub"`,
+		`"folders": ["~/work/skills"]`,
+		`"selectedAuthType": "oauth-personal"`,
+	} {
+		if !strings.Contains(string(body), keep) {
+			t.Errorf("%s was rewritten:\n%s", keep, body)
+		}
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("the settings file stopped being JSON: %v\n%s", err, body)
+	}
+}
+
+// The list sits two levels in, and marshalling it as if it were at the margin
+// left the whole file looking edited. Pinned to the byte, because "still valid
+// JSON" was true of the wrong version too.
+func TestSetDisabled_KeepsTheDocumentsShape(t *testing.T) {
+	path := writeSettings(t, t.TempDir(), geminiSettings)
+	if _, err := SetDisabled(geminiSpec(path), "", "teach", StateOff); err != nil {
+		t.Fatal(err)
+	}
+	const want = `{
+  "theme": "GitHub",
+  "skills": {
+    "folders": ["~/work/skills"],
+    "disabled": [
+      "tdd",
+      "teach"
+    ]
+  },
+  "selectedAuthType": "oauth-personal"
+}
+`
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The files union when read, so clearing only the one an addition would go to
+// would report a skill as on that the agent goes on ignoring.
+func TestSetDisabled_ClearsEveryFileThatNamesIt(t *testing.T) {
+	dir := t.TempDir()
+	user := filepath.Join(dir, "user.json")
+	workspace := filepath.Join(dir, "workspace.json")
+	for _, path := range []string{user, workspace} {
+		if err := os.WriteFile(path, []byte(`{"skills":{"disabled":["tdd","teach"]}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := geminiSpec(user, workspace)
+
+	if _, err := SetDisabled(spec, "", "tdd", ""); err != nil {
+		t.Fatalf("SetDisabled: %v", err)
+	}
+	if got := readOverrides(spec, ""); got["tdd"] == StateOff {
+		t.Error("tdd is still off — a file that named it was left alone")
+	}
+	// And the skill beside it on both lists is untouched.
+	if got := readOverrides(spec, ""); got["teach"] != StateOff {
+		t.Errorf("teach = %q, want it left off", got["teach"])
+	}
+}
+
+// A list says a name is on it or it is not. Anything in between is refused
+// rather than rounded to the nearest thing the list can hold.
+func TestSetDisabled_RefusesWhatAListCannotSay(t *testing.T) {
+	path := writeSettings(t, t.TempDir(), geminiSettings)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetDisabled(geminiSpec(path), "", "teach", StateManualOnly); err == nil {
+		t.Fatal("want a refusal, got none")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("the refused write changed the file anyway")
+	}
+}
+
+// Nothing to nest into: the branch is written whole, which is the one case
+// where opentree chooses the shape of something it did not find.
+func TestSetDisabled_WritesTheBranchWhenThereIsNone(t *testing.T) {
+	path := writeSettings(t, t.TempDir(), "{\n  \"theme\": \"GitHub\"\n}\n")
+	spec := geminiSpec(path)
+
+	if _, err := SetDisabled(spec, "", "teach", StateOff); err != nil {
+		t.Fatalf("SetDisabled: %v", err)
+	}
+	if got := readOverrides(spec, ""); got["teach"] != StateOff {
+		t.Errorf("teach = %q, want off", got["teach"])
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"theme": "GitHub"`) {
+		t.Errorf("the key already there was lost:\n%s", body)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("not JSON afterwards: %v\n%s", err, body)
+	}
+}
+
+// Callers ask for a state, not for a mechanism.
+func TestSetState_UsesWhicheverTheAgentHas(t *testing.T) {
+	overrides := writeSettings(t, t.TempDir(), realSettings)
+	list := writeSettings(t, t.TempDir(), geminiSettings)
+
+	for _, tc := range []struct {
+		name string
+		spec config.SkillsSpec
+	}{
+		{"a map of states", specFor(overrides)},
+		{"a list of the disabled", geminiSpec(list)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := SetState(tc.spec, "", "teach", StateOff); err != nil {
+				t.Fatalf("SetState: %v", err)
+			}
+			if got := readOverrides(tc.spec, ""); got["teach"] != StateOff {
+				t.Errorf("teach = %q, want off", got["teach"])
+			}
+		})
+	}
+
+	// An agent with neither says so rather than reporting a write it did not do.
+	if _, err := SetState(config.SkillsSpec{}, "", "teach", StateOff); err == nil {
+		t.Error("an agent with no mechanism accepted a write")
+	}
+}
+
 func TestStateLabel(t *testing.T) {
 	// On is the unremarkable case and earns no badge, so a clean list stays clean.
 	if got := StateOn.Label(); got != "" {

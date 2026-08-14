@@ -33,10 +33,16 @@ import (
 // live", and the badges answer it — a tree is commonly read by every agent at
 // once, so a skill carries a mark per reader rather than one owner.
 
-// skillTarget is a tree a skill can be copied into.
+// skillTarget is a directory a picker acts on: the tree a skill is copied
+// into, or the skill's own directory when the picker is removing it.
 type skillTarget struct {
 	Label string
 	Dir   string
+	// Agents are every agent that reads this tree, which is rarely just the one
+	// it is named after: .claude/skills is read by three of them. Shown on the
+	// row because picking two trees with the same reader is how you end up with
+	// two copies of a skill and a "duplicate" tag explaining it afterwards.
+	Agents []string
 }
 
 // scanSkillsCmd re-reads every skills tree from disk.
@@ -98,6 +104,14 @@ func (m Model) copyTargets(s skills.Skill) []skillTarget {
 		}
 	}
 
+	// Who reads what is the trees' own answer rather than one reconstructed
+	// here: a directory is read by whichever agents name it, and most of them
+	// name more than their own.
+	readers := map[string][]string{}
+	for _, tree := range skills.Trees(m.repoRoot) {
+		readers[tree.Dir] = tree.Agents
+	}
+
 	var out []skillTarget
 	seen := map[string]bool{}
 	// Only the canonical spelling of each tree is offered. The alternates exist
@@ -107,7 +121,11 @@ func (m Model) copyTargets(s skills.Skill) []skillTarget {
 			return
 		}
 		seen[dir] = true
-		out = append(out, skillTarget{Label: agent.Name + " · " + scope, Dir: dir})
+		out = append(out, skillTarget{
+			Label:  agent.Name + " · " + scope,
+			Dir:    dir,
+			Agents: readers[dir],
+		})
 	}
 	for _, agent := range config.PredefinedAgents {
 		if len(agent.Skills.UserDirs) > 0 {
@@ -118,6 +136,63 @@ func (m Model) copyTargets(s skills.Skill) []skillTarget {
 		}
 	}
 	return out
+}
+
+// deleteTargets are the copies of a skill this machine holds — one row per
+// directory, because a skill in three trees is three directories and taking it
+// out of one of them is a different act from taking it out of all three.
+//
+// The marks matter more here than anywhere else in the tab: a directory read
+// by several agents cannot be taken away from one of them by deleting it, and
+// the row is the only thing that says so before the confirmation does.
+func (m Model) deleteTargets(s skills.Skill) []skillTarget {
+	var out []skillTarget
+	for _, existing := range m.skills {
+		if existing.Name != s.Name {
+			continue
+		}
+		out = append(out, skillTarget{
+			Label:  m.shortDir(filepath.Dir(existing.Dir)),
+			Dir:    existing.Dir,
+			Agents: existing.Agents,
+		})
+	}
+	return out
+}
+
+// doomedSkills are the skills a delete confirmation will remove: the ticked
+// copies, or the single row the picker was skipped for.
+func (m Model) doomedSkills() []skills.Skill {
+	if m.skillDeleting == nil {
+		return nil
+	}
+	if len(m.skillChosen) == 0 {
+		return []skills.Skill{*m.skillDeleting}
+	}
+	var out []skills.Skill
+	for _, s := range m.skills {
+		if m.skillChosen[s.Dir] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// shortDir names a directory the way the user thinks of it: relative to the
+// repository when it is inside one, under ~ when it is in their home, and in
+// full when it is neither.
+func (m Model) shortDir(dir string) string {
+	if m.repoRoot != "" {
+		if rel, err := filepath.Rel(m.repoRoot, dir); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
+			return "~/" + rel
+		}
+	}
+	return dir
 }
 
 // addName is what the pending skill will be called on disk: the name the
@@ -143,14 +218,70 @@ func (m Model) cancelAdd() Model {
 	m.skillAdding, m.skillAddURL = false, ""
 	m.skillDiscovering = false
 	m.skillEntries, m.skillEntry = nil, nil
+	m.skillChosen = nil
 	return m
+}
+
+// chosenTargets are the trees a confirm applies to: everything ticked, or the
+// row under the cursor when nothing is. Picking one tree is the common case
+// and should not need a key to arm it first.
+func (m Model) chosenTargets(targets []skillTarget) []skillTarget {
+	var out []skillTarget
+	for _, t := range targets {
+		if m.skillChosen[t.Dir] {
+			out = append(out, t)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if m.skillCopyCursor < len(targets) {
+		return targets[m.skillCopyCursor : m.skillCopyCursor+1]
+	}
+	return nil
+}
+
+// toggleTarget ticks or unticks the tree under the cursor.
+func (m Model) toggleTarget(targets []skillTarget) Model {
+	if m.skillCopyCursor >= len(targets) {
+		return m
+	}
+	if m.skillChosen == nil {
+		m.skillChosen = map[string]bool{}
+	}
+	dir := targets[m.skillCopyCursor].Dir
+	if m.skillChosen[dir] {
+		delete(m.skillChosen, dir)
+		return m
+	}
+	m.skillChosen[dir] = true
+	return m
+}
+
+// targetDirs is a picker's answer as the argument the skills package takes.
+func targetDirs(targets []skillTarget) []string {
+	dirs := make([]string, len(targets))
+	for i, t := range targets {
+		dirs[i] = t.Dir
+	}
+	return dirs
+}
+
+// targetsLabel names where a skill landed: the tree itself when there was one,
+// a count when there were several — four labels in a toast is a line nobody
+// reads.
+func targetsLabel(targets []skillTarget) string {
+	if len(targets) == 1 {
+		return targets[0].Label
+	}
+	return plural(len(targets), "tree")
 }
 
 // pickTree moves the add flow on to choosing a destination, or abandons it
 // when every tree already holds a skill by that name.
 func (m Model) pickTree() (Model, tea.Cmd) {
 	if len(m.addTargets()) > 0 {
-		m.skillCopyCursor = 0
+		m.skillCopyCursor, m.skillChosen = 0, map[string]bool{}
 		return m, nil
 	}
 	name := m.addName()
@@ -222,14 +353,16 @@ func (m Model) toggleSkill(s skills.Skill) (Model, tea.Cmd) {
 	var switched []string
 	for _, name := range s.Agents {
 		agent := config.FindAgent(name)
-		if agent == nil || agent.Skills.OverridesKey == "" {
+		// Either mechanism will do — a map of states or a list of the disabled.
+		// Which one an agent keeps is SetState's problem, not this loop's.
+		if agent == nil || (agent.Skills.OverridesKey == "" && agent.Skills.DisabledKey == "") {
 			continue
 		}
 		state := skills.StateOff
 		if s.State(name) == skills.StateOff {
 			state = "" // clear it
 		}
-		if _, err := skills.SetOverride(agent.Skills, m.repoRoot, s.Name, state); err != nil {
+		if _, err := skills.SetState(agent.Skills, m.repoRoot, s.Name, state); err != nil {
 			return m, m.transientErrCmd(err.Error())
 		}
 		switched = append(switched, name)
@@ -276,13 +409,13 @@ func (m Model) relinkSkillsCmd() tea.Cmd {
 	}
 }
 
-// cloneSkillCmd fetches a skill from a git URL into the chosen tree.
-func cloneSkillCmd(url, dir string) tea.Cmd {
+// cloneSkillCmd fetches a skill from a git URL into the chosen trees.
+func cloneSkillCmd(url string, dirs []string) tea.Cmd {
 	return func() tea.Msg {
-		if err := skills.Clone(url, dir); err != nil {
+		if err := skills.Clone(url, dirs...); err != nil {
 			return skillClonedMsg{err: err}
 		}
-		return skillClonedMsg{name: skills.CloneName(url)}
+		return skillClonedMsg{name: skills.CloneName(url), trees: len(dirs)}
 	}
 }
 
@@ -301,17 +434,35 @@ func discoverSkillsCmd(site string) tea.Cmd {
 	}
 }
 
-// installSkillCmd downloads one published skill into the chosen tree.
-func installSkillCmd(e skills.Entry, dir string) tea.Cmd {
+// installSkillCmd downloads one published skill into the chosen trees.
+func installSkillCmd(e skills.Entry, dirs []string) tea.Cmd {
 	return func() tea.Msg {
 		// Longer than discovery: this is an archive rather than an index, and
 		// the digest is checked over the whole of it before anything is written.
+		// The trees past the first are local copies of what the first got.
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		if err := skills.Install(ctx, e, dir); err != nil {
+		if err := skills.Install(ctx, e, dirs...); err != nil {
 			return skillClonedMsg{err: err}
 		}
-		return skillClonedMsg{name: e.Name}
+		return skillClonedMsg{name: e.Name, trees: len(dirs)}
+	}
+}
+
+// updateSkillCmd asks the site that published a skill whether it has changed.
+//
+// Only a skill taken from an index has anything to ask: a clone carries its
+// own .git and is a `git pull` away, and a hand-written skill has nowhere to
+// look. Update says so itself rather than the row having to know.
+func updateSkillCmd(s skills.Skill) tea.Cmd {
+	return func() tea.Msg {
+		// Room for the index and, if the digest moved, the artifact behind it —
+		// the same budget installing one gets, because that is what this
+		// becomes when something has changed.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		changed, err := skills.Update(ctx, s.Dir)
+		return skillUpdatedMsg{name: s.Name, changed: changed, err: err}
 	}
 }
 
@@ -434,19 +585,55 @@ func (m Model) inStandardRepoTree(s skills.Skill) bool {
 // View never draws while this tab is up — a text input collecting keystrokes
 // behind a screen that gives no sign it exists.
 func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
+	// Choosing which copies of a skill go, before the confirmation asks about
+	// them. Only reached when there is more than one.
+	if m.skillDeleteChoosing {
+		targets := m.deleteTargets(*m.skillDeleting)
+		switch msg.String() {
+		case "up", "k":
+			if m.skillCopyCursor > 0 {
+				m.skillCopyCursor--
+			}
+		case "down", "j":
+			if m.skillCopyCursor < len(targets)-1 {
+				m.skillCopyCursor++
+			}
+		case " ":
+			m = m.toggleTarget(targets)
+		case "enter":
+			// The ticks are the whole answer here, with no falling back to the
+			// row under the cursor: this picker opens with one already ticked,
+			// so unticking every row is a deliberate "none of these" rather
+			// than an empty selection meaning the cursor's own.
+			if len(m.skillChosen) == 0 {
+				return m, nil
+			}
+			m.skillDeleteChoosing = false
+		case "esc", "q":
+			m.skillDeleting, m.skillDeleteChoosing, m.skillChosen = nil, false, nil
+		}
+		return m, nil
+	}
+
 	// Delete confirmation. Removing a skill deletes a directory no git history
 	// is necessarily holding, so it is confirmed rather than undone.
 	if m.skillDeleting != nil {
 		switch msg.String() {
 		case "y", "Y":
-			target := *m.skillDeleting
-			m.skillDeleting = nil
-			if err := skills.Delete(target); err != nil {
-				return m, m.transientErrCmd(err.Error())
+			name, doomed := m.skillDeleting.Name, m.doomedSkills()
+			m.skillDeleting, m.skillChosen = nil, nil
+			if err := skills.Delete(doomed...); err != nil {
+				// Rescanned even so: one directory refusing does not mean none
+				// of them went.
+				return m, tea.Batch(m.scanSkillsCmd, m.transientErrCmd(err.Error()))
 			}
-			return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("deleted "+target.Name))
+			removed := "deleted " + name
+			if len(doomed) > 1 {
+				removed += " from " + plural(len(doomed), "tree")
+			}
+			return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd(removed))
 		case "n", "esc", "q":
-			m.skillDeleting = nil
+			m.skillDeleting, m.skillChosen = nil, nil
 		}
 		return m, nil
 	}
@@ -530,21 +717,24 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if m.skillCopyCursor < len(targets)-1 {
 				m.skillCopyCursor++
 			}
+		case " ":
+			m = m.toggleTarget(targets)
 		case "enter":
-			if m.skillCopyCursor >= len(targets) {
+			chosen := m.chosenTargets(targets)
+			if len(chosen) == 0 {
 				return m, nil
 			}
-			target := targets[m.skillCopyCursor]
+			dirs := targetDirs(chosen)
 			url, entry := m.skillAddURL, m.skillEntry
 			m = m.cancelAdd()
 			if entry != nil {
 				return m, tea.Batch(
 					m.noticeCmd("downloading "+entry.Name+"…"),
-					installSkillCmd(*entry, target.Dir))
+					installSkillCmd(*entry, dirs))
 			}
 			return m, tea.Batch(
 				m.noticeCmd("cloning "+truncate(url, 60)+"…"),
-				cloneSkillCmd(url, target.Dir))
+				cloneSkillCmd(url, dirs))
 		case "esc", "q":
 			m = m.cancelAdd()
 		}
@@ -563,19 +753,24 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if m.skillCopyCursor < len(targets)-1 {
 				m.skillCopyCursor++
 			}
+		case " ":
+			m = m.toggleTarget(targets)
 		case "enter":
-			if m.skillCopyCursor >= len(targets) {
+			chosen := m.chosenTargets(targets)
+			if len(chosen) == 0 {
 				return m, nil
 			}
-			source, target := *m.skillCopying, targets[m.skillCopyCursor]
-			m.skillCopying = nil
-			if err := skills.CopyTo(source, target.Dir); err != nil {
-				return m, m.transientErrCmd(err.Error())
+			source := *m.skillCopying
+			m.skillCopying, m.skillChosen = nil, nil
+			if err := skills.CopyTo(source, targetDirs(chosen)...); err != nil {
+				// Rescanned even so: one tree refusing does not mean none of
+				// them took the copy.
+				return m, tea.Batch(m.scanSkillsCmd, m.transientErrCmd(err.Error()))
 			}
 			return m, tea.Batch(m.scanSkillsCmd,
-				m.noticeCmd(fmt.Sprintf("copied %s to %s", source.Name, target.Label)))
+				m.noticeCmd(fmt.Sprintf("copied %s to %s", source.Name, targetsLabel(chosen))))
 		case "esc", "q":
-			m.skillCopying = nil
+			m.skillCopying, m.skillChosen = nil, nil
 		}
 		return m, nil
 	}
@@ -638,9 +833,36 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if s, ok := m.currentSkill(); ok {
 			return m, editSkillCmd(s)
 		}
+	case "u":
+		s, ok := m.currentSkill()
+		if !ok || m.skillUpdating {
+			return m, nil
+		}
+		m.skillUpdating = true
+		return m, tea.Batch(
+			m.noticeCmd("checking "+s.Name+" with its publisher…"),
+			updateSkillCmd(s))
 	case "x":
-		if s, ok := m.currentSkill(); ok {
-			m.skillDeleting = &s
+		s, ok := m.currentSkill()
+		if !ok {
+			return m, nil
+		}
+		m.skillDeleting, m.skillChosen = &s, nil
+		// One copy is not a choice worth drawing a picker for — the same rule
+		// the add flow follows when a site publishes a single skill.
+		targets := m.deleteTargets(s)
+		if len(targets) > 1 {
+			m.skillDeleteChoosing = true
+			// The row x was pressed on opens ticked, not merely under the
+			// cursor. x is already a statement about that copy, and dropping it
+			// the moment a second one is ticked is the wrong surprise to spring
+			// on a key that deletes directories. Space can untick it.
+			m.skillChosen, m.skillCopyCursor = map[string]bool{s.Dir: true}, 0
+			for i, t := range targets {
+				if t.Dir == s.Dir {
+					m.skillCopyCursor = i
+				}
+			}
 		}
 	case "c":
 		s, ok := m.currentSkill()
@@ -651,7 +873,7 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, m.transientErrCmd(s.Name + " is already in every tree")
 		}
 		m.skillCopying = &s
-		m.skillCopyCursor = 0
+		m.skillCopyCursor, m.skillChosen = 0, map[string]bool{}
 	case "t":
 		if s, ok := m.currentSkill(); ok {
 			return m.toggleSkill(s)
@@ -679,12 +901,16 @@ func (m Model) skillsView() string {
 	s.WriteString(m.tabBar())
 	s.WriteString("\n\n")
 
+	if m.skillDeleteChoosing {
+		return m.pickTreeView("Delete "+m.skillDeleting.Name+" from…",
+			m.deleteTargets(*m.skillDeleting), dialogDanger)
+	}
 	if m.skillDeleting != nil {
 		return m.skillDeleteView()
 	}
 	if m.skillCopying != nil {
 		return m.pickTreeView("Copy "+m.skillCopying.Name+" to…",
-			m.copyTargets(*m.skillCopying))
+			m.copyTargets(*m.skillCopying), dialogAccent)
 	}
 	// Typing first: the URL fills in a character at a time, so a picker drawn on
 	// "is there a URL yet" appears on the first keystroke and hides the prompt
@@ -705,7 +931,7 @@ func (m Model) skillsView() string {
 		if m.skillEntry != nil {
 			verb = "Install "
 		}
-		return m.pickTreeView(verb+m.addName()+" into…", m.addTargets())
+		return m.pickTreeView(verb+m.addName()+" into…", m.addTargets(), dialogAccent)
 	}
 
 	if m.skillFiltering {
@@ -745,7 +971,7 @@ func (m Model) skillsView() string {
 	// terminal, and a help line that wraps costs the list a row it has already
 	// budgeted for.
 	s.WriteString(helpStyle.Render(
-		"↑/k ↓/j move • enter edit • a add • c copy • x delete • t on/off\n" +
+		"↑/k ↓/j move • enter edit • a add • u update • c copy • x delete • t on/off\n" +
 			"l link • v verify with agent • / filter • r rescan • tab workspaces"))
 	return appStyle.Render(s.String())
 }
@@ -807,9 +1033,26 @@ func (m Model) renderSkillRow(s skills.Skill, selected, isShared bool) string {
 }
 
 func (m Model) skillDeleteView() string {
-	s := *m.skillDeleting
-	return m.dialogCard(fmt.Sprintf("Delete skill %q?", s.Name),
-		confirmLabelStyle.Render(s.Dir+" and everything in it will be removed."),
+	s, doomed := *m.skillDeleting, m.doomedSkills()
+
+	title := fmt.Sprintf("Delete skill %q?", s.Name)
+	body := confirmLabelStyle.Render(doomed[0].Dir + " and everything in it will be removed.")
+	if len(doomed) > 1 {
+		title = fmt.Sprintf("Delete %s from %s?", s.Name, plural(len(doomed), "tree"))
+		lines := make([]string, len(doomed))
+		for i, d := range doomed {
+			lines[i] = "  " + d.Dir
+		}
+		body = confirmLabelStyle.Render(strings.Join(lines, "\n"))
+	} else if len(s.Agents) > 1 {
+		// The question this dialog is most often asked in the wrong place:
+		// deleting is per directory, and one directory is frequently every
+		// agent's. Naming them beats letting the deletion answer it.
+		body += "\n" + diffStyle.Render("  One directory, read by "+
+			brandMarks(s.Agents)+diffStyle.Render(" — all of them lose it."))
+	}
+
+	return m.dialogCard(title, body,
 		fmt.Sprintf("%s %s  •  %s %s",
 			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("confirm"),
 			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel")),
@@ -819,20 +1062,39 @@ func (m Model) skillDeleteView() string {
 // pickTreeView is the tree picker, shared by copying a skill and cloning one:
 // both end in "which of these directories does it go in", and answering it
 // twice in two layouts would be two things to keep in step.
-func (m Model) pickTreeView(title string, targets []skillTarget) string {
+// colour is the card's, so a picker that is about to remove directories does
+// not wear the same trim as one that is about to add them.
+func (m Model) pickTreeView(title string, targets []skillTarget, colour lipgloss.Color) string {
 	var b strings.Builder
 	for i, t := range targets {
 		cursor, style := "  ", itemStyle
 		if i == m.skillCopyCursor {
 			cursor, style = "▶ ", selectedItemStyle
 		}
+		tick := "  "
+		if m.skillChosen[t.Dir] {
+			tick = "✓ "
+		}
+		// selectedItemStyle draws a left border where itemStyle has only
+		// padding, so an unselected row starts one column further left. One
+		// space puts them back in line: without it the marks column shifts
+		// sideways as the cursor moves down the list.
+		lead := " "
+		if i == m.skillCopyCursor {
+			lead = ""
+		}
+		// The readers, in the same glyphs the list rows use. A tree is rarely
+		// read only by the agent it is named after, and two trees with a reader
+		// in common are two copies of one skill.
+		row := lead + pad(cursor+tick+t.Label, skillTargetWidth) + brandMarks(t.Agents)
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(style.Render(cursor + t.Label))
+		b.WriteString(style.Render(strings.TrimRight(row, " ")))
 	}
 	return m.dialogCard(title, b.String(),
-		dialogHintStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"), dialogAccent)
+		dialogHintStyle.Render("↑/↓ navigate • space marks more • Enter confirm • Esc cancel"),
+		colour)
 }
 
 // pickEntryView lists what a site publishes, one line each. The description is
@@ -987,6 +1249,24 @@ const skillNameWidth = 28
 
 // skillAgentWidth holds the agent marks: one glyph and a space per agent.
 const skillAgentWidth = 6
+
+// skillTargetWidth is the tree picker's label column, wide enough for the
+// longest agent-and-scope pair plus its cursor and tick.
+const skillTargetWidth = 28
+
+// brandMarks is one glyph per agent, each in its own colour — the same legend
+// the tab's footer spells out.
+func brandMarks(names []string) string {
+	marks := make([]string, 0, len(names))
+	for _, name := range names {
+		mark, colour, _ := config.Brand(name)
+		if colour != "" {
+			mark = lipgloss.NewStyle().Foreground(lipgloss.Color(colour)).Render(mark)
+		}
+		marks = append(marks, mark)
+	}
+	return strings.Join(marks, " ")
+}
 
 // agentMarks is one glyph per agent that can read the skill, in that agent's
 // colour — and greyed for an agent whose settings switch the skill off, so the

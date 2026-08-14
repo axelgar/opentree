@@ -7,6 +7,7 @@
 package skills
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -402,21 +403,44 @@ func ExpandUserDir(path string) string {
 	return filepath.Join(home, rest)
 }
 
-// Delete removes a skill's directory.
-func Delete(s Skill) error {
-	if s.Dir == "" {
-		return fmt.Errorf("skill %q has no directory", s.Name)
+// Delete removes each skill's directory.
+//
+// Several at once because one skill commonly sits in several trees, and taking
+// it out of two of the three is an ordinary thing to want. A directory that
+// refuses does not cost the others theirs.
+func Delete(list ...Skill) error {
+	var errs []error
+	for _, s := range list {
+		if s.Dir == "" {
+			errs = append(errs, fmt.Errorf("skill %q has no directory", s.Name))
+			continue
+		}
+		errs = append(errs, os.RemoveAll(s.Dir))
 	}
-	return os.RemoveAll(s.Dir)
+	return errors.Join(errs...)
 }
 
-// CopyTo installs a copy of a skill into another tree — the way a skill written
-// for one agent reaches another, since they all read the same format.
+// CopyTo installs a copy of a skill into each of the given trees — the way a
+// skill written for one agent reaches another, since they all read the same
+// format.
+//
+// A tree that refuses the copy does not cost the others theirs: the errors are
+// collected and every remaining tree is still tried. Nothing here is a step in
+// one operation; each is its own agent getting its own copy.
+func CopyTo(s Skill, dirs ...string) error {
+	var errs []error
+	for _, dir := range dirs {
+		errs = append(errs, copyInto(s, dir))
+	}
+	return errors.Join(errs...)
+}
+
+// copyInto is CopyTo for one tree.
 //
 // An existing skill of that name is never overwritten: the two may have
 // diverged, and clobbering the destination would be the one mistake that loses
 // work no git history is holding.
-func CopyTo(s Skill, dir string) error {
+func copyInto(s Skill, dir string) error {
 	if s.Dir == "" {
 		return fmt.Errorf("skill %q has no directory", s.Name)
 	}
@@ -436,18 +460,33 @@ func CopyTo(s Skill, dir string) error {
 	return nil
 }
 
-// Clone installs a skill from a git repository — the other way a skill arrives,
-// alongside copying one that is already here.
+// Clone installs a skill from a git repository into each of the given trees —
+// the other way a skill arrives, alongside copying one that is already here.
 //
 // The .git directory is kept, so `git -C <dir> pull` updates the skill later.
 // opentree records no provenance of its own and there is no registry to
 // re-fetch from; the clone is the only thing that remembers where the skill
 // came from.
-func Clone(url, dir string) error {
+//
+// Cloned once and copied into the rest, .git and all, so each tree's copy
+// stays independently pullable without asking the remote the same question
+// once per agent.
+func Clone(url string, dirs ...string) error {
 	name := CloneName(url)
 	if name == "" {
 		return fmt.Errorf("%q does not name a skill", url)
 	}
+	if len(dirs) == 0 {
+		return fmt.Errorf("%s: nowhere to clone it", name)
+	}
+	if err := cloneInto(url, name, dirs[0]); err != nil {
+		return err
+	}
+	return CopyTo(Skill{Name: name, Dir: filepath.Join(dirs[0], name)}, dirs[1:]...)
+}
+
+// cloneInto is Clone for one tree.
+func cloneInto(url, name, dir string) error {
 	dst := filepath.Join(dir, name)
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("%s already exists", dst)
