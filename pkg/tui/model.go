@@ -169,11 +169,16 @@ type Model struct {
 	skillCopying    *skills.Skill
 	skillCopyCursor int
 
-	// adding a skill from a git URL, in two steps: skillAdding while the URL is
-	// being typed, then the same tree picker a copy uses while skillAddURL
-	// holds it.
-	skillAdding bool
-	skillAddURL string
+	// adding a skill, in up to four steps: skillAdding while the address is
+	// being typed, skillDiscovering while the site is asked what it publishes,
+	// a picker over skillEntries when it published more than one, and finally
+	// the same tree picker a copy uses. A site that publishes nothing skips
+	// the middle two and the address is cloned as a git URL instead.
+	skillAdding      bool
+	skillAddURL      string
+	skillDiscovering bool
+	skillEntries     []skills.Entry
+	skillEntry       *skills.Entry
 
 	// what the agent itself says it loaded, against which the rest of this tab
 	// is opentree's reading of the documentation. Nil until asked.
@@ -204,6 +209,15 @@ type skillsRelinkedMsg struct {
 type skillClonedMsg struct {
 	name string
 	err  error
+}
+
+// skillsDiscoveredMsg is what a site answered when asked for its skill index.
+// An err here is ordinary — most addresses are not publishers — so it carries
+// the address back for the git clone that follows rather than being shown.
+type skillsDiscoveredMsg struct {
+	site    string
+	entries []skills.Entry
+	err     error
 }
 type skillProbedMsg struct {
 	agent    string

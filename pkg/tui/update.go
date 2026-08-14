@@ -912,7 +912,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, m.transientErrCmd(msg.err.Error())
 		}
-		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("cloned into "+msg.name))
+		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("added "+msg.name))
+
+	case skillsDiscoveredMsg:
+		// The flow can be abandoned while the request is still out, and a
+		// stale answer must not reopen it.
+		if !m.skillDiscovering || m.skillAddURL != msg.site {
+			return m, nil
+		}
+		m.skillDiscovering = false
+		var cmd tea.Cmd
+		if msg.err != nil || len(msg.entries) == 0 {
+			// Not a publisher, which is the ordinary case: the address was a
+			// git URL all along. The error is dropped rather than shown —
+			// git's own is the one worth reading if this fails too.
+			m, cmd = m.pickTree()
+			return m, cmd
+		}
+		m.skillEntries, m.skillCopyCursor = msg.entries, 0
+		if len(msg.entries) == 1 {
+			// One skill is not a choice worth drawing a picker for.
+			chosen := msg.entries[0]
+			m.skillEntry = &chosen
+			m, cmd = m.pickTree()
+			return m, cmd
+		}
+		return m, nil
 
 	case skillProbedMsg:
 		m.skillProbing = false

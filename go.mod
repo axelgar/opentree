@@ -2,6 +2,12 @@ module github.com/axelgar/opentree
 
 go 1.25.0
 
+// Reaching the network brings crypto/tls, encoding/asn1 and net/url into what
+// govulncheck can see, and 1.26.5 has four advisories against them. Pinned
+// rather than left to whatever is installed: the release build has to be on
+// the fixed toolchain too.
+toolchain go1.26.6
+
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/skills"
@@ -520,15 +522,29 @@ func TestToggle_RefusesWithoutAMechanism(t *testing.T) {
 	}
 }
 
-// --- adding a skill from a git URL -----------------------------------------
+// --- adding a skill --------------------------------------------------------
 
-func TestSkillsAdd_TypesAUrlThenPicksATree(t *testing.T) {
-	m := skillsModel()
+// typeURL runs the prompt from "a" to the point where the site has been asked
+// what it publishes.
+func typeURL(t *testing.T, m Model, url string) Model {
+	t.Helper()
 	next, _ := m.Update(keyMsg("a"))
 	m = next.(Model)
 	if !m.skillAdding {
-		t.Fatal("a did not open the URL prompt")
+		t.Fatal("a did not open the prompt")
 	}
+	for _, r := range url {
+		next, _ = m.Update(keyMsg(string(r)))
+		m = next.(Model)
+	}
+	next, _ = m.Update(keyMsg("enter"))
+	return next.(Model)
+}
+
+func TestSkillsAdd_TypesAnAddressThenAsksTheSite(t *testing.T) {
+	m := skillsModel()
+	next, _ := m.Update(keyMsg("a"))
+	m = next.(Model)
 
 	for _, k := range []string{"g", "i", "t", ":", "x"} {
 		next, _ = m.Update(keyMsg(k))
@@ -540,29 +556,134 @@ func TestSkillsAdd_TypesAUrlThenPicksATree(t *testing.T) {
 	// Still the prompt, showing what has been typed. A picker drawn as soon as
 	// there is any URL at all replaces the prompt on the first keystroke, and
 	// the rest is typed into a screen that gives no sign of receiving it.
-	if view := m.View(); !strings.Contains(view, "clone skill from") || !strings.Contains(view, "git:x") {
+	if view := m.View(); !strings.Contains(view, "add skill from") || !strings.Contains(view, "git:x") {
 		t.Errorf("the prompt stopped showing what is being typed:\n%s", view)
 	}
 
 	next, _ = m.Update(keyMsg("enter"))
 	m = next.(Model)
-	if m.skillAdding {
-		t.Error("enter left the prompt open")
+	if m.skillAdding || !m.skillDiscovering {
+		t.Fatalf("enter did not move on to asking the site: adding=%v discovering=%v",
+			m.skillAdding, m.skillDiscovering)
 	}
-	if m.skillAddURL != "git:x" {
-		t.Errorf("URL lost on the way to the picker: %q", m.skillAddURL)
+	if !strings.Contains(m.View(), "what it publishes") {
+		t.Errorf("nothing on screen says the site is being asked:\n%s", m.View())
+	}
+}
+
+// The ordinary case: the address is a git URL, the site publishes nothing, and
+// the tree picker opens as if it had been asked for directly.
+func TestSkillsAdd_FallsBackToGit(t *testing.T) {
+	m := typeURL(t, skillsModel(), "git:x")
+	next, _ := m.Update(skillsDiscoveredMsg{site: "git:x", err: errors.New("not a publisher")})
+	m = next.(Model)
+
+	if m.skillDiscovering || m.skillEntry != nil {
+		t.Fatal("a failed lookup left the flow mid-air")
 	}
 	if !strings.Contains(m.View(), "Clone x into") {
 		t.Errorf("the tree picker did not open:\n%s", m.View())
 	}
 }
 
-func TestSkillsAdd_EscCancelsEitherStep(t *testing.T) {
+func TestSkillsAdd_PicksAmongPublishedSkills(t *testing.T) {
+	m := typeURL(t, skillsModel(), "example.com")
+	next, _ := m.Update(skillsDiscoveredMsg{site: "example.com", entries: []skills.Entry{
+		{Name: "review", Description: "look at code", Type: "skill-md"},
+		{Name: "deploy", Description: "ship it", Type: "archive"},
+	}})
+	m = next.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "publishes 2 skills") {
+		t.Fatalf("the entry picker did not open:\n%s", view)
+	}
+	// The publisher's description is what there is to choose on.
+	if !strings.Contains(view, "look at code") || !strings.Contains(view, "ship it") {
+		t.Errorf("descriptions missing from the picker:\n%s", view)
+	}
+
+	next, _ = m.Update(keyMsg("down"))
+	next, _ = next.(Model).Update(keyMsg("enter"))
+	m = next.(Model)
+	if m.skillEntry == nil || m.skillEntry.Name != "deploy" {
+		t.Fatalf("chosen entry = %+v, want deploy", m.skillEntry)
+	}
+	// And on to where it lands, named for the skill rather than the address.
+	if !strings.Contains(m.View(), "Install deploy into") {
+		t.Errorf("the tree picker did not open:\n%s", m.View())
+	}
+}
+
+// Publishers write long descriptions — Cloudflare's run past 200 characters —
+// and a row wider than the card wraps onto the next one, so every entry in the
+// list is drawn across two ragged lines instead of one.
+func TestSkillsAdd_PickerRowsFitTheCard(t *testing.T) {
+	long := strings.Repeat("a description that keeps going ", 12)
+	var entries []skills.Entry
+	for _, name := range []string{"one", "two", "three"} {
+		entries = append(entries, skills.Entry{Name: name, Description: long, Type: "skill-md"})
+	}
+	m := typeURL(t, skillsModel(), "example.com")
+	next, _ := m.Update(skillsDiscoveredMsg{site: "example.com", entries: entries})
+	m = next.(Model)
+
+	for _, line := range strings.Split(m.View(), "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line is %d wide in a %d terminal:\n%s", w, m.width, line)
+		}
+	}
+}
+
+// One skill is not a choice, so the picker is skipped rather than drawn with a
+// single row in it.
+func TestSkillsAdd_SingleSkillSkipsThePicker(t *testing.T) {
+	m := typeURL(t, skillsModel(), "example.com")
+	next, _ := m.Update(skillsDiscoveredMsg{site: "example.com", entries: []skills.Entry{
+		{Name: "review", Description: "look at code", Type: "skill-md"},
+	}})
+	m = next.(Model)
+
+	if m.skillEntry == nil || m.skillEntry.Name != "review" {
+		t.Fatalf("chosen entry = %+v, want review", m.skillEntry)
+	}
+	if !strings.Contains(m.View(), "Install review into") {
+		t.Errorf("the tree picker did not open:\n%s", m.View())
+	}
+}
+
+// An answer that arrives after the flow was abandoned must not reopen it.
+func TestSkillsAdd_StaleAnswerIsIgnored(t *testing.T) {
+	m := typeURL(t, skillsModel(), "example.com")
+	next, _ := m.Update(keyMsg("esc"))
+	next, _ = next.(Model).Update(skillsDiscoveredMsg{site: "example.com", entries: []skills.Entry{
+		{Name: "review", Type: "skill-md"},
+	}})
+	if got := next.(Model); got.skillEntries != nil || got.skillEntry != nil || got.skillAddURL != "" {
+		t.Errorf("a stale answer reopened the flow: %+v", got.skillEntries)
+	}
+}
+
+func TestSkillsAdd_EscCancelsEveryStep(t *testing.T) {
 	m := skillsModel()
 	next, _ := m.Update(keyMsg("a"))
 	next, _ = next.(Model).Update(keyMsg("esc"))
 	if got := next.(Model); got.skillAdding || got.skillAddURL != "" {
-		t.Error("esc did not close the URL prompt")
+		t.Error("esc did not close the prompt")
+	}
+
+	m = typeURL(t, skillsModel(), "example.com")
+	next, _ = m.Update(keyMsg("esc"))
+	if got := next.(Model); got.skillDiscovering || got.skillAddURL != "" {
+		t.Error("esc did not abandon the lookup")
+	}
+
+	m = skillsModel()
+	m.skillAddURL = "example.com"
+	m.skillEntries = []skills.Entry{{Name: "a"}, {Name: "b"}}
+	next, _ = m.Update(keyMsg("esc"))
+	if got := next.(Model); got.skillEntries != nil || got.skillAddURL != "" {
+		t.Error("esc did not close the entry picker")
 	}
 
 	m = skillsModel()

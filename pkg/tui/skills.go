@@ -120,11 +120,42 @@ func (m Model) copyTargets(s skills.Skill) []skillTarget {
 	return out
 }
 
-// addTargets are the trees a URL could be cloned into. The name is known
-// before the clone — it is the last element of the URL — so a tree that
-// already holds one is left out here rather than refused after the fetch.
-func (m Model) addTargets(url string) []skillTarget {
-	return m.copyTargets(skills.Skill{Name: skills.CloneName(url)})
+// addName is what the pending skill will be called on disk: the name the
+// publisher gave it, or the last element of the URL when git is about to clone
+// it. Either way it is known before the fetch, which is what lets a tree that
+// already holds one be left out of the picker rather than refused afterwards.
+func (m Model) addName() string {
+	if m.skillEntry != nil {
+		return m.skillEntry.Name
+	}
+	return skills.CloneName(m.skillAddURL)
+}
+
+// addTargets are the trees the pending skill could land in.
+func (m Model) addTargets() []skillTarget {
+	return m.copyTargets(skills.Skill{Name: m.addName()})
+}
+
+// cancelAdd clears every step of the add flow at once. Four pieces of state
+// spread over two pickers and a request is three too many to unwind by hand at
+// each of the places that can abandon it.
+func (m Model) cancelAdd() Model {
+	m.skillAdding, m.skillAddURL = false, ""
+	m.skillDiscovering = false
+	m.skillEntries, m.skillEntry = nil, nil
+	return m
+}
+
+// pickTree moves the add flow on to choosing a destination, or abandons it
+// when every tree already holds a skill by that name.
+func (m Model) pickTree() (Model, tea.Cmd) {
+	if len(m.addTargets()) > 0 {
+		m.skillCopyCursor = 0
+		return m, nil
+	}
+	name := m.addName()
+	m = m.cancelAdd()
+	return m, m.transientErrCmd(name + " is already in every tree")
 }
 
 // workspacesMissing counts the workspaces whose worktree cannot see a repo
@@ -251,7 +282,36 @@ func cloneSkillCmd(url, dir string) tea.Cmd {
 		if err := skills.Clone(url, dir); err != nil {
 			return skillClonedMsg{err: err}
 		}
-		return skillClonedMsg{name: filepath.Base(dir)}
+		return skillClonedMsg{name: skills.CloneName(url)}
+	}
+}
+
+// discoverSkillsCmd asks a site what skills it publishes at its well-known
+// path. Every typed address goes through here first: it is one request, and
+// the answer decides whether there is anything to pick from before git is
+// asked to clone the same address.
+func discoverSkillsCmd(site string) tea.Cmd {
+	return func() tea.Msg {
+		// Short. A publisher answers from a CDN, and the fallback waiting
+		// behind this is a git clone the user is expecting to take longer.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		entries, err := skills.Discover(ctx, site)
+		return skillsDiscoveredMsg{site: site, entries: entries, err: err}
+	}
+}
+
+// installSkillCmd downloads one published skill into the chosen tree.
+func installSkillCmd(e skills.Entry, dir string) tea.Cmd {
+	return func() tea.Msg {
+		// Longer than discovery: this is an archive rather than an index, and
+		// the digest is checked over the whole of it before anything is written.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := skills.Install(ctx, e, dir); err != nil {
+			return skillClonedMsg{err: err}
+		}
+		return skillClonedMsg{name: e.Name}
 	}
 }
 
@@ -401,14 +461,13 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.skillAddURL = ""
 				return m, nil
 			}
-			if len(m.addTargets(url)) == 0 {
-				m.skillAddURL = ""
-				return m, m.transientErrCmd(skills.CloneName(url) + " is already in every tree")
-			}
-			m.skillAddURL = url
-			m.skillCopyCursor = 0
+			// Ask the site before git does. An address that publishes an index
+			// names its skills and their hashes; one that does not answers in
+			// well under the time a clone would have taken anyway.
+			m.skillAddURL, m.skillDiscovering = url, true
+			return m, discoverSkillsCmd(url)
 		case "esc":
-			m.skillAdding, m.skillAddURL = false, ""
+			m = m.cancelAdd()
 		case "backspace":
 			if m.skillAddURL != "" {
 				m.skillAddURL = m.skillAddURL[:len(m.skillAddURL)-1]
@@ -424,9 +483,44 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Picking the tree a cloned skill lands in.
+	// Waiting on the site. Only escape means anything here — the answer is one
+	// request away and every other key would act on a step not reached yet.
+	if m.skillDiscovering {
+		if msg.String() == "esc" {
+			m = m.cancelAdd()
+		}
+		return m, nil
+	}
+
+	// Picking which of a site's skills to take.
+	if m.skillEntries != nil && m.skillEntry == nil {
+		switch msg.String() {
+		case "up", "k":
+			if m.skillCopyCursor > 0 {
+				m.skillCopyCursor--
+			}
+		case "down", "j":
+			if m.skillCopyCursor < len(m.skillEntries)-1 {
+				m.skillCopyCursor++
+			}
+		case "enter":
+			if m.skillCopyCursor >= len(m.skillEntries) {
+				return m, nil
+			}
+			// A copy, not a pointer into the slice: the entry outlives the
+			// list it was chosen from.
+			chosen := m.skillEntries[m.skillCopyCursor]
+			m.skillEntry = &chosen
+			return m.pickTree()
+		case "esc", "q":
+			m = m.cancelAdd()
+		}
+		return m, nil
+	}
+
+	// Picking the tree the skill lands in.
 	if m.skillAddURL != "" {
-		targets := m.addTargets(m.skillAddURL)
+		targets := m.addTargets()
 		switch msg.String() {
 		case "up", "k":
 			if m.skillCopyCursor > 0 {
@@ -440,13 +534,19 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if m.skillCopyCursor >= len(targets) {
 				return m, nil
 			}
-			url, target := m.skillAddURL, targets[m.skillCopyCursor]
-			m.skillAddURL = ""
+			target := targets[m.skillCopyCursor]
+			url, entry := m.skillAddURL, m.skillEntry
+			m = m.cancelAdd()
+			if entry != nil {
+				return m, tea.Batch(
+					m.noticeCmd("downloading "+entry.Name+"…"),
+					installSkillCmd(*entry, target.Dir))
+			}
 			return m, tea.Batch(
 				m.noticeCmd("cloning "+truncate(url, 60)+"…"),
 				cloneSkillCmd(url, target.Dir))
 		case "esc", "q":
-			m.skillAddURL = ""
+			m = m.cancelAdd()
 		}
 		return m, nil
 	}
@@ -592,9 +692,20 @@ func (m Model) skillsView() string {
 	if m.skillAdding {
 		return appStyle.Render(s.String() + m.skillAddView())
 	}
+	if m.skillDiscovering {
+		return appStyle.Render(s.String() + filterPromptStyle.Render("asking") + " " +
+			truncate(m.skillAddURL, 60) + " what it publishes…\n\n" +
+			diffStyle.Render("  Esc cancels."))
+	}
+	if m.skillEntries != nil && m.skillEntry == nil {
+		return m.pickEntryView()
+	}
 	if m.skillAddURL != "" {
-		return m.pickTreeView("Clone "+skills.CloneName(m.skillAddURL)+" into…",
-			m.addTargets(m.skillAddURL))
+		verb := "Clone "
+		if m.skillEntry != nil {
+			verb = "Install "
+		}
+		return m.pickTreeView(verb+m.addName()+" into…", m.addTargets())
 	}
 
 	if m.skillFiltering {
@@ -634,7 +745,7 @@ func (m Model) skillsView() string {
 	// terminal, and a help line that wraps costs the list a row it has already
 	// budgeted for.
 	s.WriteString(helpStyle.Render(
-		"↑/k ↓/j move • enter edit • a add from git • c copy • x delete • t on/off\n" +
+		"↑/k ↓/j move • enter edit • a add • c copy • x delete • t on/off\n" +
 			"l link • v verify with agent • / filter • r rescan • tab workspaces"))
 	return appStyle.Render(s.String())
 }
@@ -724,10 +835,52 @@ func (m Model) pickTreeView(title string, targets []skillTarget) string {
 		dialogHintStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"), dialogAccent)
 }
 
-// skillAddView prompts for the git URL to clone.
+// pickEntryView lists what a site publishes, one line each. The description is
+// the publisher's own, and it is the line the agent will match against later —
+// so it is what there is to choose on, not decoration.
+func (m Model) pickEntryView() string {
+	var b strings.Builder
+	// The card's interior, less the padding it adds and the left border a
+	// selected row carries. Getting this wrong wraps every row in the list.
+	width := m.dialogMaxWidth() - 2*dialogPadding - 3
+	// A publisher with more skills than the terminal has rows still has to be
+	// choosable. skillWindow counts in rows two lines tall, which is what
+	// these are: the same name-then-purpose shape as the tab's own list.
+	start, end := skillWindow(len(m.skillEntries), m.skillCopyCursor,
+		max(m.height-16, skillRowLines))
+	if start > 0 {
+		b.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
+	}
+	for i := start; i < end; i++ {
+		e := m.skillEntries[i]
+		cursor, style := "  ", itemStyle
+		if i == m.skillCopyCursor {
+			cursor, style = "▶ ", selectedItemStyle
+		}
+		row := truncate(cursor+e.Name, width)
+		if e.Description != "" {
+			row += "\n" + diffStyle.Render("  "+truncate(e.Description, width-4))
+		}
+		if i > start {
+			b.WriteString("\n")
+		}
+		b.WriteString(style.Render(row))
+	}
+	if end < len(m.skillEntries) {
+		b.WriteString("\n" + scrollHintStyle.Render(
+			fmt.Sprintf("  ↓ %d more", len(m.skillEntries)-end)))
+	}
+	return m.dialogCard(
+		fmt.Sprintf("%s publishes %d skills", truncate(m.skillAddURL, 40), len(m.skillEntries)),
+		b.String(),
+		dialogHintStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"), dialogAccent)
+}
+
+// skillAddView prompts for the address to add a skill from.
 func (m Model) skillAddView() string {
-	return filterPromptStyle.Render("clone skill from") + " " + m.skillAddURL + "█\n\n" +
-		diffStyle.Render("  A repository whose root holds a SKILL.md. Esc cancels.")
+	return filterPromptStyle.Render("add skill from") + " " + m.skillAddURL + "█\n\n" +
+		diffStyle.Render("  A site that publishes skills, or a git repository whose\n"+
+			"  root holds a SKILL.md. Esc cancels.")
 }
 
 // knownTrees names where skills live, for the empty state — an empty list
