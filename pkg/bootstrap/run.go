@@ -125,11 +125,13 @@ func CheckPortless() Portless {
 // for every worktree of one repository, so every worktree would infer the same
 // name and collide.
 func PortlessHost(workspace, repo string) string {
-	name := hostLabel(workspace)
-	if repo := hostLabel(repo); repo != "" {
-		name += "." + repo
+	labels := []string{}
+	for _, part := range []string{workspace, repo} {
+		if label := hostLabel(part); label != "" {
+			labels = append(labels, label)
+		}
 	}
-	return name + ".localhost"
+	return strings.Join(append(labels, "localhost"), ".")
 }
 
 // hostLabel reduces a branch or repository name to one DNS label. Dots go too:

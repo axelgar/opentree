@@ -203,7 +203,9 @@ func (m Model) renderServerRow(ws WorkspaceItem, selected bool) string {
 		}
 	case serverStarting:
 		badge = agentIdleStyle.Render("starting…")
-		where = fmt.Sprintf("port %d, nothing listening yet", ws.Port)
+		if ws.Port != 0 {
+			where = fmt.Sprintf("port %d, nothing listening yet", ws.Port)
+		}
 	default:
 		badge = dangerStyle.Render("stopped")
 		if ws.Port != 0 {

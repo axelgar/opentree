@@ -29,7 +29,7 @@ func approvedSetup(commands ...string) Setup {
 // The gate is the point: opentree.toml is tracked, so these commands arrived
 // with a clone from whoever last had commit rights.
 func TestSetup_UntrustedCommandsAreAskedAboutFirst(t *testing.T) {
-	m := setupModel(t, Setup{Commands: []string{"pnpm install"}})
+	m := setupModel(t, Setup{Commands: []string{"pnpm install"}, Run: "pnpm dev"})
 
 	m, _ = applyUpdate(m, setupBeginMsg{})
 
@@ -39,9 +39,13 @@ func TestSetup_UntrustedCommandsAreAskedAboutFirst(t *testing.T) {
 	if m.overlay() != overlaySetup {
 		t.Errorf("overlay = %v, want the setup panel to own the screen", m.overlay())
 	}
-	// The commands are on screen: approving something unread is not approving.
-	if view := m.View(); !strings.Contains(view, "pnpm install") {
-		t.Errorf("the panel does not show what it is asking about:\n%s", view)
+	// Everything the approval covers is on screen, the run command included:
+	// approving something unread is not approving, and the gate covers both.
+	view := m.View()
+	for _, want := range []string{"pnpm install", "pnpm dev"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the panel does not show %q, which approving allows:\n%s", want, view)
+		}
 	}
 }
 

@@ -119,6 +119,7 @@ func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.S
 
 	return chat.Setup{
 		Commands: commands,
+		Run:      run,
 		Trusted:  bootstrap.Trusted(repoRoot, commands, run),
 		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run) },
 		Record: func() error {

@@ -34,6 +34,12 @@ type Setup struct {
 	// Commands is what to run, in order. Empty means there is nothing to do.
 	Commands []string
 
+	// Run is the dev server command. Nothing here starts it — servers start on
+	// demand, from the dashboard — but approving these commands approves it
+	// too, so the panel that asks has to show it. Gating only setup would move
+	// a payload one key down.
+	Run string
+
 	// Trusted is whether this machine has already approved these commands.
 	// False puts the approval question on screen before anything runs.
 	Trusted bool
@@ -248,13 +254,15 @@ func (m Model) setupLines() []string {
 	case setupAsking:
 		lines := []string{permLabelStyle.Render("This repository asks to run these commands before the agent starts:")}
 		for _, c := range m.setup.spec.Commands {
-			lines = append(lines, noticeStyle.Render(ui.Truncate("  "+c, width)))
+			lines = append(lines, noticeStyle.Render(ui.Truncate("  setup  "+c, width)))
 		}
-		if run := m.setup.spec.Commands; len(run) > 0 {
-			// The gate covers the dev server command too, so an approval that
-			// only mentioned the install would be understating what it allows.
-			lines = append(lines, helpStyle.Render("from opentree.toml, which arrives with a clone"))
+		if run := m.setup.spec.Run; run != "" {
+			// Shown because approving covers it: the dev server command is code
+			// from the same tracked file, and an approval that mentioned only
+			// the install would understate what it allows.
+			lines = append(lines, noticeStyle.Render(ui.Truncate("  run    "+run, width)))
 		}
+		lines = append(lines, helpStyle.Render("from opentree.toml, which arrives with a clone"))
 		return append(lines, strings.Join([]string{
 			permKeyStyle.Render("[a]") + " " + permLabelStyle.Render("run them"),
 			permKeyStyle.Render("[d]") + " " + permLabelStyle.Render("skip this time"),
