@@ -1,7 +1,11 @@
 # opentree × Skills — Design & Plan
 
-> Status: **commits 1–6 and 8–10 implemented**. `make check` green.
+> Status: **commits 1–6 and 8–14 implemented**. `make check` green.
 > Commit 7 (plugin skills) not started.
+> Commits 13–14 landed past the plan as written — installing from a
+> publisher's well-known index, and `u` re-checking an installed skill
+> against it. Decision 9a records why that is not the marketplace
+> decision 9 refuses.
 > Companion to [ACP-PLAN.md](ACP-PLAN.md).
 > Scope: skills only. MCP is sketched at the end, not planned.
 
@@ -230,6 +234,7 @@ not a rewrite — decision 9 of the ACP plan, applied again.
 | 7 | Linking happens **automatically at worktree creation**. The tab is where you see it and repair drift, not where you have to remember to do it. |
 | 8 | `enter` opens `SKILL.md` in `$EDITOR` via `tea.ExecProcess`. That is what "update a skill" means. |
 | 9 | **No marketplace, no browse, no install-from-registry.** Adding a skill is `c` (copy an existing one across agents) or `a` (clone a git URL). |
+| 9a | **Publisher install, still no marketplace** *(added with commit 13)*. `a` also takes a plain site address: opentree asks `<site>/.well-known/agent-skills/index.json` what it publishes, offers the index in a picker, verifies the artifact's digest before writing anything, and records provenance in a hidden `.opentree-source.json` beside the skill. Discovery is still "type an address the user already trusts" — the publisher is the host, there is no registry in the middle, no browsing, no curation — which is the line decision 9 drew. An address that publishes nothing falls through to the git clone it always was. |
 | 10 | Everything is a plain file operation. No state file, no index, no cache — `Scan` on tab entry is a handful of `ReadDir` calls. |
 | 11 | A disabled agent's mark is **greyed, not dropped**. The row still has to say the skill is installed for it. |
 | 12 | `t` writes `off`, and toggling back **clears the entry** rather than writing `on` — `on` is not always the default, and would silently promote a `disable-model-invocation` skill to fully automatic. |
@@ -282,6 +287,8 @@ Each commit is green on its own and ships something.
 | 10 | **Registered directories, and ground truth.** Read the trees an agent's own config declares; `v` asks the agent what it actually loaded. | `pkg/skills/config.go`, `probe.go` | done |
 | 11 | **`v` checks the direction it could not see.** An agent reading a skill on a row that says it cannot is flagged and counted. | `pkg/tui/skills.go` | done |
 | 12 | **A skill with no description is manual, not automatic.** Nothing for a model to match on is the same place `disable-model-invocation` leads. | `pkg/skills/skills.go` | done |
+| 13 | **`a` takes a publisher's address** (decision 9a). The well-known index names what the site publishes; picking an entry downloads the archive, checks its digest against the index, and stamps provenance. | `pkg/skills/wellknown.go`, `pkg/tui/skills.go` | done |
+| 14 | **`u` re-checks a published skill with its publisher.** Same index, same digest; "unchanged" is the usual answer and costs one request. Only a skill with provenance has anything to ask — a clone is a `git pull` away, and `u` says so. | `pkg/skills/wellknown.go`, `pkg/tui/skills.go` | done |
 
 Commit 2 is the one that matters. If the sequence stalls after it, the real bug
 is already fixed.
@@ -385,12 +392,16 @@ ACP plan; here it merges four.
 
 ## Not built
 
-- **No skill marketplace or discovery UI.** Skills spread by git URL and by copy;
-  both are covered. A curated registry is a product, not a feature.
+- **No skill marketplace or discovery UI.** Skills spread by git URL, by copy,
+  and now by a publisher's own well-known index (decision 9a) — each of them
+  an address the user typed. A curated registry is a product, not a feature.
 - **No per-worktree enable/disable.** The symlink is all-or-nothing. A worktree
   that wants different skills is a different repo.
-- **No versioning or update-check.** `git -C <dir> pull` is available to anyone
-  who cloned a skill; opentree does not track provenance to offer it.
+- ~~**No versioning or update-check.** `git -C <dir> pull` is available to
+  anyone who cloned a skill; opentree does not track provenance to offer it.~~
+  Superseded by commits 13–14 for published skills: an index install records
+  provenance, and `u` asks the publisher whether the digest moved. A clone is
+  still a `git pull` away, and a hand-written skill still has nowhere to look.
 - **No writing to plugin trees.** Read-only, listed for completeness.
 - **No conflict resolution** when two agents hold different `SKILL.md` files
   under the same name. The row shows both badges; opening either one is `enter`
