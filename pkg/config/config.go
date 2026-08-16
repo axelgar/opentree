@@ -9,6 +9,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/axelgar/opentree/pkg/fsutil"
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
 
@@ -399,34 +400,5 @@ func SetKeys(path string, values map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, out)
-}
-
-// writeFileAtomic writes data via a temp file + rename so a crash mid-write
-// can't leave a truncated config behind.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmpPath, 0600)
-	}
-	if err == nil {
-		err = os.Rename(tmpPath, path)
-	}
-	if err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return fsutil.WriteAtomic(path, out)
 }

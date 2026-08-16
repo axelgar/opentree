@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/fsutil"
 )
 
 // Installed is not the same as available. An agent can be told to ignore a
@@ -294,7 +295,7 @@ func setDisabledIn(path, key, skill string, add bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeFileAtomic(path, updated); err != nil {
+	if err := fsutil.WriteAtomic(path, updated); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -357,7 +358,7 @@ func SetOverride(spec config.SkillsSpec, repoRoot, skill string, state State) (s
 	if err != nil {
 		return "", err
 	}
-	if err := writeFileAtomic(path, updated); err != nil {
+	if err := fsutil.WriteAtomic(path, updated); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -463,33 +464,4 @@ func valueSpan(data []byte, key string) (start, end int, found bool, err error) 
 
 func isJSONSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
-}
-
-// writeFileAtomic writes via a temp file and a rename, so an interrupted write
-// cannot leave the user with a truncated settings file.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmpPath, 0600)
-	}
-	if err == nil {
-		err = os.Rename(tmpPath, path)
-	}
-	if err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
 }
