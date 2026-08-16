@@ -8,6 +8,10 @@
 # detached tmux session so the working/waiting rows get activity dots + a live
 # "Agent Output" preview pane.
 #
+# It also installs a scripted ACP agent (fake-acp-agent.py) on PATH under the
+# name the config asks for, so the chat scenes record a real client driving a
+# real protocol against answers that were written in advance.
+#
 # Usage: docs/demo/seed-demo.sh [demo-dir]
 # Then:  (cd <demo-dir> && opentree)   — or let demo.tape do it.
 set -euo pipefail
@@ -29,7 +33,40 @@ git clone --quiet --local "$SRC" "$DEMO_DIR"
 cd "$DEMO_DIR"
 git remote remove origin 2>/dev/null || true
 git checkout --quiet main 2>/dev/null || git checkout --quiet -b main
-printf '.opentree-status.json\n.preview.txt\n' >> .git/info/exclude   # keep demo scaffolding out of the uncommitted count
+printf '.opentree-status.json\n.preview.txt\n.demo-bin/\n' >> .git/info/exclude   # keep demo scaffolding out of the uncommitted count
+
+# --- agent: the scripted stand-in, not a real one ---------------------------
+# The clone carries this repo's own opentree.toml, which names whichever agent
+# the maintainer happens to run. Pin the demo to opencode and put a shim of that
+# name first on PATH, so the chat scenes record one fixed transcript with no API
+# key and no network. See fake-acp-agent.py.
+cat > opentree.toml <<'TOML'
+[agent]
+command = 'opencode'
+
+[github]
+auto_push = true
+
+[tmux]
+session_prefix = 'opentree'
+
+[worktree]
+base_dir = '.opentree'
+default_base = 'main'
+TOML
+
+mkdir -p .demo-bin
+cat > .demo-bin/opencode <<SHIM
+#!/usr/bin/env bash
+exec "$SCRIPT_DIR/fake-acp-agent.py" "\$@"
+SHIM
+chmod +x .demo-bin/opencode
+
+# opentree itself goes in the same place, built from this checkout. A demo that
+# records whichever build happens to be installed on the machine is a demo that
+# quietly goes out of date.
+echo "  building opentree…"
+(cd "$SRC" && go build -o "$DEMO_DIR/.demo-bin/opentree" ./cmd/opentree)
 
 san() { printf '%s' "${1//\//-}"; }                   # SanitizeBranchName: / -> -
 ago_touch() { date -v-"$1" +%Y%m%d%H%M; }             # touch -t stamp, N ago (macOS)
@@ -85,30 +122,30 @@ cat > .opentree/state.json <<JSON
   "workspaces": {
     "chore/update-docs": {
       "name": "chore/update-docs", "branch": "chore/update-docs", "base_branch": "main",
-      "created_at": "$(ago_iso 5d)", "status": "idle", "agent": "claude",
+      "created_at": "$(ago_iso 5d)", "status": "idle", "agent": "opencode",
       "worktree_dir": "$(wt chore/update-docs)", "branch_pushed": true
     },
     "feat/agent-liveness": {
       "name": "feat/agent-liveness", "branch": "feat/agent-liveness", "base_branch": "main",
-      "created_at": "$(ago_iso 2H)", "status": "active", "agent": "claude",
+      "created_at": "$(ago_iso 2H)", "status": "active", "agent": "opencode",
       "worktree_dir": "$(wt feat/agent-liveness)", "issue_number": 47,
       "issue_title": "Show when an agent stalls"
     },
     "feat/native-terminal": {
       "name": "feat/native-terminal", "branch": "feat/native-terminal", "base_branch": "main",
-      "created_at": "$(ago_iso 8d)", "status": "idle", "agent": "claude",
+      "created_at": "$(ago_iso 8d)", "status": "idle", "agent": "opencode",
       "worktree_dir": "$(wt feat/native-terminal)"
     },
     "fix/diff-scroll": {
       "name": "fix/diff-scroll", "branch": "fix/diff-scroll", "base_branch": "main",
-      "created_at": "$(ago_iso 1d)", "status": "active", "agent": "claude",
+      "created_at": "$(ago_iso 1d)", "status": "active", "agent": "opencode",
       "worktree_dir": "$(wt fix/diff-scroll)",
       "pr_url": "https://github.com/axelgar/opentree/pull/48",
       "pr_status": "open", "branch_pushed": true
     },
     "refactor/state-store": {
       "name": "refactor/state-store", "branch": "refactor/state-store", "base_branch": "main",
-      "created_at": "$(ago_iso 12d)", "status": "stopped", "agent": "claude",
+      "created_at": "$(ago_iso 12d)", "status": "stopped", "agent": "opencode",
       "worktree_dir": "$(wt refactor/state-store)",
       "pr_url": "https://github.com/axelgar/opentree/pull/44",
       "pr_status": "merged", "branch_pushed": true, "remote_deleted": true
@@ -140,10 +177,17 @@ preview fix/diff-scroll <<'TXT'
 TXT
 
 win_run='cat .preview.txt; exec sleep 100000'
+# The row the demo walks into runs the real chat view against the scripted
+# agent, because that is what a workspace's window actually holds: `enter` on
+# the dashboard attaches to this, so the chat has to already be living in it.
+chat_run="PATH=\"$DEMO_DIR/.demo-bin:\$PATH\"; export PATH; exec opentree chat feat/agent-liveness"
 tmux new-session  -d -s "$SESSION" -n tmp -c "$DEMO_DIR" "exec sleep 100000"        # throwaway seed window
+# Attaching puts a tmux status line under the chat, carrying the window list and
+# the machine's own hostname. Neither belongs in a published recording.
+tmux set-option -t "$SESSION" status off
 tmux new-window   -t "$SESSION" -n "$(san fix/diff-scroll)"     -c "$(wt fix/diff-scroll)"     "$win_run"
-tmux new-window   -t "$SESSION" -n "$(san feat/agent-liveness)" -c "$(wt feat/agent-liveness)" "$win_run"
+tmux new-window   -t "$SESSION" -n "$(san feat/agent-liveness)" -c "$(wt feat/agent-liveness)" "$chat_run"
 tmux kill-window  -t "$SESSION:tmp"                             # safe now — real windows remain
 tmux select-window -t "$SESSION:$(san feat/agent-liveness)"     # this one becomes the active ● dot
 
-echo "done. run:  (cd \"$DEMO_DIR\" && opentree)"
+echo "done. run:  (cd \"$DEMO_DIR\" && PATH=\"$DEMO_DIR/.demo-bin:\$PATH\" opentree)"
