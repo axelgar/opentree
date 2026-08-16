@@ -364,6 +364,14 @@ type Model struct {
 	opts    Options
 	publish func(Status)
 
+	// state and since are the last status published and when it was first
+	// published. They live on the model rather than beside the socket because
+	// Update is the only writer and it already holds both sides of the
+	// comparison — and because a chat with no socket still knows how long it
+	// has been waiting.
+	state string
+	since time.Time
+
 	// send is the other end of msgs, for the work this view starts itself.
 	// Everything else on that channel comes from the agent's own handlers,
 	// which were given the sender when they were built.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -81,6 +82,12 @@ func chatMeta(st *chat.Status) string {
 		return ""
 	}
 	var parts []string
+	// How long it has been waiting leads, because it is the only part of this
+	// line that is a reason to get up. The badge says a permission is pending;
+	// this says it has been pending since before lunch.
+	if w := waitedFor(st); w != "" {
+		parts = append(parts, agentWaitingStyle.Render(w))
+	}
 	if st.ContextPct > 0 {
 		parts = append(parts, fmt.Sprintf("%d%% ctx", st.ContextPct))
 	}
@@ -91,6 +98,34 @@ func chatMeta(st *chat.Status) string {
 		return ""
 	}
 	return strings.Join(parts, " · ")
+}
+
+// waitedFor is "blocked 12m" for a workspace whose agent is stopped on a
+// permission, or "" for one that is not. Only this state gets an elapsed time:
+// a working agent's badge already names the tool it is on, and an idle one has
+// nobody to report to.
+//
+// A chat from before Status carried the moment leaves Since zero, and says
+// nothing rather than claiming to have been waiting since 1970.
+func waitedFor(st *chat.Status) string {
+	if st == nil || st.State != chat.StateAwaiting || st.Since.IsZero() {
+		return ""
+	}
+	return "blocked " + compactSince(st.Since)
+}
+
+// compactSince is an elapsed time short enough to sit in a row that already has
+// five other things on it: 40s, 12m, 3h.
+func compactSince(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", max(int(d.Seconds()), 0))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
 }
 
 // pendingPermission is the escalation the selected workspace is blocked on, or

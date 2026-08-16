@@ -85,6 +85,37 @@ func TestChatMeta(t *testing.T) {
 	}
 }
 
+func TestWaitedFor(t *testing.T) {
+	blocked := func(since time.Time) *chat.Status {
+		return &chat.Status{State: chat.StateAwaiting, Since: since}
+	}
+	tests := []struct {
+		name   string
+		status *chat.Status
+		want   string
+	}{
+		{"no chat", nil, ""},
+		{"working agents are not waiting", &chat.Status{State: chat.StateWorking, Since: time.Now()}, ""},
+		{"a chat too old to stamp the moment says nothing", blocked(time.Time{}), ""},
+		{"seconds", blocked(time.Now().Add(-40 * time.Second)), "blocked 40s"},
+		{"minutes", blocked(time.Now().Add(-12 * time.Minute)), "blocked 12m"},
+		{"hours", blocked(time.Now().Add(-3 * time.Hour)), "blocked 3h"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := waitedFor(tt.status); got != tt.want {
+				t.Errorf("waitedFor() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// And it reaches the row, ahead of everything else on the line.
+	meta := chatMeta(&chat.Status{State: chat.StateAwaiting, Since: time.Now().Add(-5 * time.Minute), ContextPct: 42})
+	if !strings.Contains(meta, "blocked 5m") {
+		t.Errorf("chatMeta() = %q, want it to carry the wait", meta)
+	}
+}
+
 func TestPendingPermission(t *testing.T) {
 	if wsWithChat("a", nil).pendingPermission() != nil {
 		t.Error("no chat means no pending permission")

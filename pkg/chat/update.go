@@ -19,12 +19,27 @@ import (
 // Update handles one message and republishes the session's status. Publishing
 // here rather than at each call site is the whole point: every state change
 // funnels through this method, so the socket cannot drift out of date.
+//
+// It is also where the edge is: the newly computed state is compared against
+// the last one published, which is the one observation both Status.Since and
+// anything watching this session for a moment worth carrying need.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
-	if nm, ok := next.(Model); ok && nm.publish != nil {
-		nm.publish(nm.status())
+	nm, ok := next.(Model)
+	if !ok {
+		return next, cmd
 	}
-	return next, cmd
+
+	st := nm.status()
+	if st.State != m.state {
+		nm.state, nm.since = st.State, time.Now()
+	}
+	st.Since = nm.since
+
+	if nm.publish != nil {
+		nm.publish(st)
+	}
+	return nm, cmd
 }
 
 // status is the view of this session the workspace list sees.

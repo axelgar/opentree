@@ -40,6 +40,13 @@ type Status struct {
 	Queued     string      `json:"queued,omitempty"`
 	Permission *Permission `json:"permission,omitempty"`
 
+	// Since is when the session last entered this state, stamped by the chat
+	// rather than by whoever is reading it. The difference matters exactly when
+	// it is worth knowing: a workspace that has been blocked for forty minutes,
+	// read by a dashboard opened ten seconds ago, would otherwise report ten
+	// seconds.
+	Since time.Time `json:"since,omitzero"`
+
 	// Error is a failure worth recording somewhere other than this window — a
 	// setup command that did not finish, in a workspace nobody may ever attach
 	// to. The list copies it into opentree's error log; the chat is where it is

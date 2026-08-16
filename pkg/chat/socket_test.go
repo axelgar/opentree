@@ -252,6 +252,39 @@ func TestUpdate_PublishesOnEveryChange(t *testing.T) {
 	}
 }
 
+// TestStatus_SinceStampsTheChange is what the dashboard's "blocked 12m" rests
+// on: the moment belongs to the chat, and a reader that arrives later must not
+// be able to reset it.
+func TestStatus_SinceStampsTheChange(t *testing.T) {
+	m := newTestModel()
+	var published []Status
+	m.publish = func(st Status) { published = append(published, st) }
+
+	// A first message with no state change still stamps: nothing had been
+	// published before it.
+	m, _ = applyUpdate(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	first := published[len(published)-1]
+	if first.Since.IsZero() {
+		t.Fatal("Since was never stamped")
+	}
+
+	// Another message that changes nothing about the state keeps it.
+	m, _ = applyUpdate(m, tea.WindowSizeMsg{Width: 90, Height: 30})
+	if got := published[len(published)-1]; !got.Since.Equal(first.Since) {
+		t.Errorf("Since moved without a state change: %v then %v", first.Since, got.Since)
+	}
+
+	// A permission is a new state, and a new moment.
+	_, _ = applyUpdate(m, permission(allowOnce))
+	last := published[len(published)-1]
+	if last.State != StateAwaiting {
+		t.Fatalf("State = %q, want %q", last.State, StateAwaiting)
+	}
+	if !last.Since.After(first.Since) {
+		t.Errorf("Since = %v, want a later moment than %v", last.Since, first.Since)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Remote commands
 // ---------------------------------------------------------------------------
