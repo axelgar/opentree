@@ -439,8 +439,12 @@ func completionFor(input string, commands []acp.Command, files []string) complet
 	token := input[strings.LastIndexAny(input, " \t\n")+1:]
 
 	switch {
-	case strings.HasPrefix(token, "/") && token == input:
-		// A slash command is only a command when it opens the message.
+	// A bare slash lists every command, which is the gesture a message opens
+	// with. Anywhere else the name has to be started: mid-sentence a lone slash
+	// is arithmetic or a path more often than it is a command, and the whole
+	// palette flashing open between "3 /" and the "4" after it is not an offer
+	// anybody made.
+	case strings.HasPrefix(token, "/") && (len(token) > 1 || token == input):
 		return completionState{kind: completionCommand, token: token,
 			items: matchCommands(strings.TrimPrefix(token, "/"), commands)}
 
@@ -451,28 +455,26 @@ func completionFor(input string, commands []acp.Command, files []string) complet
 	return completionState{}
 }
 
-// commandToken is the slash command a message opens with, empty when it opens
-// with something else. It is what the composer paints: the sigil and the name,
-// without whatever arguments follow them.
+// namesCommand reports whether one word of the message is a command's name.
+// It is what the composer paints a command by, and it asks nothing about where
+// in the message the word sits: a command reads as one wherever it is written,
+// the same way a mention does.
 //
 // Only a name that exists counts. The colour is the message saying the command
 // resolves, so painting "/reusme" the same orange as "/resume" would be saying
 // the opposite of what it means — and while a name is still half typed, the
 // palette above the input is already showing what it matches.
-func commandToken(input string, commands []acp.Command) string {
-	if !strings.HasPrefix(input, "/") {
-		// The same rule the palette applies: a slash command is only a command
-		// when it opens the message.
-		return ""
+func namesCommand(word string, commands []acp.Command) bool {
+	name, ok := strings.CutPrefix(word, "/")
+	if !ok || name == "" {
+		return false
 	}
-	runes := []rune(input)
-	token := string(runes[:wordEnd(runes, 0)])
 	for _, c := range commands {
-		if c.Name == strings.TrimPrefix(token, "/") {
-			return token
+		if c.Name == name {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func matchCommands(prefix string, commands []acp.Command) []completionItem {

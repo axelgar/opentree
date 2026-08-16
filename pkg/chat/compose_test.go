@@ -304,7 +304,8 @@ func TestCompletionFor(t *testing.T) {
 		{"trailing space closes it", "/com ", completionNone, ""},
 		{"slash opens commands", "/com", completionCommand, "/compact"},
 		{"bare slash lists all", "/", completionCommand, "/compact"},
-		{"slash mid-message is not a command", "run /com", completionNone, ""},
+		{"slash mid-message completes too", "run /com", completionCommand, "/compact"},
+		{"a bare slash mid-message does not", "run /", completionNone, ""},
 		{"at opens files", "@main", completionFile, "@main.go"},
 		{"at mid-message still completes", "look at @main", completionFile, "@main.go"},
 		{"file substring match", "@session", completionFile, "@pkg/auth/session.go"},
@@ -446,6 +447,19 @@ func TestPalette_SaysItIsStillWaitingForCommands(t *testing.T) {
 	}
 }
 
+// A command is completed anywhere in the message now, so a path opens the
+// palette for one too. Somebody typing where a file is has not asked opentree
+// to go and ask the agent anything.
+func TestPalette_DoesNotWaitOnAPath(t *testing.T) {
+	m := typeInto(newTestModel(), "/usr/local")
+	if m.awaitingCommands() {
+		t.Error("a path must not be reported as waiting on the agent's commands")
+	}
+	if m = typeInto(newTestModel(), "/u"); !m.awaitingCommands() {
+		t.Error("a name that could still become a command should keep the waiting line")
+	}
+}
+
 func TestPalette_TabAccepts(t *testing.T) {
 	m := typeInto(newPaletteModel(t), "/comp")
 	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyTab})
@@ -560,22 +574,23 @@ func TestFilesLoaded_FeedTheePalette(t *testing.T) {
 // What the composer colours
 // ---------------------------------------------------------------------------
 
-func TestCommandToken(t *testing.T) {
-	tests := []struct{ name, input, want string }{
-		{"empty", "", ""},
-		{"prose", "compact the log", ""},
-		{"the command alone", "/compact", "/compact"},
-		{"with arguments after it", "/compact everything", "/compact"},
-		{"half typed names nothing yet", "/comp", ""},
-		{"a name that does not exist", "/zzz", ""},
-		{"not at the start of the message", "run /compact", ""},
-		{"a leading space is not the start", " /compact", ""},
-		{"stops at the first newline", "/commit\nand push", "/commit"},
+func TestNamesCommand(t *testing.T) {
+	tests := []struct {
+		name, word string
+		want       bool
+	}{
+		{"a command", "/compact", true},
+		{"prose", "compact", false},
+		{"half typed names nothing yet", "/comp", false},
+		{"a name that does not exist", "/zzz", false},
+		{"a bare slash", "/", false},
+		{"a path that opens with one", "/usr/local/bin", false},
+		{"empty", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := commandToken(tt.input, testCommands); got != tt.want {
-				t.Errorf("commandToken(%q) = %q, want %q", tt.input, got, tt.want)
+			if got := namesCommand(tt.word, testCommands); got != tt.want {
+				t.Errorf("namesCommand(%q) = %v, want %v", tt.word, got, tt.want)
 			}
 		})
 	}
@@ -671,7 +686,8 @@ func TestInputView_Colouring(t *testing.T) {
 		{"a cursor back inside the name", "/compact", 4, "////C///"},
 		{"a cursor back on the sigil", "/compact", 0, "C///////"},
 		{"a name that does not exist", "/zzz", -1, "....C"},
-		{"a command that does not open the message", "run /compact", -1, "............C"},
+		{"a command anywhere in the message", "run /compact", -1, "....////////C"},
+		{"a command and a mention in one line", "@main.go and /compact", -1, "@@@@@@@@.....////////C"},
 		{"a mention that names a file", "read @main.go now", -1, ".....@@@@@@@@....C"},
 		{"a mention that names nothing", "read @nope.go now", -1, ".................C"},
 		{"a mention mid-word is an address", "mail me@main.go now", -1, "...................C"},
@@ -708,13 +724,19 @@ func TestInputView_KeepsTheComposerItWasGiven(t *testing.T) {
 	}
 }
 
-// The composer scrolls its first line off the top once the message outgrows the
-// box, and a command that is no longer on screen has nothing to colour — least
-// of all whatever the scroll left sitting in the first row.
-func TestCommandPaint_SkipsACommandThatScrolledAway(t *testing.T) {
-	m := composed(t, "/compact", -1)
-	if got := m.commandPaint([]rune("still going")); got != nil {
-		t.Errorf("commandPaint = %+v, want nothing painted on a row the command is not on", got)
+// A word can be both: the sigil that summons a command is also the root of an
+// absolute path, and known is checked before the disk is, so a file at the name
+// of a command is reachable without a fixture.
+func TestWordPaints_ACommandBeatsAPath(t *testing.T) {
+	m := newPaletteModel(t).withFiles([]string{"/compact"})
+	m.commands = testCommands
+
+	marks := m.wordPaints([]rune("/compact"))
+	if len(marks) != 1 {
+		t.Fatalf("marks = %+v, want one", marks)
+	}
+	if marks[0].style.Render("x") != commandStyle.Render("x") {
+		t.Error("a word that is both a command and a file should be painted as the command")
 	}
 }
 
@@ -733,6 +755,22 @@ func TestInputView_PaintsAMentionThatWrappedOntoTheSecondRow(t *testing.T) {
 		t.Fatalf("second row = %q, want %q", got, want)
 	}
 	if got, want := colouring(row, 31), "..................@@@@@@@@.....C"[:31]; got != want {
+		t.Errorf("colouring = %q, want %q", got, want)
+	}
+}
+
+func TestInputView_PaintsACommandThatWrappedOntoTheSecondRow(t *testing.T) {
+	withColour(t)
+
+	m := newPaletteModel(t)
+	m.input.SetWidth(46)
+	m = typeInto(m, "a long enough opening sentence to push the command over onto /compact here")
+
+	row := composerRow(m.inputView(), 1)
+	if got, want := ansi.Strip(row)[:31], "command over onto /compact here"; got != want {
+		t.Fatalf("second row = %q, want %q", got, want)
+	}
+	if got, want := colouring(row, 31), "..................////////....."; got != want {
 		t.Errorf("colouring = %q, want %q", got, want)
 	}
 }
@@ -768,6 +806,12 @@ func TestGhost_FollowsThePaletteCursor(t *testing.T) {
 	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyDown})
 	if got, want := m.ghost(), "mit"; got != want {
 		t.Errorf("ghost() = %q, want the second match's tail %q", got, want)
+	}
+}
+
+func TestGhost_CompletesACommandMidSentence(t *testing.T) {
+	if got, want := composed(t, "please run /com", -1).ghost(), "pact"; got != want {
+		t.Errorf("ghost() = %q, want %q", got, want)
 	}
 }
 

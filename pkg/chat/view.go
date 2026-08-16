@@ -191,8 +191,7 @@ func (m Model) inputView() string {
 	}
 	text := []rune(ansi.Strip(view))
 
-	marks := m.commandPaint(text)
-	marks = append(marks, m.mentionPaints(text)...)
+	marks := m.wordPaints(text)
 
 	// The suggestion goes in after the words are found, so it is not one of
 	// them: the "@main" that is still being typed reads as prose until the
@@ -267,28 +266,20 @@ func cursorStyle(cur cursor.Model) lipgloss.Style {
 	return cur.Style.Inline(true).Reverse(true)
 }
 
-// commandPaint colours the command the message opens with.
-func (m Model) commandPaint(text []rune) []paint {
-	token := commandToken(m.input.Value(), m.paletteCommands())
-	// The command opens the message, but the message does not always open the
-	// composer: the textarea scrolls its first line off the top once what is
-	// being written outgrows the box, and a command that is not on screen has
-	// nothing to colour.
-	if token == "" || !strings.HasPrefix(string(text), token) {
-		return nil
-	}
-	return []paint{{0, len([]rune(token)), commandStyle}}
-}
-
-// mentionPaints colours the words that will not travel as words. A path leaves
-// the message as an attachment, and which ones did is worth knowing before
-// sending rather than from a notice afterwards.
+// wordPaints colours the words of the message that are not prose: the commands
+// in it, and the paths that will leave it as attachments. Which ones did is
+// worth knowing before sending rather than from a notice afterwards.
 //
-// The words are read off the composer rather than off the message, so a path
-// the wrap split across two rows is not one of them. It still travels; it just
-// reads as prose until the terminal is wide enough to hold it in one piece.
-func (m Model) mentionPaints(text []rune) []paint {
-	c := m.composer()
+// One walk for both, because both are answers to the same question about the
+// same word, and asking it in two places is how they would come to disagree
+// about where a word ends.
+//
+// The words are read off the composer rather than off the message, so a word
+// the wrap split across two rows is not one of them. It still travels, and a
+// command still reaches the agent; it just reads as prose until the terminal is
+// wide enough to hold it in one piece.
+func (m Model) wordPaints(text []rune) []paint {
+	commands, c := m.paletteCommands(), m.composer()
 	var out []paint
 	for i := 0; i < len(text); {
 		if isBoundary(text[i]) {
@@ -296,7 +287,15 @@ func (m Model) mentionPaints(text []rune) []paint {
 			continue
 		}
 		j := wordEnd(text, i)
-		if _, _, ok := c.file(string(text[i:j])); ok {
+		word := string(text[i:j])
+		// A word can be both — the sigil that summons a command is also the root
+		// of an absolute path — and the command wins, because the slash was
+		// typed to summon one. It takes a regular file sitting at the name of a
+		// command the agent advertises, so it is a rule for the reader here
+		// rather than a case anyone will meet.
+		if namesCommand(word, commands) {
+			out = append(out, paint{i, j, commandStyle})
+		} else if _, _, ok := c.file(word); ok {
 			out = append(out, paint{i, j, mentionStyle})
 		}
 		i = j
@@ -423,8 +422,17 @@ func (m Model) completionView() string {
 //
 // ponytail: an empty list is the only signal there is. An agent that genuinely
 // advertises none keeps the waiting line; none of the six do.
+//
+// A token with a separator still in it is not waiting on anything. Commands are
+// completed anywhere in the message now, so "/usr/local" opens the palette for
+// one — and a path typed in the seconds before the agent answers should not be
+// told opentree is off asking about it. The hint only: an agent that does name a
+// command with a slash is still matched, it just goes unannounced.
 func (m Model) awaitingCommands() bool {
-	return len(m.commands) == 0 && m.completion.kind == completionCommand
+	if len(m.commands) > 0 || m.completion.kind != completionCommand {
+		return false
+	}
+	return !strings.Contains(strings.TrimPrefix(m.completion.token, "/"), "/")
 }
 
 // statusLine carries the help text, or an error when the agent is still alive
