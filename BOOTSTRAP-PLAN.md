@@ -158,7 +158,24 @@ fills it while the setup panel is up, and the list copies it in once. A failure
 in a window nobody attaches to still surfaces, and the conversation still never
 sees it.
 
-### On decision 27
+### On decision 27, and what portless actually accepts
+
+Checked against its README rather than assumed, because the launch line had to
+be right:
+
+- `portless <name> <command> [args...]`, with dotted names giving subdomains —
+  so the name is passed, not inferred.
+- The child's port comes from portless as `PORT` in 4000–4999, **except** that
+  `PORTLESS_APP_PORT` pins it. opentree sets that to the workspace's own port,
+  which keeps the recorded port true and keeps the liveness dial pointed at the
+  process opentree started.
+- `-p/--port` is the *proxy's* listen port (443, or 80 with `--no-tls`), not
+  the app's.
+- `portless doctor` inspects health but its exit code is undocumented, so
+  "initialised" is decided by dialling 443/80 instead. A proxy that answers has
+  already been through the CA, the hosts file and the root service; one that
+  does not would need a sudo prompt to get there.
+
 
 The value portless adds is a stable name instead of a port. Everything else it
 does — the CA, the sudo, the hosts file, the root service — exists to serve
@@ -204,7 +221,7 @@ seeded-file drift from `lstat`.
 | 4 | `opentree setup <branch>` inline (re-seed, then commands), `--check`, `opentree seed detach`. | `cmd/opentree/cmd/setup.go` (new), `cmd/opentree/cmd/seed.go` (new), `pkg/bootstrap/seed.go` | done |
 | 5 | Ports assigned and persisted; `<name>:run` window; `w` starts/stops from the Workspaces tab. | `pkg/bootstrap/run.go` (new), `pkg/workspace/server.go` (new), `pkg/state/state.go`, `pkg/tmux/tmux.go`, `pkg/tui/{keys,update,commands,model,view}.go` | done |
 | 6 | Servers tab: derived from tmux, dial for three-state, own keyspace (`s`/`x`/`r`/`enter`/`o`), empty state when `run` is unset. | `pkg/tui/servers.go` (new), `model.go`, `view.go`, `update.go`, `commands.go`, `keys.go`, `skills.go` (tab bar), `pkg/bootstrap/run.go` | done |
-| 7 | portless: detect on PATH, detect initialised, `<branch>.<repo>.localhost`, URL in the view, fall back to the port with a reason. | `pkg/bootstrap/run.go`, `pkg/tui/servers.go`, `README.md` | todo |
+| 7 | portless: detect on PATH, detect initialised, `<branch>.<repo>.localhost`, URL in the view, fall back to the port with a reason. | `pkg/bootstrap/run.go`, `pkg/workspace/server.go`, `pkg/tui/{servers,model,commands,update}.go`, `README.md` | done |
 | 8 | `opentree setup --suggest` from `package.json` + `Procfile`; `prune` extended to reap orphaned run windows. | `cmd/opentree/cmd/setup.go`, `pkg/workspace/workspace.go` | todo |
 
 Commit 1 is the whole feature for anyone whose bootstrap is "copy `.env`".

@@ -343,6 +343,7 @@ command = "opencode"          # Agent to run: "opencode", "claude", "copilot" or
 [workspace]
 seed  = [".env", ".npmrc"]                  # Untracked files to link into each new worktree
 setup = ["pnpm install --frozen-lockfile"]  # Commands run before the agent starts
+run   = "pnpm dev"                          # Dev server, started on demand, PORT exported
 
 [tmux]
 session_prefix = "opentree"   # Prefix for the tmux session name
@@ -443,6 +444,47 @@ opentree trust revoke   # drop this repository's approvals
 
 Approvals live in `~/.opentree/trust.json`, never in the repository — a
 repository cannot vouch for itself.
+
+### Dev Servers
+
+Five worktrees of one project all want port 3000. Give opentree the command and
+each gets a port of its own instead:
+
+```toml
+[workspace]
+run = "pnpm dev"
+```
+
+Servers start on demand, never on creation — five worktrees each running
+`next dev` is several gigabytes nobody asked for. Press `w` on a workspace row
+to start or stop one, or open the **Servers** tab (`tab`) for the full list:
+every workspace, what its server is doing, and its address.
+
+Each workspace is assigned a port between 20000 and 32000 once, and keeps it —
+so an OAuth redirect URI registered against `localhost:20431` keeps working. The
+port arrives as `PORT`; opentree never rewrites your command, so a stack that
+ignores `PORT` can be told `--port $PORT` in the command itself.
+
+The server runs in its own tmux window (`<branch>:run`), so `enter` in the
+Servers tab attaches to it and all of its output is there. Deleting a workspace
+stops its server.
+
+#### Names instead of ports, with portless
+
+If [portless](https://github.com/vercel-labs/portless) is installed and its
+proxy is running, opentree starts servers behind it and the Servers tab shows
+`https://<branch>.<repo>.localhost` — which reads as "this branch of this
+project" — with the port still listed beside it.
+
+The name is passed explicitly rather than left to portless's own inference,
+which reads `package.json` or the git root and so infers the same name for every
+worktree of one repository.
+
+opentree never installs or starts portless itself. Getting its proxy running
+means a certificate authority, an `/etc/hosts` entry and a root-owned service,
+and it asks for those with a sudo prompt — which in a detached tmux window
+nobody would see. If portless is installed but its proxy is down, the tab says
+so and serves on ports meanwhile.
 
 ### Using Different Agents
 

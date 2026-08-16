@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
@@ -183,6 +184,11 @@ type Model struct {
 	// serversTab is the Servers tab's own, in servers.go, for the same reason.
 	serversTab serversTab
 
+	// portless is what portless can do on this machine, re-read on each
+	// refresh: it is a property of the machine rather than of a workspace, so
+	// one answer serves every row.
+	portless bootstrap.Portless
+
 	help help.Model
 	keys keyMap
 
@@ -193,6 +199,7 @@ type Model struct {
 
 type loadedWorkspacesMsg struct {
 	workspaces []WorkspaceItem
+	portless   bootstrap.Portless
 }
 
 type skillsScannedMsg struct {

@@ -120,7 +120,16 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 	}
 	wg.Wait()
 
-	return loadedWorkspacesMsg{workspaces: items}
+	// Asked once per refresh rather than once per row: whether portless can
+	// serve is a fact about this machine. Only asked at all when the project
+	// configures a server, since it is a LookPath and a dial for nothing
+	// otherwise.
+	var portless bootstrap.Portless
+	if m.cfg.Workspace.Run != "" {
+		portless = bootstrap.CheckPortless()
+	}
+
+	return loadedWorkspacesMsg{workspaces: items, portless: portless}
 }
 
 func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {

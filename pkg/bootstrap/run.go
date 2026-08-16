@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -74,6 +76,76 @@ func Listening(port int) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// Portless is what portless can do for this machine right now.
+//
+// opentree does not reimplement any of it. Serving https://name.localhost takes
+// a certificate authority, a sudo prompt, an /etc/hosts writer and a root-owned
+// service — a larger and more privileged program than this one, whose worst
+// effect on a machine today is a symlink. What portless buys is a stable name
+// instead of a port, and that is very much worth using once somebody has
+// decided to install it.
+type Portless struct {
+	// Installed is portless on PATH.
+	Installed bool
+	// Ready is installed, with its proxy actually answering.
+	Ready bool
+	// Reason is why an installed portless is not being used.
+	Reason string
+}
+
+// CheckPortless reports whether a server can be started behind portless.
+//
+// Readiness is a dial at the proxy rather than a question put to portless,
+// because the answer has to be certain. An installed portless whose proxy is
+// not up needs a CA, a hosts file and a root service to get there, and it asks
+// for them with a sudo prompt — which in a detached tmux window nobody is
+// looking at is a server that silently never starts. A proxy that answers has
+// already been through all of that.
+func CheckPortless() Portless {
+	if _, err := exec.LookPath("portless"); err != nil {
+		return Portless{}
+	}
+	// 443 with TLS, 80 with --no-tls: the two ports its proxy can be on.
+	if Listening(443) || Listening(80) {
+		return Portless{Installed: true, Ready: true}
+	}
+	return Portless{
+		Installed: true,
+		Reason:    "portless is installed but its proxy is not running — `portless proxy start`",
+	}
+}
+
+// PortlessHost is the name portless serves a workspace under:
+// <branch>.<repo>.localhost, which reads as "this branch of this project".
+//
+// Named explicitly rather than left to portless's own inference, which reads
+// package.json, the git root or the directory — all three of which are the same
+// for every worktree of one repository, so every worktree would infer the same
+// name and collide.
+func PortlessHost(workspace, repo string) string {
+	name := hostLabel(workspace)
+	if repo := hostLabel(repo); repo != "" {
+		name += "." + repo
+	}
+	return name + ".localhost"
+}
+
+// hostLabel reduces a branch or repository name to one DNS label. Dots go too:
+// they would silently deepen the subdomain, and a wildcard certificate covers
+// one level.
+func hostLabel(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0 && !strings.HasSuffix(b.String(), "-"):
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // free reports whether a port can be bound right now. Binding is the only

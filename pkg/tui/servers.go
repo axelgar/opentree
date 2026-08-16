@@ -2,10 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/ui"
 )
 
@@ -54,9 +56,16 @@ func serverStateOf(ws WorkspaceItem) serverState {
 }
 
 // serverURL is where a running server can be reached, or "" for one that is not.
-func serverURL(ws WorkspaceItem) string {
+//
+// Under portless it is the name rather than the port, which is the whole reason
+// to use it — https://feat-dark-mode.opentree.localhost reads as "this branch
+// of this project", where :20431 reads as nothing.
+func (m Model) serverURL(ws WorkspaceItem) string {
 	if ws.Port == 0 || serverStateOf(ws) != serverUp {
 		return ""
+	}
+	if m.portless.Ready {
+		return "https://" + bootstrap.PortlessHost(ws.Name, filepath.Base(m.repoRoot))
 	}
 	return fmt.Sprintf("http://localhost:%d", ws.Port)
 }
@@ -120,7 +129,7 @@ func (m Model) updateServers(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, m.attachServerCmd(ws.Name)
 
 	case "o":
-		url := serverURL(ws)
+		url := m.serverURL(ws)
 		if url == "" {
 			return m, m.transientErrCmd(fmt.Sprintf("%s is not serving yet", ws.Name))
 		}
@@ -165,6 +174,9 @@ func (m Model) serversView() string {
 	for i, ws := range m.workspaces {
 		s.WriteString(m.renderServerRow(ws, i == m.serversTab.cursor))
 	}
+	if note := m.portlessNote(); note != "" {
+		s.WriteString("\n" + note + "\n")
+	}
 	s.WriteString("\n" + m.toastLine() + "\n")
 	s.WriteString(m.serverHelp())
 	return appStyle.Render(s.String())
@@ -182,7 +194,13 @@ func (m Model) renderServerRow(ws WorkspaceItem, selected bool) string {
 	switch serverStateOf(ws) {
 	case serverUp:
 		badge = agentWorkingStyle.Render("up")
-		where = serverURL(ws)
+		where = m.serverURL(ws)
+		if m.portless.Ready {
+			// The port stays on the row beside the name. It is what an OAuth
+			// redirect URI was registered against, and it is still the way in
+			// for anything that is not a browser.
+			where += fmt.Sprintf("  ·  :%d", ws.Port)
+		}
 	case serverStarting:
 		badge = agentIdleStyle.Render("starting…")
 		where = fmt.Sprintf("port %d, nothing listening yet", ws.Port)
@@ -202,6 +220,23 @@ func (m Model) renderServerRow(ws WorkspaceItem, selected bool) string {
 		out += "\n" + diffStyle.Render("    "+where)
 	}
 	return out + "\n"
+}
+
+// portlessNote says what portless would add, or why an installed one is not
+// being used. It is a line at the bottom rather than a badge per row: it is a
+// property of the machine, and the same either way for every workspace here.
+func (m Model) portlessNote() string {
+	switch {
+	case m.portless.Ready:
+		return ""
+	case m.portless.Reason != "":
+		// Decision made for the user, and said out loud: starting portless
+		// needs a CA, a hosts file and a root service, and it asks for them
+		// with a sudo prompt — in a detached window nobody would ever see it.
+		return diffStyle.Render("  " + m.portless.Reason + " — serving on ports meanwhile")
+	}
+	return diffStyle.Render(
+		"  Install vercel-labs/portless for https://<branch>.<repo>.localhost instead of ports. opentree works either way.")
 }
 
 // serverHelp is this tab's keys, which are not the workspace list's.

@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -70,11 +72,37 @@ func (s *Service) StartServer(name string) (int, error) {
 	// framework flags that goes stale every time one ships a new CLI, and it
 	// gives up on exactly the commands people write by hand. A stack that
 	// ignores PORT can be told `--port $PORT` by whoever wrote the command.
-	env := []string{fmt.Sprintf("PORT=%d", port)}
-	if err := s.process.CreateAppWindow(s.ServerWindow(name), s.WorktreePath(name), "sh", env, "-c", run); err != nil {
+	//
+	// PORTLESS_APP_PORT pins portless to the same number rather than letting it
+	// hand out one of its own. The port is the workspace's, recorded and
+	// unchanging; it is also what the Servers tab dials to tell a server that is
+	// up from one still compiling, and that check has to be asking about the
+	// process opentree started.
+	env := []string{
+		fmt.Sprintf("PORT=%d", port),
+		fmt.Sprintf("PORTLESS_APP_PORT=%d", port),
+	}
+	command, args := s.serverCommand(name, run)
+	if err := s.process.CreateAppWindow(s.ServerWindow(name), s.WorktreePath(name), command, env, args...); err != nil {
 		return 0, fmt.Errorf("failed to start %s's server: %w", name, err)
 	}
 	return port, nil
+}
+
+// serverCommand is how the run command is launched: behind portless when it is
+// there and working, and directly otherwise.
+//
+// The command itself is never touched either way. Under portless it is still
+// `sh -c`, which also means portless has nothing to recognise and so injects
+// none of the framework flags it would otherwise guess at.
+func (s *Service) serverCommand(name, run string) (string, []string) {
+	if p := bootstrap.CheckPortless(); p.Ready {
+		host := bootstrap.PortlessHost(name, filepath.Base(s.repoRoot))
+		// `portless <name> <command> [args...]`, with the name given rather
+		// than inferred — every worktree of one repository infers the same one.
+		return "portless", []string{strings.TrimSuffix(host, ".localhost"), "sh", "-c", run}
+	}
+	return "sh", []string{"-c", run}
 }
 
 // StopServer kills the workspace's run window, and everything the command

@@ -645,6 +645,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// would point destructive keys at whatever moved under the cursor.
 		prev := m.currentWorkspaceName()
 		m.workspaces = msg.workspaces
+		m.portless = msg.portless
 		m.recordChatErrors()
 		visible := m.visibleWorkspaces()
 		if prev != "" {
