@@ -1,6 +1,6 @@
 # Contributing
 
-Requires `golangci-lint` v1.64 (matching CI — `go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.0`; a plain `brew install golangci-lint` pulls v2, which uses an incompatible config format).
+Requires `golangci-lint` v2.12.2 (matching CI and the `version: "2"` config format of `.golangci.yml` — `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`; a v1 binary misreads the v2 config and reports issues CI does not). Also `goimports` (`go install golang.org/x/tools/cmd/goimports@latest`); `govulncheck` and `deadcode` need no install — they run via `go tool`.
 
 Before opening a PR, run:
 
