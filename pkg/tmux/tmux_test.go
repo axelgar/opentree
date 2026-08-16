@@ -1,12 +1,37 @@
 package tmux
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+// An empty PATH is a machine with no tmux on it. The point of the check is the
+// message: exec's own "executable file not found in $PATH" reaches the caller
+// wrapped twice and gets cut by the first thing that truncates, so the user is
+// told a window failed and never why.
+func TestCreateAppWindow_NoTmuxOnPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	err := New("test-opentree-missing").CreateAppWindow("ws", t.TempDir(), "true", nil)
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("CreateAppWindow() with no tmux = %v, want ErrNotInstalled", err)
+	}
+	if !strings.Contains(err.Error(), "brew install tmux") {
+		t.Errorf("error does not say how to fix it: %v", err)
+	}
+}
+
+func TestInstalled_NoTmuxOnPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	if Installed() {
+		t.Error("Installed() = true with an empty PATH, want false")
+	}
+}
 
 func TestNew(t *testing.T) {
 	prefix := "test-session"

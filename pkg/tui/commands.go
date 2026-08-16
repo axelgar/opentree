@@ -17,6 +17,22 @@ import (
 	"github.com/axelgar/opentree/pkg/workspace"
 )
 
+// copyErrLogCmd puts the whole log on the system clipboard. The whole log
+// rather than the entry under some cursor: there is no cursor here, and an
+// error worth reporting is usually the one before or after the one that got
+// noticed. The lines are snapshotted before the command runs, so a failure
+// arriving while the log is being written to still copies what was on screen.
+func (m Model) copyErrLogCmd() tea.Cmd {
+	entries := append([]string(nil), m.errLog...)
+	text := strings.Join(entries, "\n") + "\n"
+	return func() tea.Msg {
+		if err := copyToClipboard(text); err != nil {
+			return errLogCopiedMsg{err: err}
+		}
+		return errLogCopiedMsg{count: len(entries)}
+	}
+}
+
 // baseOr returns base, falling back to the configured default base branch
 // for workspaces persisted before the base was recorded.
 func (m Model) baseOr(base string) string {

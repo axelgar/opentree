@@ -66,8 +66,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		// Error log overlay swallows all keys
+		// The error log swallows every key except its own. Copying is a key
+		// rather than a text selection because the dashboard holds the mouse —
+		// it has to, or the wheel scrolls the terminal's scrollback up over the
+		// alt screen — and a held mouse is one the terminal cannot drag-select
+		// with. One keystroke for the whole log beats a drag anyway: the entry
+		// worth reporting is rarely the only one that matters.
 		if m.showErrLog {
+			if key.Matches(msg, m.keys.CopyErrLog) && len(m.errLog) > 0 {
+				return m, m.copyErrLogCmd()
+			}
 			m.showErrLog = false
 			return m, nil
 		}
@@ -973,6 +981,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case browserOpenedMsg:
 		return m, m.noticeCmd("opened " + truncate(msg.url, 60) + " in browser")
+
+	case errLogCopiedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("copy failed: " + msg.err.Error())
+		}
+		return m, m.noticeCmd("copied " + plural(msg.count, "error") + " to clipboard")
 	}
 
 	return m, cmd

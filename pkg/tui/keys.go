@@ -22,9 +22,14 @@ type keyMap struct {
 	Stop   key.Binding
 	Msg    key.Binding
 	ErrLog key.Binding
-	Tab    key.Binding
-	Quit   key.Binding
-	Help   key.Binding
+	// CopyErrLog is only ever consulted inside the error log, which swallows
+	// every other key. That is why it can share a letter with Stop without
+	// either becoming ambiguous — the log is modal, and the list is not
+	// reachable behind it.
+	CopyErrLog key.Binding
+	Tab        key.Binding
+	Quit       key.Binding
+	Help       key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
@@ -119,6 +124,13 @@ var keys = keyMap{
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),
 		key.WithHelp("E", "error log"),
+	),
+	// Out of both help lists on purpose: it works on one screen, and that
+	// screen's own footer names it. Advertising it beside keys that work
+	// everywhere would only send people to press it where it does nothing.
+	CopyErrLog: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "copy all"),
 	),
 	Tab: key.NewBinding(
 		key.WithKeys("tab", "left", "right"),

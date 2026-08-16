@@ -153,6 +153,13 @@ type Model struct {
 	prompting bool
 	promptWs  string
 
+	// tmuxMissing is the one dependency check the dashboard makes. Every
+	// workspace's agent runs in a tmux window, so without it nothing on this
+	// screen can be created — and the failure otherwise arrives only after a
+	// create has been attempted, as a truncated toast. Asked once at startup:
+	// installing tmux is not something that happens mid-session.
+	tmuxMissing bool
+
 	// error log
 	errLog     []string
 	showErrLog bool
@@ -304,6 +311,15 @@ type reviewsSentMsg struct {
 // so the dashboard can say so instead of the key answering with silence.
 type browserOpenedMsg struct{ url string }
 
+// errLogCopiedMsg is what the clipboard said. It is answered in the error
+// log's own footer rather than the toast slot, which that screen does not
+// draw — a copy whose outcome lands on a screen the user is not looking at is
+// a copy they have to test by pasting.
+type errLogCopiedMsg struct {
+	count int
+	err   error
+}
+
 // NewModel initializes a fully-configured TUI Model.
 func NewModel() (*Model, error) {
 	// Resolve the git repository root for state persistence
@@ -346,6 +362,7 @@ func NewModel() (*Model, error) {
 		ciStatus:               make(map[string]string),
 		selected:               make(map[string]bool),
 		workspaceDeletingNames: make(map[string]bool),
+		tmuxMissing:            !tmux.Installed(),
 	}, nil
 }
 

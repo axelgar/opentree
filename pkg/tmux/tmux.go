@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,21 @@ import (
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
+
+// ErrNotInstalled is what window creation fails with when there is no tmux on
+// PATH. It is named rather than left to exec's "executable file not found in
+// $PATH", which arrives wrapped twice over and is the first thing a truncating
+// caller cuts — leaving the user with a window that failed and no reason why.
+var ErrNotInstalled = errors.New("tmux is not installed — install it (macOS: brew install tmux) and try again")
+
+// Installed reports whether a tmux binary is on PATH. Every workspace's agent
+// runs in a tmux window, so this is the difference between opentree working and
+// nothing working at all; the dashboard asks once at startup so it can say so
+// before the user has tried and failed.
+func Installed() bool {
+	_, err := exec.LookPath("tmux")
+	return err == nil
+}
 
 // Controller manages tmux sessions and windows
 type Controller struct {
@@ -95,11 +111,17 @@ func launchLine(command string, args []string) string {
 	return fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", strings.Join(parts, " "))
 }
 
-// checkVersion fails when the installed tmux predates 3.0, which newWindow
-// requires for new-window -e. Cached per Controller. A missing/broken tmux
-// binary passes: the command that actually needs tmux reports that error.
+// checkVersion fails when there is no tmux at all, and when the installed one
+// predates 3.0 (which newWindow requires for new-window -e). Cached per
+// Controller. A tmux that is present but cannot answer -V still passes: the
+// command that actually needs it reports that error, and refusing on an
+// unreadable version would block unusual builds that work fine.
 func (c *Controller) checkVersion() error {
 	c.versionOnce.Do(func() {
+		if !Installed() {
+			c.versionErr = ErrNotInstalled
+			return
+		}
 		out, err := exec.Command("tmux", "-V").Output()
 		if err != nil {
 			return

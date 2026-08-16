@@ -51,7 +51,14 @@ func (m Model) View() string {
 			}
 		}
 		sb.WriteString(m.divider() + "\n")
-		sb.WriteString(m.bar(dialogHintStyle.Render("any key to close"), ""))
+		// This screen exists to get text out of the program, so the key that
+		// does it is named, and its outcome lands here — the toast slot belongs
+		// to the list, which is not on screen to show it.
+		hint := "any key to close"
+		if len(m.errLog) > 0 {
+			hint = "c copy all  •  any key to close"
+		}
+		sb.WriteString(m.bar(dialogHintStyle.Render(hint), m.toastLine()))
 		return appStyle.Render(sb.String())
 	}
 
@@ -308,6 +315,15 @@ func (m Model) View() string {
 	s.WriteString(m.tabBar())
 	s.WriteString("\n\n")
 
+	// The missing-tmux warning, above everything the list has to say: without
+	// tmux none of it can be acted on. It sits in the flow rather than the toast
+	// slot because it is a standing condition, not an event — a toast would
+	// clear itself after three seconds and leave the screen looking fine.
+	if banner := m.tmuxBanner(); banner != "" {
+		s.WriteString(banner)
+		s.WriteString("\n\n")
+	}
+
 	// Filter prompt
 	if m.filtering {
 		prompt := filterPromptStyle.Render("/") + " " + m.filterQuery + "█"
@@ -489,6 +505,24 @@ func (m Model) View() string {
 	s.WriteString(m.help.View(m.keys))
 
 	return appStyle.Render(s.String())
+}
+
+// tmuxBanner is the standing warning for a machine with no tmux on it, or ""
+// on the ordinary machine that has one. Two lines: what is wrong, and the one
+// command that fixes it — a user who has just installed opentree has no reason
+// to know it needs tmux at all, so naming the dependency is half the message.
+//
+// Each line is truncated to the panel rather than wrapped: a wrapped second
+// line would push a workspace row off the bottom of a short terminal, and the
+// install command is the part that survives a narrow one.
+func (m Model) tmuxBanner() string {
+	if !m.tmuxMissing {
+		return ""
+	}
+	width := m.panelWidth()
+	return warnStyle.Render(truncate("⚠ tmux is not installed — no workspace can be created", width)) +
+		"\n" +
+		diffStyle.Render(truncate("  opentree runs each agent in a tmux window · brew install tmux", width))
 }
 
 // toastLine renders the transient error or notice into its fixed slot, or ""

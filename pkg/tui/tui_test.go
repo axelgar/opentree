@@ -609,6 +609,121 @@ func TestView_MainScreen_NamesTheAgent(t *testing.T) {
 	}
 }
 
+// The error log's whole point is getting text out of the program — into a bug
+// report, a search box, a chat with someone. c is how, because the dashboard
+// holds the mouse and a held mouse cannot drag-select.
+func TestErrLog_CopyKeyDoesNotCloseTheLog(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.showErrLog = true
+	m.errLog = []string{"[12:00] tmux is not installed"}
+
+	next, cmd := applyUpdate(m, keyMsg("c"))
+	if !next.showErrLog {
+		t.Error("c closed the error log instead of copying it")
+	}
+	if cmd == nil {
+		t.Error("c did not start a copy")
+	}
+}
+
+// Every other key still closes it. c is the exception, not the start of a
+// keymap this screen has to teach.
+func TestErrLog_OtherKeysStillClose(t *testing.T) {
+	for _, k := range []string{"q", "esc", "enter", "x"} {
+		t.Run(k, func(t *testing.T) {
+			m := newTestModel(testWS("a"))
+			m.showErrLog = true
+			m.errLog = []string{"[12:00] boom"}
+
+			if next, _ := applyUpdate(m, keyMsg(k)); next.showErrLog {
+				t.Errorf("%q did not close the error log", k)
+			}
+		})
+	}
+}
+
+// An empty log has nothing to copy, so c means what it means everywhere else
+// on this screen: close.
+func TestErrLog_CopyOnEmptyLogCloses(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.showErrLog = true
+
+	if next, _ := applyUpdate(m, keyMsg("c")); next.showErrLog {
+		t.Error("c on an empty error log did not close it")
+	}
+}
+
+// The copy's outcome has to land on this screen. The toast slot belongs to the
+// list, which is not drawn behind the log — a success reported there is one the
+// user can only confirm by pasting somewhere and looking.
+func TestErrLog_ReportsTheCopyInItsOwnFooter(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.showErrLog = true
+	m.errLog = []string{"[12:00] boom", "[12:01] boom again"}
+
+	m, _ = applyUpdate(m, errLogCopiedMsg{count: 2})
+	view := m.View()
+
+	if !strings.Contains(view, "copied 2 errors to clipboard") {
+		t.Errorf("the error log does not report the copy\ngot: %s", view)
+	}
+}
+
+// A machine with no clipboard tool must say so rather than report a success
+// the user discovers is false at the paste.
+func TestErrLog_ReportsAFailedCopy(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.showErrLog = true
+	m.errLog = []string{"[12:00] boom"}
+
+	m, _ = applyUpdate(m, errLogCopiedMsg{err: errNoClipboardTool})
+
+	if view := m.View(); !strings.Contains(view, "copy failed") {
+		t.Errorf("a failed copy was not reported\ngot: %s", view)
+	}
+}
+
+// The log names its copy key only when there is something to copy.
+func TestErrLog_NamesTheCopyKey(t *testing.T) {
+	m := newTestModel(testWS("a"))
+	m.showErrLog = true
+	m.errLog = []string{"[12:00] boom"}
+	if view := m.View(); !strings.Contains(view, "c copy all") {
+		t.Errorf("the error log does not name its copy key\ngot: %s", view)
+	}
+
+	empty := newTestModel(testWS("a"))
+	empty.showErrLog = true
+	if view := empty.View(); strings.Contains(view, "copy all") {
+		t.Errorf("the empty error log offers a copy with nothing to copy\ngot: %s", view)
+	}
+}
+
+// Without tmux nothing on this screen can be created, and the failure used to
+// surface only after a create had been attempted — as a toast truncated well
+// before the words "not found in $PATH". The dashboard says so up front, and
+// names the command, because a new user has no reason to know opentree needs
+// tmux at all.
+func TestView_MainScreen_WarnsWhenTmuxMissing(t *testing.T) {
+	m := newTestModel(testWS("feat/login"))
+	m.tmuxMissing = true
+	view := m.View()
+
+	for _, want := range []string{"tmux is not installed", "brew install tmux"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() with tmux missing does not mention %q\ngot: %s", want, view)
+		}
+	}
+}
+
+// The warning is for the machine that lacks tmux. Every other machine gets the
+// screen it had before.
+func TestView_MainScreen_NoTmuxWarningWhenInstalled(t *testing.T) {
+	if view := newTestModel(testWS("feat/login")).View(); strings.Contains(view, "tmux is not installed") {
+		t.Errorf("View() warns about tmux on a machine that has it:\n%s", view)
+	}
+}
+
 // A workspace created before opentree recorded the agent has no name to show,
 // and must not leave a bullet with nothing in front of it.
 func TestView_MainScreen_NoAgentRecorded(t *testing.T) {
