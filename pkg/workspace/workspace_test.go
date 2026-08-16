@@ -264,6 +264,48 @@ func TestDeleteMultiple(t *testing.T) {
 	}
 }
 
+// A dev server outlives the worktree it was serving: the run window is not in
+// the workspace list, so it holds its port and a Node process while nothing on
+// screen mentions it. That is the same mess prune already means.
+func TestPrune_ReapsOrphanedServerWindows(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("keep-me", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// One server for a workspace that still exists, one left behind by a
+	// workspace that does not.
+	mock.windows = []Window{
+		{ID: "@1", Name: "keep-me"},
+		{ID: "@2", Name: "keep-me:run"},
+		{ID: "@3", Name: "long-gone:run"},
+	}
+
+	pruned, err := svc.Prune()
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(pruned.Servers) != 1 || pruned.Servers[0] != "long-gone:run" {
+		t.Errorf("Prune().Servers = %v, want [long-gone:run]", pruned.Servers)
+	}
+	if slices.Contains(mock.killWindowCalls, "keep-me:run") {
+		t.Error("prune killed a server whose workspace is still here")
+	}
+}
+
 // newWithMock creates a Service with a mock ProcessManager for testing.
 func newWithMock(repoRoot string, cfg *config.Config, pm ProcessManager) (*Service, error) {
 	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
@@ -574,8 +616,8 @@ func TestPrune_RemovesStaleEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	if len(pruned) != 1 || pruned[0] != "stale-one" {
-		t.Errorf("Prune() = %v, want [stale-one]", pruned)
+	if len(pruned.Workspaces) != 1 || pruned.Workspaces[0] != "stale-one" {
+		t.Errorf("Prune() = %v, want [stale-one]", pruned.Workspaces)
 	}
 
 	st, err := state.New(repoDir)

@@ -106,11 +106,12 @@ opentree
 - `o` - Open PR in browser
 - `x` - Delete selected workspace (shows diff confirmation if uncommitted changes)
 - `R` - Send the workspace's open PR review comments to its agent
+- `w` - Start or stop the workspace's dev server
 - `space` - Toggle multi-select on current workspace
 - `/` - Filter workspaces by name
 - `s` - Cycle sort order (name → age → activity → PR)
 - `E` - Toggle error log
-- `tab` - Switch between Workspaces and Skills
+- `tab` - Switch between Workspaces, Skills and Servers
 - `?` - Toggle full help
 - `q` - Quit
 
@@ -415,6 +416,17 @@ Setup runs once per worktree. It runs again when you edit the commands, and not
 otherwise — losing a chat window relaunches one, and reinstalling on every attach
 would make attaching cost a minute.
 
+Not sure what to put in the block? opentree will read the project and propose
+one, from `package.json` or a `Procfile`:
+
+```bash
+opentree setup --suggest
+```
+
+It prints; it never writes. What lands in `opentree.toml` is committed, runs on
+every machine that clones the repository, and is approved by a prompt that means
+nothing if opentree wrote the thing being approved.
+
 To repair a worktree, or run a setup you skipped, without restarting a chat and
 tearing down a live conversation:
 
@@ -454,6 +466,9 @@ each gets a port of its own instead:
 [workspace]
 run = "pnpm dev"
 ```
+
+`opentree prune`, which already reaps workspaces whose worktree was deleted
+outside opentree, also stops server windows with no workspace left behind them.
 
 Servers start on demand, never on creation — five worktrees each running
 `next dev` is several gigabytes nobody asked for. Press `w` on a workspace row

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -18,10 +19,12 @@ import (
 
 var setupCheck bool
 
+var setupSuggest bool
+
 var SetupCmd = &cobra.Command{
 	Use:               "setup <branch-name>",
 	Short:             "Prepare a workspace's worktree: re-seed its config, then run the setup commands",
-	Args:              cobra.ExactArgs(1),
+	Args:              cobra.MaximumNArgs(1),
 	SilenceUsage:      true,
 	ValidArgsFunction: workspaceCompletions,
 	Long: `Prepare a workspace's worktree the way opening its chat would.
@@ -35,8 +38,15 @@ Use it to repair a worktree whose install went wrong, or to run a setup you
 skipped, without restarting a chat and tearing down a live conversation.
 
   opentree setup <branch>           re-seed, then run the setup commands
-  opentree setup <branch> --check   report what is seeded and what is not, and run nothing`,
+  opentree setup <branch> --check   report what is seeded and what is not, and run nothing
+  opentree setup --suggest          read the project and propose a [workspace] block`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if setupSuggest {
+			return suggestSetup()
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("which workspace? give a branch name, or --suggest to propose a config")
+		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 		defer stop()
 		return runSetup(ctx, args[0])
@@ -46,6 +56,8 @@ skipped, without restarting a chat and tearing down a live conversation.
 func init() {
 	SetupCmd.Flags().BoolVar(&setupCheck, "check", false,
 		"report the worktree's seeded files and setup state, and change nothing")
+	SetupCmd.Flags().BoolVar(&setupSuggest, "suggest", false,
+		"read the project and print a [workspace] block to paste into opentree.toml")
 }
 
 func runSetup(ctx context.Context, name string) error {
@@ -107,6 +119,39 @@ func runSetup(ctx context.Context, name string) error {
 		return fmt.Errorf("setup finished, but recording it failed: %w", err)
 	}
 	fmt.Printf("✓ %s is set up\n", name)
+	return nil
+}
+
+// suggestSetup reads what the project already says about how it is built and
+// run, and prints a block for the user to keep.
+//
+// Printed rather than written. What lands in opentree.toml is committed, runs
+// on every machine that clones the repository, and is gated by a trust prompt
+// that means nothing if opentree wrote the thing being approved. Reading it
+// once and pasting it is the whole point.
+//
+// Never offered during `opentree new` either: creating a workspace already
+// carries one question, and a second turns "make me a worktree" into a wizard.
+func suggestSetup() error {
+	repoRoot, err := gitutil.RepoRoot()
+	if err != nil {
+		return err
+	}
+	s, ok := bootstrap.Suggest(repoRoot)
+	if !ok {
+		return fmt.Errorf("nothing to go on — opentree reads package.json and Procfile, and this repository has neither with anything to suggest")
+	}
+
+	fmt.Printf("From %s. Paste into %s, then `opentree trust`:\n\n", s.From, config.FindConfigFile())
+	fmt.Println("[workspace]")
+	if len(s.Setup) > 0 {
+		fmt.Printf("setup = [%s]\n", strconv.Quote(s.Setup[0]))
+	}
+	if s.Run != "" {
+		fmt.Printf("run   = %s\n", strconv.Quote(s.Run))
+	}
+	fmt.Println()
+	fmt.Println("Add seed for untracked files a worktree needs, e.g. seed = [\".env\"].")
 	return nil
 }
 

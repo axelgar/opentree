@@ -480,15 +480,23 @@ func (s *Service) CreatePR(name, title, body string) (string, error) {
 	return prURL, nil
 }
 
+// PruneResult is what a prune reaped: the workspaces whose worktree had gone,
+// and the server windows left behind with nothing to serve. Two lists rather
+// than one, because they are two different things to tell someone about.
+type PruneResult struct {
+	Workspaces []string
+	Servers    []string
+}
+
 // Prune removes state entries (and their tmux windows) for workspaces whose
 // worktree directory no longer exists on disk, and clears git's stale
 // worktree metadata. Branches are deliberately left intact.
-func (s *Service) Prune() ([]string, error) {
+func (s *Service) Prune() (PruneResult, error) {
+	var result PruneResult
 	if err := s.worktrees.Prune(); err != nil {
-		return nil, err
+		return result, err
 	}
 
-	var pruned []string
 	for _, ws := range s.state.ListWorkspaces() {
 		dir := ws.WorktreeDir
 		if dir == "" {
@@ -498,10 +506,43 @@ func (s *Service) Prune() ([]string, error) {
 			continue
 		}
 		_ = s.process.KillWindow(ws.Name)
+		_ = s.process.KillWindow(s.ServerWindow(ws.Name))
 		if err := s.state.DeleteWorkspace(ws.Name); err != nil {
-			return pruned, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
+			return result, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
 		}
-		pruned = append(pruned, ws.Name)
+		result.Workspaces = append(result.Workspaces, ws.Name)
 	}
-	return pruned, nil
+	result.Servers = s.pruneServerWindows()
+	return result, nil
+}
+
+// pruneServerWindows kills run windows with no workspace behind them, and
+// reports what it killed.
+//
+// The same category of mess prune already means: something opentree started
+// that outlived the thing it belonged to. A server survives its worktree being
+// removed by hand, and holds its port and a Node process while nothing on
+// screen mentions it — the run window is not in the workspace list, so it is
+// invisible until something else wants the port.
+func (s *Service) pruneServerWindows() []string {
+	windows, err := s.process.ListWindows()
+	if err != nil {
+		return nil
+	}
+
+	live := make(map[string]bool)
+	for _, ws := range s.state.ListWorkspaces() {
+		live[s.ServerWindow(ws.Name)] = true
+	}
+
+	var killed []string
+	for _, w := range windows {
+		if !strings.HasSuffix(w.Name, tmux.RunSuffix) || live[w.Name] {
+			continue
+		}
+		if err := s.process.KillWindow(w.Name); err == nil {
+			killed = append(killed, w.Name)
+		}
+	}
+	return killed
 }
