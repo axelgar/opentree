@@ -190,7 +190,7 @@ seeded-file drift from `lstat`.
 | # | What | Files | Status |
 |---|---|---|---|
 | 1 | `[workspace]` config block; `pkg/bootstrap` seeding — explicit list, symlink files, refuse directories, reject escaping paths. Called from all three creation paths beside `linkSkills`. **Payload with no UI.** | `pkg/config/config.go`, `pkg/bootstrap/seed.go` (new), `pkg/workspace/workspace.go`, `cmd/opentree/cmd/config.go`, `README.md` | done |
-| 2 | Trust: hash `setup`+`run`, record approvals in `~/.opentree/trust.json`, `opentree trust`. Non-interactive refuses. | `pkg/bootstrap/trust.go` (new), `cmd/opentree/cmd/trust.go` (new) | todo |
+| 2 | Trust: hash `setup`+`run`, record approvals in `~/.opentree/trust.json`, `opentree trust` / `show` / `revoke`. | `pkg/bootstrap/trust.go` (new), `cmd/opentree/cmd/trust.go` (new), `pkg/fsutil` (new, extracted from `config` and `skills`) | done |
 | 3 | Setup phase in the chat: run before the ACP connect, stream into the view, `SetupAt`+`SetupHash` marker, `esc` cancels the process group, stopped panel with `[r]`/`[s]` on failure, error to the error log. | `pkg/chat/*`, `pkg/state/state.go` | todo |
 | 4 | `opentree setup <branch>` inline (re-seed, then commands), `--check`, `opentree seed detach`. | `cmd/opentree/cmd/setup.go` (new), `cmd/opentree/cmd/seed.go` (new) | todo |
 | 5 | Ports assigned and persisted; `<name>:run` window; `w` starts/stops from the Workspaces tab. | `pkg/bootstrap/run.go` (new), `pkg/tmux/tmux.go`, `pkg/tui/keys.go`, `update.go` | todo |
