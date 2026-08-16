@@ -72,6 +72,26 @@ var (
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
+	// A slash command painted where it was typed, in the same accent the
+	// palette selects with — so the row you picked and the word now sitting in
+	// the message read as the same thing. Unbolded, unlike the palette's
+	// selection: inside the input the colour is the whole signal, and bold on
+	// top of it reads as shouting at your own message.
+	commandStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F4A261"))
+
+	// A word in the message that names a file, and so will leave it as an
+	// attachment rather than as text. Not the command's orange: both say the
+	// word resolves, but a command and a file are not the same promise, and one
+	// colour for both would make the message look like it was all instructions.
+	mentionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2A9D8F"))
+
+	// The rest of the completion, shown ahead of the cursor. Dimmer than the
+	// message it sits in, because it is not part of it until it is accepted.
+	ghostStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5F5F5F"))
+
 	completionItemStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888"))
 

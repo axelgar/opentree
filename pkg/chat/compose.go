@@ -173,19 +173,28 @@ func wordEnd(runes []rune, i int) int {
 // attach decides what one word of the message becomes. ok=false leaves it as
 // typed, which is the answer for everything that is not a file.
 func (c composer) attach(word string) (acp.ContentBlock, string, bool) {
-	path := strings.TrimPrefix(word, "@")
-	if path == word && !looksLikePath(path) {
-		// A bare word only counts as a path when it is shaped like one. Without
-		// that, "README" typed in a sentence would silently become an
-		// attachment the moment a file by that name existed.
-		return acp.ContentBlock{}, "", false
-	}
-	abs, name, ok := c.resolve(path)
+	abs, name, ok := c.file(word)
 	if !ok {
 		return acp.ContentBlock{}, "", false
 	}
 	block, notice := c.classify(abs, name)
 	return block, notice, true
+}
+
+// file is which file one word of the message names, and the name to show for
+// it. It is the half of attach that costs nothing to ask, which is what the
+// composer paints mentions with: deciding how a file travels means reading and
+// base64-encoding it, and that is not a price to pay for a colour on a frame
+// that will be drawn again in a tenth of a second.
+func (c composer) file(word string) (abs, name string, ok bool) {
+	path := strings.TrimPrefix(word, "@")
+	if path == word && !looksLikePath(path) {
+		// A bare word only counts as a path when it is shaped like one. Without
+		// that, "README" typed in a sentence would silently become an
+		// attachment the moment a file by that name existed.
+		return "", "", false
+	}
+	return c.resolve(path)
 }
 
 // looksLikePath is the test a word has to pass to be considered without an @.
@@ -440,6 +449,30 @@ func completionFor(input string, commands []acp.Command, files []string) complet
 			items: matchFiles(strings.TrimPrefix(token, "@"), files)}
 	}
 	return completionState{}
+}
+
+// commandToken is the slash command a message opens with, empty when it opens
+// with something else. It is what the composer paints: the sigil and the name,
+// without whatever arguments follow them.
+//
+// Only a name that exists counts. The colour is the message saying the command
+// resolves, so painting "/reusme" the same orange as "/resume" would be saying
+// the opposite of what it means — and while a name is still half typed, the
+// palette above the input is already showing what it matches.
+func commandToken(input string, commands []acp.Command) string {
+	if !strings.HasPrefix(input, "/") {
+		// The same rule the palette applies: a slash command is only a command
+		// when it opens the message.
+		return ""
+	}
+	runes := []rune(input)
+	token := string(runes[:wordEnd(runes, 0)])
+	for _, c := range commands {
+		if c.Name == strings.TrimPrefix(token, "/") {
+			return token
+		}
+	}
+	return ""
 }
 
 func matchCommands(prefix string, commands []acp.Command) []completionItem {

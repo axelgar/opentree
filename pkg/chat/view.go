@@ -6,8 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/ui"
@@ -139,10 +142,236 @@ func (m Model) footer() string {
 		b.WriteString(m.completionView())
 		b.WriteString("\n")
 	}
-	b.WriteString(inputBoxStyle.Render(m.input.View()))
+	b.WriteString(inputBoxStyle.Render(m.inputView()))
 	b.WriteString("\n")
 	b.WriteString(m.statusLine())
 	return b.String()
+}
+
+// plainInput takes the textarea's own colouring off the composer, leaving the
+// cursor as the only thing drawn into a row that is otherwise the text typed
+// into it.
+//
+// The colouring is worth losing on its own: the cursor line arrives with a
+// black band the width of the box behind it, picked to disappear against a
+// terminal rather than against this palette, and the input box already frames
+// the composer without one. It also has to go for the composer to be paintable
+// at all — every escape left in a row is one more thing standing between a
+// column number and the character actually at that column.
+func plainInput(s textarea.Style) textarea.Style {
+	s.CursorLine = lipgloss.NewStyle()
+	// The composer has no prompt string, so this only ever styles an empty one
+	// — escapes at column zero, in front of the first thing typed.
+	s.Prompt = lipgloss.NewStyle()
+	return s
+}
+
+// paint is a stretch of the composer drawn in something other than the colour
+// of typed text, as rune offsets into the composer's own text.
+type paint struct {
+	start, end int
+	style      lipgloss.Style
+}
+
+// inputView is the composer as it should read while it is being typed into: the
+// command it opens with and the file mentions in it coloured where they sit,
+// and the rest of the completion the palette has selected shown ahead of the
+// cursor.
+//
+// It is rebuilt from the composer's characters rather than patched into its
+// escapes. plainInput took the textarea's colouring off, which leaves a render
+// that is the text typed into it plus a block cursor — and both of those are
+// things this view can draw for itself. What that buys is stretches that do not
+// care which row the wrap put them on: a mention keeps its colour on the second
+// line of a long message, where column arithmetic against one row would lose it.
+func (m Model) inputView() string {
+	view := m.input.View()
+	if m.input.Value() == "" {
+		return view // the placeholder, which has nothing in it to colour
+	}
+	text := []rune(ansi.Strip(view))
+
+	marks := m.commandPaint(text)
+	marks = append(marks, m.mentionPaints(text)...)
+
+	// The suggestion goes in after the words are found, so it is not one of
+	// them: the "@main" that is still being typed reads as prose until the
+	// ".go" it is offered has actually been accepted.
+	text, ghost := m.withGhost(text)
+	marks = append(marks, ghost...)
+
+	// The cursor goes on last, so it survives landing in the middle of anything
+	// else — it is the one thing on screen saying where typing will go.
+	if at := drawnCursor(view, m.input.Cursor); at >= 0 {
+		marks = append(marks, paint{at, at + 1, cursorStyle(m.input.Cursor)})
+	}
+	return paintText(text, marks)
+}
+
+// paintText draws the composer's text with its marked stretches coloured.
+//
+// Marks may overlap, and the last one covering a rune wins — which is what puts
+// the cursor on top of the word it is in the middle of instead of underneath it.
+func paintText(text []rune, marks []paint) string {
+	if len(marks) == 0 {
+		return string(text)
+	}
+	// One style per rune, then runs of equal style joined back up. Resolving
+	// overlaps any other way means ordering and splitting the stretches against
+	// each other, which is the same answer arrived at with more chances to be
+	// wrong about it.
+	styles := make([]*lipgloss.Style, len(text))
+	for i := range marks {
+		for j := max(marks[i].start, 0); j < min(marks[i].end, len(text)); j++ {
+			styles[j] = &marks[i].style
+		}
+	}
+
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		j := i
+		for j < len(text) && styles[j] == styles[i] {
+			j++
+		}
+		if styles[i] == nil {
+			b.WriteString(string(text[i:j]))
+		} else {
+			b.WriteString(styles[i].Render(string(text[i:j])))
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// drawnCursor is where the textarea drew the block cursor in the composer's
+// text, or -1 when there is no block on screen to preserve — it is blinked off,
+// or the terminal has no way to invert a cell. Either way what is there is the
+// character itself, which is what redrawing it plainly produces.
+func drawnCursor(view string, cur cursor.Model) int {
+	block, _, _ := strings.Cut(cursorStyle(cur).Render("x"), "x")
+	if block == "" || cur.Blink {
+		return -1
+	}
+	at := strings.Index(view, block)
+	if at < 0 {
+		return -1
+	}
+	return len([]rune(ansi.Strip(view[:at])))
+}
+
+// cursorStyle is the block the textarea draws the cursor as. One definition,
+// because the composer both looks for it in what the textarea rendered and puts
+// it back afterwards: the two disagreeing means a cursor that cannot be found,
+// or one drawn in something other than what it replaced.
+func cursorStyle(cur cursor.Model) lipgloss.Style {
+	return cur.Style.Inline(true).Reverse(true)
+}
+
+// commandPaint colours the command the message opens with.
+func (m Model) commandPaint(text []rune) []paint {
+	token := commandToken(m.input.Value(), m.paletteCommands())
+	// The command opens the message, but the message does not always open the
+	// composer: the textarea scrolls its first line off the top once what is
+	// being written outgrows the box, and a command that is not on screen has
+	// nothing to colour.
+	if token == "" || !strings.HasPrefix(string(text), token) {
+		return nil
+	}
+	return []paint{{0, len([]rune(token)), commandStyle}}
+}
+
+// mentionPaints colours the words that will not travel as words. A path leaves
+// the message as an attachment, and which ones did is worth knowing before
+// sending rather than from a notice afterwards.
+//
+// The words are read off the composer rather than off the message, so a path
+// the wrap split across two rows is not one of them. It still travels; it just
+// reads as prose until the terminal is wide enough to hold it in one piece.
+func (m Model) mentionPaints(text []rune) []paint {
+	c := m.composer()
+	var out []paint
+	for i := 0; i < len(text); {
+		if isBoundary(text[i]) {
+			i++
+			continue
+		}
+		j := wordEnd(text, i)
+		if _, _, ok := c.file(string(text[i:j])); ok {
+			out = append(out, paint{i, j, mentionStyle})
+		}
+		i = j
+	}
+	return out
+}
+
+// ghost is the rest of the completion the palette has selected: what accepting
+// it would add, so a name can be finished without looking up from what is being
+// typed.
+//
+// ponytail: only with the cursor at the end of a message that fits on the
+// composer's first row. The palette completes the trailing word wherever the
+// cursor is, so a suggestion drawn anywhere else is one for somewhere the
+// cursor is not — and finding where the textarea put the cursor on a wrapped
+// message costs more than showing it there is worth.
+func (m Model) ghost() string {
+	if !m.completion.active() || m.input.Line() != 0 {
+		return ""
+	}
+	info := m.input.LineInfo()
+	if info.RowOffset != 0 || info.ColumnOffset != len([]rune(m.input.Value())) {
+		return ""
+	}
+	item := m.completion.items[m.completion.cursor]
+	rest, ok := strings.CutPrefix(item.value, m.completion.token)
+	if !ok {
+		// A substring match — "@session" finding pkg/auth/session.go — has no
+		// tail to show, because what it matched is not at the end. The palette
+		// is already showing the whole path.
+		return ""
+	}
+	return rest
+}
+
+// withGhost writes the suggestion over the padding the textarea left after the
+// cursor, and says which runes it took.
+//
+// Over rather than after: the composer keeps the width it was drawn at, so the
+// box around it does not grow by a name nobody has typed. A suggestion with no
+// room left on the row is not shown at all — half a command name in grey reads
+// as a command that exists.
+func (m Model) withGhost(text []rune) ([]rune, []paint) {
+	suffix := []rune(m.ghost())
+	at := len([]rune(m.input.Value()))
+	end := at + len(suffix)
+	if len(suffix) == 0 || end > firstRowEnd(text) {
+		return text, nil
+	}
+	// Every rune it covers has to be padding, and each has to be one column
+	// wide, or the runes after it move and the row is no longer the width the
+	// box was drawn to.
+	if lipgloss.Width(string(suffix)) != len(suffix) {
+		return text, nil
+	}
+	for _, r := range text[at:end] {
+		if r != ' ' {
+			return text, nil
+		}
+	}
+
+	out := make([]rune, len(text))
+	copy(out, text)
+	copy(out[at:], suffix)
+	return out, []paint{{at, end, ghostStyle}}
+}
+
+// firstRowEnd is where the composer's first rendered row ends.
+func firstRowEnd(text []rune) int {
+	for i, r := range text {
+		if r == '\n' {
+			return i
+		}
+	}
+	return len(text)
 }
 
 // completionView lists the palette above the input, closest match first,

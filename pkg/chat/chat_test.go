@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -39,14 +38,10 @@ func bareAgent() *config.PredefinedAgent {
 // newTestModel builds a Model with no agent behind it. Tests that only exercise
 // in-process logic should use this instead of Run, which spawns a subprocess.
 func newTestModel() Model {
-	ta := textarea.New()
-	ta.SetHeight(inputHeight)
-	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
-	ta.Focus()
 	m := Model{
 		opts:      Options{Workspace: "fix-auth", Agent: bareAgent(), Cwd: "/repo"},
 		toolIdx:   make(map[string]int),
-		input:     ta,
+		input:     newComposer(),
 		help:      help.New(),
 		keys:      keys,
 		sessionID: "ses_test",
@@ -60,13 +55,10 @@ func newTestModel() Model {
 // newUnsizedTestModel is a freshly constructed model that has not yet seen a
 // WindowSizeMsg — the state Run is in between newModel and the first frame.
 func newUnsizedTestModel() Model {
-	ta := textarea.New()
-	ta.SetHeight(inputHeight)
-	ta.Focus()
 	return Model{
 		opts:    Options{Workspace: "fix-auth", Agent: bareAgent()},
 		toolIdx: make(map[string]int),
-		input:   ta,
+		input:   newComposer(),
 		help:    help.New(),
 		keys:    keys,
 	}

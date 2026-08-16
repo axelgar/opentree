@@ -186,8 +186,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.startSession()
 
 	case filesLoadedMsg:
-		m.files = msg.files
-		return m, nil
+		return m.withFiles(msg.files), nil
 
 	case sessionsListedMsg:
 		// The picker may already be gone — the list is a round trip and esc is
@@ -621,7 +620,7 @@ func (m Model) composeTurn(text string) ([]acp.ContentBlock, []string) {
 
 // composer is this session's view of what composing needs to know.
 func (m Model) composer() composer {
-	return composer{cwd: m.opts.Cwd, known: m.trackedFiles(), images: m.canSendImages}
+	return composer{cwd: m.opts.Cwd, known: m.known, images: m.canSendImages}
 }
 
 // flushQueued runs a prompt that arrived while the agent was busy or starting.

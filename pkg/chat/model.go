@@ -381,6 +381,12 @@ type Model struct {
 	files      []string
 	completion completionState
 
+	// known is files again, as the set the composer looks a path up in. It is
+	// built once rather than per call: the composer now runs against every word
+	// on screen to decide what to colour, and a worktree's file list is long
+	// enough that rebuilding the map for each frame would be felt.
+	known map[string]bool
+
 	// pending holds images pasted but not yet sent. They cannot go into the
 	// textarea — there is no path to type, the bytes came off the clipboard —
 	// so they wait beside it and lead the next prompt.
@@ -437,27 +443,35 @@ type Model struct {
 }
 
 func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeResponse, opts Options, msgs <-chan tea.Msg) Model {
-	ta := textarea.New()
-	ta.Placeholder = "Ask the agent…"
-	ta.Prompt = ""
-	ta.ShowLineNumbers = false
-	ta.SetHeight(inputHeight)
-	ta.CharLimit = 0
-	// Enter sends, so the textarea's own newline binding moves out of the way.
-	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
-	ta.Focus()
-
 	m := Model{
 		ctx:     ctx,
 		client:  client,
 		msgs:    msgs,
 		opts:    opts,
 		toolIdx: make(map[string]int),
-		input:   ta,
+		input:   newComposer(),
 		help:    help.New(),
 		keys:    keys,
 	}
 	return m.withAgentInfo(info)
+}
+
+// newComposer is the message box, in one place rather than in each caller that
+// needs one: a test that built its own had drifted into a different textarea
+// from the one people type into, which is the one arrangement where rendering
+// tests prove nothing.
+func newComposer() textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = "Ask the agent…"
+	ta.Prompt = ""
+	ta.ShowLineNumbers = false
+	ta.FocusedStyle = plainInput(ta.FocusedStyle)
+	ta.SetHeight(inputHeight)
+	ta.CharLimit = 0
+	// Enter sends, so the textarea's own newline binding moves out of the way.
+	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
+	ta.Focus()
+	return ta
 }
 
 // brand is an agent's identity on screen: its glyph, its colour, the name it
@@ -739,12 +753,16 @@ var pasteCmd = func() tea.Cmd {
 	}
 }
 
-func (m Model) trackedFiles() map[string]bool {
-	known := make(map[string]bool, len(m.files))
-	for _, f := range m.files {
-		known[f] = true
+// withFiles records the worktree's tracked files, and the set the composer
+// looks paths up in — the two are one fact, and a Model holding only the first
+// would paint mentions against an empty index.
+func (m Model) withFiles(files []string) Model {
+	m.files = files
+	m.known = make(map[string]bool, len(files))
+	for _, f := range files {
+		m.known[f] = true
 	}
-	return known
+	return m
 }
 
 // restartCmd replaces a dead agent with a fresh process.

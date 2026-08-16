@@ -4,10 +4,14 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/axelgar/opentree/pkg/acp"
 )
@@ -385,8 +389,7 @@ func newPaletteModel(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel()
 	m.commands = testCommands
-	m.files = trackedFiles
-	return m
+	return m.withFiles(trackedFiles)
 }
 
 func typeInto(m Model, s string) Model {
@@ -550,6 +553,275 @@ func TestFilesLoaded_FeedTheePalette(t *testing.T) {
 	m = typeInto(m, "@main")
 	if !m.completion.active() {
 		t.Error("expected loaded files to drive @ completion")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// What the composer colours
+// ---------------------------------------------------------------------------
+
+func TestCommandToken(t *testing.T) {
+	tests := []struct{ name, input, want string }{
+		{"empty", "", ""},
+		{"prose", "compact the log", ""},
+		{"the command alone", "/compact", "/compact"},
+		{"with arguments after it", "/compact everything", "/compact"},
+		{"half typed names nothing yet", "/comp", ""},
+		{"a name that does not exist", "/zzz", ""},
+		{"not at the start of the message", "run /compact", ""},
+		{"a leading space is not the start", " /compact", ""},
+		{"stops at the first newline", "/commit\nand push", "/commit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commandToken(tt.input, testCommands); got != tt.want {
+				t.Errorf("commandToken(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// withColour renders the test's styles for a terminal that has some.
+//
+// The composer is drawn from its own characters and coloured by stretch. A test
+// binary's own profile is Ascii, where lipgloss emits nothing at all — so
+// without this every stretch comes out the same and any mistake about which
+// runes a stretch covers is invisible.
+func withColour(t *testing.T) {
+	t.Helper()
+	before := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(before) })
+}
+
+// opener is the escape sequence a style starts a stretch with.
+func opener(s lipgloss.Style) string {
+	open, _, _ := strings.Cut(s.Inline(true).Render("x"), "x")
+	return open
+}
+
+// colouring replays the escapes ahead of each of a composer's first n columns
+// and marks what a terminal would actually draw there: a command, a mention,
+// the suggestion, the block cursor, or the plain text of the message.
+//
+// Comparing strings cannot stand in for this. A stretch cut out of a rendered
+// row carries the escapes ahead of the cut so it keeps the colours it was drawn
+// in, which is how a stretch can hold the accent's opening sequence and still
+// be drawn plain.
+func colouring(row string, n int) string {
+	marks := map[string]byte{
+		opener(commandStyle):                      '/',
+		opener(mentionStyle):                      '@',
+		opener(ghostStyle):                        '~',
+		opener(lipgloss.NewStyle().Reverse(true)): 'C',
+	}
+	var b strings.Builder
+	for i := range n {
+		mark, cell := byte('.'), ansi.Cut(row, i, i+1)
+		for {
+			seq := sgrOpen.FindString(cell)
+			if seq == "" {
+				break
+			}
+			if m, ok := marks[seq]; ok {
+				mark = m
+			} else if seq == "\x1b[0m" {
+				mark = '.'
+			}
+			cell = cell[len(seq):]
+		}
+		b.WriteByte(mark)
+	}
+	return b.String()
+}
+
+var sgrOpen = regexp.MustCompile("^\x1b\\[[0-9;]*m")
+
+// composerRow is one row of a rendered composer, escapes and all.
+func composerRow(view string, n int) string {
+	rows := strings.Split(view, "\n")
+	if n >= len(rows) {
+		return ""
+	}
+	return rows[n]
+}
+
+// composed is the composer after typing s, and after moving the cursor back to
+// rune cursor when that is not -1.
+func composed(t *testing.T, s string, cursor int) Model {
+	t.Helper()
+	m := typeInto(newPaletteModel(t), s)
+	if cursor >= 0 {
+		m.input.SetCursor(cursor)
+	}
+	return m
+}
+
+func TestInputView_Colouring(t *testing.T) {
+	withColour(t)
+
+	tests := []struct {
+		name   string
+		typed  string
+		cursor int    // -1 leaves the cursor where typing left it
+		want   string // one mark per column, from the start of the composer
+	}{
+		{"a command it opens with", "/compact", -1, "////////C"},
+		{"only the command, not its arguments", "/compact everything", -1, "////////...........C"},
+		{"a cursor back inside the name", "/compact", 4, "////C///"},
+		{"a cursor back on the sigil", "/compact", 0, "C///////"},
+		{"a name that does not exist", "/zzz", -1, "....C"},
+		{"a command that does not open the message", "run /compact", -1, "............C"},
+		{"a mention that names a file", "read @main.go now", -1, ".....@@@@@@@@....C"},
+		{"a mention that names nothing", "read @nope.go now", -1, ".................C"},
+		{"a mention mid-word is an address", "mail me@main.go now", -1, "...................C"},
+		{"two mentions", "@main.go @README.md", -1, "@@@@@@@@.@@@@@@@@@@C"},
+		{"a path with no sigil still travels", "look at pkg/auth/token.go", -1, "........@@@@@@@@@@@@@@@@@C"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := composed(t, tt.typed, tt.cursor)
+			if got := colouring(composerRow(m.inputView(), 0), len(tt.want)); got != tt.want {
+				t.Errorf("colouring  = %q\n     want  = %q\n     text  = %q",
+					got, tt.want, tt.typed)
+			}
+		})
+	}
+}
+
+// The paint is colour and nothing else. A stretch that moved a character, or
+// left the row a column short, would draw the box around the composer to the
+// wrong width.
+func TestInputView_KeepsTheComposerItWasGiven(t *testing.T) {
+	withColour(t)
+
+	for _, typed := range []string{
+		"/compact", "/compact everything", "read @main.go now", "plain prose",
+		"@main.go and @README.md, plus a long tail to push this onto a second row",
+	} {
+		t.Run(typed, func(t *testing.T) {
+			m := composed(t, typed, -1)
+			if got, want := ansi.Strip(m.inputView()), ansi.Strip(m.input.View()); got != want {
+				t.Errorf("painted text = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// The composer scrolls its first line off the top once the message outgrows the
+// box, and a command that is no longer on screen has nothing to colour — least
+// of all whatever the scroll left sitting in the first row.
+func TestCommandPaint_SkipsACommandThatScrolledAway(t *testing.T) {
+	m := composed(t, "/compact", -1)
+	if got := m.commandPaint([]rune("still going")); got != nil {
+		t.Errorf("commandPaint = %+v, want nothing painted on a row the command is not on", got)
+	}
+}
+
+// The whole reason the composer is painted by stretch rather than by column:
+// a message long enough to wrap puts its mentions on whichever row it likes,
+// and the cursor is drawn into one of them.
+func TestInputView_PaintsAMentionThatWrappedOntoTheSecondRow(t *testing.T) {
+	withColour(t)
+
+	m := newPaletteModel(t)
+	m.input.SetWidth(46)
+	m = typeInto(m, "a long enough opening sentence to push the mention over onto @main.go here")
+
+	row := composerRow(m.inputView(), 1)
+	if got, want := ansi.Strip(row)[:31], "mention over onto @main.go here"; got != want {
+		t.Fatalf("second row = %q, want %q", got, want)
+	}
+	if got, want := colouring(row, 31), "..................@@@@@@@@.....C"[:31]; got != want {
+		t.Errorf("colouring = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The completion ahead of the cursor
+// ---------------------------------------------------------------------------
+
+func TestGhost_ShowsTheRestOfTheSelectedMatch(t *testing.T) {
+	withColour(t)
+
+	m := composed(t, "/comp", -1)
+	if got, want := m.ghost(), "act"; got != want {
+		t.Errorf("ghost() = %q, want %q", got, want)
+	}
+	// The cursor keeps its column and lands on the suggestion's first rune,
+	// which is what makes it read as the next thing that would be typed.
+	// "/comp" is not a command yet, so it is not coloured as one — the accent
+	// arrives with the name, which is the confirmation accepting it gives.
+	if got, want := colouring(composerRow(m.inputView(), 0), 8), ".....C~~"; got != want {
+		t.Errorf("colouring = %q, want %q", got, want)
+	}
+	if got, want := ansi.Strip(m.inputView())[:8], "/compact"; got != want {
+		t.Errorf("composer text = %q, want %q", got, want)
+	}
+}
+
+func TestGhost_FollowsThePaletteCursor(t *testing.T) {
+	m := composed(t, "/com", -1)
+	if got, want := m.ghost(), "pact"; got != want {
+		t.Fatalf("ghost() = %q, want the first match's tail %q", got, want)
+	}
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyDown})
+	if got, want := m.ghost(), "mit"; got != want {
+		t.Errorf("ghost() = %q, want the second match's tail %q", got, want)
+	}
+}
+
+func TestGhost_CompletesAMention(t *testing.T) {
+	m := composed(t, "look at @main", -1)
+	if got, want := m.ghost(), ".go"; got != want {
+		t.Errorf("ghost() = %q, want %q", got, want)
+	}
+}
+
+func TestGhost_StaysQuiet(t *testing.T) {
+	tests := []struct {
+		name   string
+		typed  string
+		cursor int
+	}{
+		{"nothing typed", "", -1},
+		{"no palette open", "compact the log", -1},
+		{"the name is already whole", "/compact", -1},
+		{"the cursor is not at the end", "/comp", 2},
+		// "@session" finds pkg/auth/session.go by substring, so what it matched
+		// is not at the end and there is no tail to offer.
+		{"a match that is not a prefix", "@session", -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := composed(t, tt.typed, tt.cursor).ghost(); got != "" {
+				t.Errorf("ghost() = %q, want nothing offered", got)
+			}
+		})
+	}
+}
+
+// A suggestion is drawn over the row's own padding, so it cannot make the
+// composer wider than the box it was drawn to fit.
+func TestGhost_NotShownWithoutRoomForIt(t *testing.T) {
+	withColour(t)
+
+	m := newPaletteModel(t)
+	m.input.SetWidth(7)
+	m = typeInto(m, "/com")
+	if got, want := ansi.Strip(m.inputView()), ansi.Strip(m.input.View()); got != want {
+		t.Errorf("composer text = %q, want %q — a suggestion took room it did not have", got, want)
+	}
+}
+
+// Accepting is what the palette already did: the suggestion is the same match
+// tab completes, so the two cannot disagree about what pressing it gives.
+func TestGhost_TabAcceptsWhatItOffered(t *testing.T) {
+	m := composed(t, "/com", -1)
+	want := "/com" + m.ghost() + " "
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyTab})
+	if got := m.input.Value(); got != want {
+		t.Errorf("value = %q, want %q", got, want)
 	}
 }
 
