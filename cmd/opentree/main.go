@@ -64,6 +64,8 @@ func init() {
 	rootCmd.AddCommand(cmd.ReviewCmd)
 	rootCmd.AddCommand(cmd.PruneCmd)
 	rootCmd.AddCommand(cmd.TrustCmd)
+	rootCmd.AddCommand(cmd.SetupCmd)
+	rootCmd.AddCommand(cmd.SeedCmd)
 	rootCmd.AddCommand(cmd.SkillsCmd)
 }
 func main() {

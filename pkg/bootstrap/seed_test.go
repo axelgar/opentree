@@ -236,6 +236,95 @@ func TestValidateSeed_AllowsASymlinkInsideTheRepository(t *testing.T) {
 	}
 }
 
+// A symlink is not as durable as it sounds: a file rewritten by rename — which
+// is how most editors save — replaces the link with an ordinary file, and the
+// worktree quietly stops sharing the repository's copy.
+func TestCheckSeed_ReportsWhatIsActuallyThere(t *testing.T) {
+	repo, worktree := newRepo(t)
+	write(t, filepath.Join(repo, ".env"), "TOKEN=hunter2\n")
+	write(t, filepath.Join(repo, ".npmrc"), "registry=...\n")
+	write(t, filepath.Join(repo, "keep"), "x\n")
+
+	if _, err := Seed(repo, worktree, []string{".env", ".npmrc", "keep"}); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	// A tool that writes by renaming over its target, which is the accident
+	// this check exists for.
+	if err := os.Remove(filepath.Join(worktree, ".npmrc")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(worktree, ".npmrc"), "registry=branch\n")
+	if err := os.Remove(filepath.Join(worktree, "keep")); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]SeedState{
+		".env":    SeedLinked,
+		".npmrc":  SeedDetached,
+		"keep":    SeedAbsent,
+		"gone":    SeedNoSource,
+		"../away": SeedInvalid,
+	}
+	for _, r := range CheckSeed(repo, worktree, []string{".env", ".npmrc", "keep", "gone", "../away"}) {
+		if want[r.Path] != r.State {
+			t.Errorf("%s = %q, want %q", r.Path, r.State, want[r.Path])
+		}
+	}
+}
+
+// Divergence should be decided rather than discovered.
+func TestDetach_GivesTheWorktreeItsOwnCopy(t *testing.T) {
+	repo, worktree := newRepo(t)
+	write(t, filepath.Join(repo, ".env"), "TOKEN=shared\n")
+	if _, err := Seed(repo, worktree, []string{".env"}); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+
+	if err := Detach(repo, worktree, ".env"); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	// The content survives the swap — detaching keeps what was there, it does
+	// not start from an empty file.
+	got, err := os.ReadFile(filepath.Join(worktree, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "TOKEN=shared\n" {
+		t.Errorf("detached copy = %q, want what the link pointed at", got)
+	}
+
+	// And the two no longer move together, in either direction.
+	write(t, filepath.Join(worktree, ".env"), "TOKEN=branch\n")
+	repoCopy, err := os.ReadFile(filepath.Join(repo, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(repoCopy) != "TOKEN=shared\n" {
+		t.Errorf("the repository's copy = %q — the detach did not take", repoCopy)
+	}
+
+	if state := CheckSeed(repo, worktree, []string{".env"})[0].State; state != SeedDetached {
+		t.Errorf("state after Detach = %q, want %q", state, SeedDetached)
+	}
+	// Nothing to detach from a second time.
+	if err := Detach(repo, worktree, ".env"); err == nil {
+		t.Error("Detach accepted a file that is already the worktree's own")
+	}
+}
+
+func TestDetach_RefusesWhatItCannotDetach(t *testing.T) {
+	repo, worktree := newRepo(t)
+	write(t, filepath.Join(repo, ".env"), "TOKEN=shared\n")
+
+	if err := Detach(repo, worktree, ".env"); err == nil {
+		t.Error("Detach accepted a path that is not in the worktree")
+	}
+	if err := Detach(repo, worktree, "../outside"); err == nil {
+		t.Error("Detach accepted a path outside the repository")
+	}
+}
+
 // Nothing configured is the state every repository starts in.
 func TestSeed_NothingToDo(t *testing.T) {
 	repo, worktree := newRepo(t)

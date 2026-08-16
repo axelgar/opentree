@@ -375,6 +375,17 @@ symlink, is refused when the workspace is created rather than seeded quietly.
 A file the repository does not have is skipped, and one the branch tracks itself
 is left alone: git checking it out is the signal that the branch has its own.
 
+When one branch has to change a shared file, detach it — the link becomes that
+worktree's own copy, keeping what was in it:
+
+```bash
+opentree seed detach feat/add-dark-mode .env
+```
+
+That can also happen by accident: tools that save by renaming over a file
+replace the link with an ordinary one. `opentree setup <branch> --check` reports
+which seeded files are still linked and which have quietly detached.
+
 ### Setting Up a Worktree
 
 Seeding puts config where git could not. Setup is the other half — what has to
@@ -402,6 +413,17 @@ the agent should see it is your call.
 Setup runs once per worktree. It runs again when you edit the commands, and not
 otherwise — losing a chat window relaunches one, and reinstalling on every attach
 would make attaching cost a minute.
+
+To repair a worktree, or run a setup you skipped, without restarting a chat and
+tearing down a live conversation:
+
+```bash
+opentree setup feat/add-dark-mode           # re-seed, then run the commands here
+opentree setup feat/add-dark-mode --check   # report what is seeded and what has run
+```
+
+Both paths write the same marker, so a worktree prepared from the terminal is one
+the chat will not prepare again.
 
 #### Approving what it runs
 

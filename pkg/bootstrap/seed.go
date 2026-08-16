@@ -76,6 +76,126 @@ func ValidateSeed(repoRoot string, entries []string) error {
 	return errors.Join(errs...)
 }
 
+// SeedState is what one entry looks like in a worktree that has been seeded.
+type SeedState string
+
+const (
+	// SeedLinked is the ordinary outcome: the worktree reads the repository's
+	// own copy.
+	SeedLinked SeedState = "linked"
+	// SeedDetached is a regular file where the link was. Deliberate, through
+	// `opentree seed detach`, or accidental: a tool that writes by renaming over
+	// its target replaces the link with a file and nothing says so.
+	SeedDetached SeedState = "detached"
+	// SeedAbsent is nothing there at all, which re-seeding fixes.
+	SeedAbsent SeedState = "absent"
+	// SeedNoSource is the repository not having the file. Nothing is wrong —
+	// the list says what a worktree should carry when it exists — but an entry
+	// that never matches is usually a typo, and this is where it shows.
+	SeedNoSource SeedState = "no source"
+	// SeedInvalid is an entry opentree will not link at all.
+	SeedInvalid SeedState = "invalid"
+)
+
+// SeedReport is one entry's state in one worktree.
+type SeedReport struct {
+	Path   string
+	State  SeedState
+	Detail string // why, for the states that need one
+}
+
+// CheckSeed reports what the seed list actually looks like in a worktree.
+//
+// It exists because a symlink is not as durable as it sounds. A file rewritten
+// by rename — which is how most editors and half the tooling save — replaces
+// the link with an ordinary file, and the worktree quietly stops sharing the
+// repository's copy. Deliberate detachment is a decision; this is how the
+// accidental kind becomes visible.
+func CheckSeed(repoRoot, worktreePath string, entries []string) []SeedReport {
+	root := realpath(repoRoot)
+
+	reports := make([]SeedReport, 0, len(entries))
+	for _, entry := range entries {
+		p, err := resolve(root, entry)
+		if err != nil {
+			reports = append(reports, SeedReport{Path: entry, State: SeedInvalid, Detail: err.Error()})
+			continue
+		}
+		reports = append(reports, p.report(worktreePath))
+	}
+	return reports
+}
+
+// report is CheckSeed for one entry.
+func (p seedPath) report(worktreePath string) SeedReport {
+	if _, err := os.Stat(p.src); err != nil {
+		return SeedReport{Path: p.rel, State: SeedNoSource, Detail: "the repository has no " + p.rel}
+	}
+	info, err := os.Lstat(filepath.Join(worktreePath, p.rel))
+	switch {
+	case err != nil:
+		return SeedReport{Path: p.rel, State: SeedAbsent}
+	case info.Mode()&os.ModeSymlink != 0:
+		return SeedReport{Path: p.rel, State: SeedLinked}
+	}
+	return SeedReport{Path: p.rel, State: SeedDetached}
+}
+
+// Detach swaps a seeded link for a copy of what it points at, so a branch can
+// change a file the rest share.
+//
+// The explicit form of something that can also happen by accident (see
+// CheckSeed). Divergence should be decided rather than discovered, which is
+// also why this refuses anything that is not a link: a file that is already the
+// worktree's own has nothing to detach from.
+func Detach(repoRoot, worktreePath, entry string) error {
+	p, err := resolve(realpath(repoRoot), entry)
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(worktreePath, p.rel)
+
+	info, err := os.Lstat(dst)
+	if err != nil {
+		return fmt.Errorf("%s: not in this worktree", p.rel)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("%s is already this worktree's own file", p.rel)
+	}
+
+	data, err := os.ReadFile(dst) // #nosec G304 -- a seeded path, validated above
+	if err != nil {
+		return err
+	}
+	mode := os.FileMode(0600)
+	if src, err := os.Stat(p.src); err == nil {
+		mode = src.Mode().Perm()
+	}
+
+	// Written beside the link and renamed over it, so a failure leaves the link
+	// intact rather than a half-written file where the config used to be.
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".detach-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmpPath, mode)
+	}
+	if err == nil {
+		err = os.Rename(tmpPath, dst)
+	}
+	if err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 // seedPath is one entry located: where the file is, and where in a worktree its
 // link belongs. The same relative path on both sides — a seeded file appears
 // exactly where the project said it lives.
