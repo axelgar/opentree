@@ -31,12 +31,15 @@ var PruneCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if len(pruned) == 0 {
+		if len(pruned.Workspaces) == 0 && len(pruned.Servers) == 0 {
 			fmt.Println("Nothing to prune.")
 			return nil
 		}
-		for _, name := range pruned {
+		for _, name := range pruned.Workspaces {
 			fmt.Printf("✓ Pruned workspace '%s' (branch left intact)\n", name)
+		}
+		for _, window := range pruned.Servers {
+			fmt.Printf("✓ Stopped orphaned server window '%s'\n", window)
 		}
 		return nil
 	},

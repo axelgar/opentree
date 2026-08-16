@@ -1,13 +1,8 @@
 package tui
 
 import (
-	"regexp"
-
 	"github.com/charmbracelet/lipgloss"
 )
-
-// ansiEscapeRe strips ANSI escape sequences from tmux pane output.
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][0-9A-Za-z]`)
 
 // Styles
 var (
@@ -58,28 +53,21 @@ var (
 			Background(lipgloss.Color("#0969DA")).
 			Padding(0, 1)
 
-	// agent preview panel styles
-	previewBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#444")).
-			Padding(0, 1).
-			MarginTop(1)
-
-	previewTitleStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888"))
-
-	previewLineStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#AAA"))
-
 	// delete confirmation styles
 	dangerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
-	deleteDialogStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("196")).
-				Padding(1, 3)
+	// The title chip of a destructive card. Same shape as titleStyle so the
+	// dialogs read as one family, in the colour that says what this one does.
+	dangerTitleStyle = titleStyle.
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("196"))
+
+	// The key hints inside a dialog card. helpStyle's top margin is for the
+	// bottom of a full screen; the card already puts a blank line there.
+	dialogHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262"))
 
 	confirmKeyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F4A261")).
@@ -93,17 +81,27 @@ var (
 			Foreground(lipgloss.Color("#888")).
 			Italic(true)
 
+	// Palette anchors for "it worked", "it needs attention" and "it failed".
+	// Every place that means one of those three renders through these, so the
+	// program reads as one program: a CI badge, an agent's readiness in the
+	// picker and the toast slot are the same green as each other.
+	successStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2A9D8F"))
+
+	warnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#E9C46A"))
+
+	toastErrStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#E76F51"))
+
 	// CI badge styles
-	ciSuccessStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#2A9D8F")).
-			Bold(true)
+	ciSuccessStyle = successStyle.Bold(true)
 
 	ciFailureStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
-	ciPendingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E9C46A"))
+	ciPendingStyle = warnStyle
 
 	// multi-select
 	selectedMarkStyle = lipgloss.NewStyle().
@@ -118,10 +116,23 @@ var (
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262"))
 
-	// merged cleanup hint
-	mergedHintStyle = lipgloss.NewStyle().
+	// The rule above the status bar and the numbers inside it: the bar reads
+	// as a bar when the counts stand out from their labels and the whole line
+	// is fenced off from the list above.
+	dividerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#333"))
+
+	statNumStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EEEEEE"))
+
+	// per-row action hint under the selected workspace
+	rowHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#555")).
 			Italic(true)
+
+	// "n more" markers when the list is taller than the terminal
+	scrollHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666"))
 
 	// error log
 	errLogTitleStyle = lipgloss.NewStyle().
@@ -167,10 +178,12 @@ var (
 				Foreground(lipgloss.Color("#F4A261")).
 				Bold(true)
 
-	// branch status badges
+	// branch status badges. Chips are for states that invite action (open,
+	// merged, conflicts, remote deleted); passive facts (not pushed, closed)
+	// are plain dim text — padding without a background reads as a chip that
+	// failed to load.
 	notPushedBadgeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#666")).
-				Padding(0, 1)
+				Foreground(lipgloss.Color("#666"))
 
 	pushedBadgeStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFF")).
@@ -183,8 +196,7 @@ var (
 				Padding(0, 1)
 
 	closedBadgeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888")).
-				Padding(0, 1)
+				Foreground(lipgloss.Color("#888"))
 
 	remoteDeletedBadgeStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFF")).
@@ -203,11 +215,25 @@ var (
 				Bold(true).
 				Padding(0, 1)
 
-	agentStalledStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#8A6D4A")) // dim amber — was working, now quiet
-
 	agentIdleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#666")) // grey — parked/stale
+
+	// tab bar: the active tab wears the title chip, the others recede
+	tabInactiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#626262")).
+				Padding(0, 1)
+
+	// skills
+	skillScopeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666"))
+
+	sharedTagStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#88C0D0"))
+
+	// A skill an agent has been told to ignore: greyed rather than dropped, so
+	// the row still says it is installed.
+	skillOffStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555"))
 
 	// inline loading states
 	pendingItemStyle = lipgloss.NewStyle().
@@ -218,5 +244,3 @@ var (
 				Foreground(lipgloss.Color("#888")).
 				Italic(true)
 )
-
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

@@ -1,131 +1,17 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/axelgar/opentree/pkg/workspace"
+	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
-
-// AgentStatus represents the signal an agent writes to .opentree-status.json in
-// its worktree directory. The installed hooks only ever write "in_progress"
-// (a turn started) or "needs_input" (a turn ended, or the agent hit a prompt);
-// mtime is the file's modification time, i.e. when that last event happened.
-type AgentStatus struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-
-	mtime time.Time // when the agent last wrote the file (from os.Stat)
-}
-
-// readAgentStatus reads the .opentree-status.json file from a worktree directory.
-// Returns nil if the file is missing, unreadable, or has an invalid status value.
-func readAgentStatus(worktreeDir string) *AgentStatus {
-	path := filepath.Join(worktreeDir, workspace.StatusFileName)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var s AgentStatus
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil
-	}
-	switch s.Status {
-	case "in_progress", "needs_input":
-		if fi, err := os.Stat(path); err == nil {
-			s.mtime = fi.ModTime()
-		}
-		return &s
-	default:
-		return nil
-	}
-}
-
-// staleAfter is how long since an agent's last status event before opentree
-// treats a worktree as parked (idle/stalled) rather than freshly working or
-// waiting on you.
-// ponytail: single global knob — raise it if agents run long silent turns.
-const staleAfter = 15 * time.Minute
-
-type agentLiveness int
-
-const (
-	livenessNone    agentLiveness = iota
-	livenessWorking               // actively generating
-	livenessStalled               // turn started but no recent activity — likely dead session
-	livenessWaiting               // just stopped / hit a prompt — your turn
-	livenessIdle                  // stopped a while ago — parked/stale
-)
-
-// liveness collapses the agent's last status event and its age into the coarse
-// working-vs-stale state shown as a badge. The returned time is the reference
-// instant for the "· Xh ago" age on the stale states (zero when unused). A live
-// tmux pane keeps a long in-progress turn from reading as stalled, and also
-// rescues a needs_input that the agent has clearly resumed working past.
-func (ws WorkspaceItem) liveness() (agentLiveness, time.Time) {
-	if ws.AgentStatus == nil {
-		return livenessNone, time.Time{}
-	}
-	mtime := ws.AgentStatus.mtime
-	statusFresh := !mtime.IsZero() && time.Since(mtime) < staleAfter
-	paneFresh := !ws.LastActivity.IsZero() && time.Since(ws.LastActivity) < staleAfter
-	switch ws.AgentStatus.Status {
-	case "in_progress":
-		if statusFresh || paneFresh {
-			return livenessWorking, time.Time{}
-		}
-		return livenessStalled, mtime
-	case "needs_input":
-		// Pane output after the status write means something happened since
-		// the agent last claimed to be waiting (e.g. a permission prompt was
-		// approved) — no hook flips the file back to in_progress for that, so
-		// treat it as working. ponytail: a stray unrelated pane bump (resize,
-		// scroll) can misread as working, bounded by staleAfter same as the
-		// in_progress rescue above, and self-corrects on the next hook write.
-		if paneFresh && ws.LastActivity.After(mtime) {
-			return livenessWorking, time.Time{}
-		}
-		if statusFresh {
-			return livenessWaiting, time.Time{}
-		}
-		return livenessIdle, mtime
-	}
-	return livenessNone, time.Time{}
-}
-
-// badgeWithAge renders "label · 2h ago", falling back to just "label" when the
-// reference time is unknown (zero) so the badge never trails a bare "· ".
-func badgeWithAge(label string, t time.Time) string {
-	if age := formatAge(t); age != "" {
-		return label + " · " + age
-	}
-	return label
-}
-
-// cleanPreview strips ANSI codes and returns the last 5 non-empty lines.
-func cleanPreview(s string) string {
-	s = ansiEscapeRe.ReplaceAllString(s, "")
-	lines := strings.Split(s, "\n")
-	var out []string
-	for _, l := range lines {
-		if trimmed := strings.TrimRight(l, " \t"); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	if len(out) > 5 {
-		out = out[len(out)-5:]
-	}
-	return strings.Join(out, "\n")
-}
 
 // renderFileChanges builds the per-file changes panel content.
 func (m Model) renderFileChanges(files []worktree.FileChange, width int) string {
@@ -196,6 +82,50 @@ func shortenPath(path string, maxLen int) string {
 	return result
 }
 
+// actionHint is the one-line "what this row can do right now" shown under the
+// selected workspace. First match wins: the point is the next action, not a
+// catalogue of every key that would work. The merged cleanup hint that used
+// to be the only state with a hint is now one case among several. Every case
+// speaks in one voice — key, then what it does — so the line reads the same
+// wherever the row happens to be.
+func (ws WorkspaceItem) actionHint() string {
+	switch {
+	case ws.pendingPermission() != nil:
+		return "a answer permission • m message • c interrupt"
+	case ws.ChatStatus != nil && ws.ChatStatus.State == chat.StateStopped:
+		return "enter attach and restart the stopped agent"
+	case ws.PRStatus == "merged":
+		return "x clean up this merged workspace"
+	case ws.PRStatus == "open":
+		return "o open PR • R send reviews • m message"
+	case ws.UncommittedCount > 0 || (ws.DiffStat != "" && ws.DiffStat != "No changes"):
+		return "p create PR • d diff • m message"
+	}
+	return ""
+}
+
+// renderDiffStat is the change summary in a row's detail line. The raw git
+// --stat sentence (" 3 files changed, 6 insertions(+)") reads as one more grey
+// word in a grey line; counts in the palette's add/remove colours are scannable
+// instead. "clean" replaces "No changes": same fact, less noise.
+func (ws WorkspaceItem) renderDiffStat() string {
+	if ws.DiffStat == "diff unavailable" {
+		return warnStyle.Render("diff unavailable")
+	}
+	if len(ws.FileChanges) == 0 {
+		return "clean"
+	}
+	added, removed := 0, 0
+	for _, f := range ws.FileChanges {
+		added += f.Added
+		removed += f.Removed
+	}
+	return fmt.Sprintf("%s · %s %s",
+		plural(len(ws.FileChanges), "file"),
+		diffAddStyle.Render(fmt.Sprintf("+%d", added)),
+		diffRemoveStyle.Render(fmt.Sprintf("-%d", removed)))
+}
+
 // renderDiffLine colorizes a single line of unified diff output.
 func renderDiffLine(line string) string {
 	switch {
@@ -231,8 +161,16 @@ func countUncommitted(worktreePath string) int {
 	return count
 }
 
-// openURLCmd opens a URL in the system default browser (fire-and-forget).
+// cmdStart is a variable so tests can stub the actual exec.
+var cmdStart = func(c *exec.Cmd) error { return c.Start() }
+
+// openURLCmd opens a URL in the system default browser.
 // Only opens http/https URLs to prevent command injection.
+//
+// The result comes back as a message — browserOpenedMsg or errMsg — because a
+// key that appears to do nothing is indistinguishable from a broken one, and
+// "nothing happened" used to be the only answer both on success and on a
+// missing opener.
 func openURLCmd(rawURL string) tea.Cmd {
 	return func() tea.Msg {
 		if !strings.HasPrefix(rawURL, "https://") && !strings.HasPrefix(rawURL, "http://") {
@@ -247,9 +185,22 @@ func openURLCmd(rawURL string) tea.Cmd {
 		default:
 			cmd = exec.Command("xdg-open", rawURL)
 		}
-		_ = cmd.Start()
-		return nil
+		if err := cmdStart(cmd); err != nil {
+			return errMsg{fmt.Errorf("could not open browser: %w", err)}
+		}
+		return browserOpenedMsg{url: rawURL}
 	}
+}
+
+// workspaceIndex is the row for a name, or -1. Commands finish long after the
+// list was built and arrive carrying only the name they were started with.
+func (m Model) workspaceIndex(name string) int {
+	for i, ws := range m.workspaces {
+		if ws.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // formatAge returns a human-readable age string for a given timestamp, or ""

@@ -1,26 +1,319 @@
 package config
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
 
 // PredefinedAgent describes a known coding agent that opentree can orchestrate.
+//
+// The registry is deliberately short: opentree talks to agents over the Agent
+// Client Protocol and nothing else, so an agent that does not serve ACP has no
+// way in. Adding one back is a single entry here — everything downstream
+// already assumes the protocol.
 type PredefinedAgent struct {
-	Name        string   // display name: "Claude Code"
-	Command     string   // binary: "claude"
-	Args        []string // default args
-	Description string   // short description for list display
+	Name        string // display name: "Claude Code"
+	Command     string // binary: "claude"
+	Description string // short description for list display
+	ACP         ACPSpec
+	Skills      SkillsSpec
+	Brand       BrandSpec
+}
+
+// BrandSpec is the agent's identity on screen, grouped the way ACPSpec and
+// SkillsSpec are: an entry's wire, its skills and its look each change for
+// their own reasons.
+type BrandSpec struct {
+	// Colour and Mark are the agent's identity in a crowded line. A worktree
+	// row has no space for a drawing, but it has space for one glyph, and a
+	// colour tells the eye which agent it is before the name is read.
+	//
+	// The glyphs are deliberately plain geometry: anything from the emoji
+	// range renders double-width in some terminals and single in others, which
+	// shifts every column after it.
+	Colour string
+	Mark   string
+
+	// Logo is the agent's mark drawn large, for the one screen with room for
+	// it: the opening of a chat.
+	Logo []string
+}
+
+// ACPSpec describes how to start an agent as an Agent Client Protocol server on
+// stdio.
+type ACPSpec struct {
+	// Command overrides the agent's binary when its ACP server is a separate
+	// program. opencode serves ACP itself; Claude Code does not, and is reached
+	// through an adapter binary of its own.
+	Command string
+
+	Args []string // subcommand and flags that select ACP mode
+
+	// CwdFlag roots the session in a worktree. Optional: ACP already carries
+	// cwd on session/new, so an adapter that takes no flags needs none, and
+	// appending an empty flag would hand it a stray argument.
+	CwdFlag string
+
+	// Package is the npm package providing the ACP server, when it is a
+	// separate program. Empty when the agent serves ACP itself.
+	Package string
+
+	// InstallSize is what the user is agreeing to download, stated because it
+	// is large enough to matter on a slow connection.
+	InstallSize string
+
+	// AuthCommand logs the agent in interactively. ACP reports that
+	// authentication is required but leaves the remedy to the agent, whose own
+	// answer is "run this in a terminal" — which opentree happens to own.
+	AuthCommand []string
+}
+
+// SkillsSpec is where an agent reads its skills from. Skills are a filesystem
+// convention rather than anything ACP models — every agent that has them looks
+// for <dir>/<skill-name>/SKILL.md with the same YAML frontmatter — so opentree
+// manages them by reading directories and needs no cooperation from the agent.
+//
+// The zero value means the agent has no skills concept, and it is left alone.
+//
+// Every field is a list because agents accept more than one spelling of the
+// same tree, and because reading another agent's tree is normal: the same
+// SKILL.md is frequently visible to several agents at once, which is why a
+// skill records the agents that can see it rather than one owner.
+type SkillsSpec struct {
+	// UserDirs are the machine-wide trees, shared by every repository. A
+	// leading "~/" is expanded at scan time so tests can point HOME elsewhere.
+	// The first entry is the canonical one — where opentree puts a new skill.
+	UserDirs []string
+
+	// RepoDirs are the per-repository trees, relative to a repo or worktree
+	// root. These are the ones worktrees miss when they are not committed.
+	// The first entry is the canonical one.
+	RepoDirs []string
+
+	// ExternalDirs are trees this agent loads that another agent owns. opencode
+	// reads Claude Code's global skills directly, so a skill installed once is
+	// usable from both without being copied.
+	ExternalDirs []string
+
+	// SettingsFiles are the agent's settings documents in precedence order,
+	// lowest first, each optionally holding a per-skill override map under
+	// OverridesKey. A "~/" prefix is expanded against the home directory;
+	// anything else is relative to the repository root.
+	//
+	// Installed is not the same as available: an agent can be told to ignore a
+	// skill that is sitting right there on disk, and a list that cannot see
+	// that is telling the user something untrue.
+	SettingsFiles []string
+
+	// OverridesKey is the object mapping skill name to state. Empty for an
+	// agent with no way to switch a skill off.
+	OverridesKey string
+
+	// DisabledKey is the other shape the same settings files come in: a plain
+	// list of the names the agent has been told not to load, at a dotted path
+	// like "skills.disabled".
+	//
+	// A list carries less than the map — off or nothing, with no room for
+	// name-only — and it layers differently: a name absent from one file is not
+	// a claim that the skill is on, so the files union rather than the last one
+	// winning.
+	DisabledKey string
+
+	// ConfigFiles are the agent's own configuration documents, in the order it
+	// reads them, each optionally naming extra skills directories the user
+	// registered. Same path rules as SettingsFiles.
+	//
+	// A user who keeps their skills somewhere else entirely is exactly the user
+	// a list of hardcoded directories fails, and silently: opentree would show
+	// a short list rather than an error.
+	ConfigFiles []string
+
+	// ConfigKey is the key those documents keep the directories under.
+	ConfigKey string
+
+	// AdvertisesSkills is whether the agent names its skills among the commands
+	// it sends over ACP — which is what `v` checks the list against.
+	//
+	// A claim rather than an assumption, so the zero value is the safe one: an
+	// agent nobody has asked is one `v` refuses to judge, rather than one it
+	// reports as having loaded nothing.
+	AdvertisesSkills bool
 }
 
 // PredefinedAgents is the built-in registry of known agents.
 var PredefinedAgents = []PredefinedAgent{
-	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI"},
-	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent"},
-	{Name: "Codex", Command: "codex", Description: "OpenAI Codex CLI agent"},
-	{Name: "GitHub Copilot", Command: "gh", Args: []string{"copilot"}, Description: "GitHub Copilot in the CLI"},
-	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent"},
-	{Name: "Pi", Command: "pi", Description: "Pi.dev CLI agent"},
+	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
+		// opencode's own wordmark and its brand grey, transcribed from its
+		// splash screen. The stray ▄ is the ascender on the d.
+		Brand: BrandSpec{Colour: "#CFCECD", Mark: "◆",
+			Logo: []string{
+				"                                 ▄",
+				"█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█",
+				"█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀",
+				"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
+			}},
+		ACP: ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}},
+		// opencode spells its own trees "skill(s)" — both singular and plural are
+		// read — and auto-loads two it does not own.
+		//
+		// It loads those two at *repository* scope as well, which its own
+		// documentation does not say: the table in its embedded docs lists the
+		// external trees under `~/` only. Established by asking a running
+		// opencode what it had loaded from a directory holding nothing but
+		// .claude/skills, which is the same check `v` performs in the tab.
+		Skills: SkillsSpec{
+			UserDirs: []string{"~/.config/opencode/skills", "~/.config/opencode/skill"},
+			// Canonical first: it is where opentree puts a new skill. The rest
+			// are read, not written to.
+			RepoDirs:     []string{".opencode/skills", ".opencode/skill", ".claude/skills", ".agents/skills"},
+			ExternalDirs: []string{"~/.claude/skills", "~/.agents/skills"},
+			// opencode registers extra skills directories under "skills" in its
+			// own config, global first and then the project's, and reads either
+			// spelling of the file.
+			ConfigFiles: []string{
+				"~/.config/opencode/opencode.json",
+				"~/.config/opencode/opencode.jsonc",
+				"opencode.json",
+				"opencode.jsonc",
+			},
+			ConfigKey:        "skills",
+			AdvertisesSkills: true,
+		}},
+	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
+		// Claude Code's own mark, transcribed from its welcome banner, in
+		// Anthropic's clay.
+		Brand: BrandSpec{Colour: "#D97757", Mark: "✻",
+			Logo: []string{
+				" ▐▛███▜▌",
+				"▝▜█████▛▘",
+				"  ▘▘ ▝▝",
+			}},
+		// Claude Code has no ACP mode of its own; claude-agent-acp bridges it,
+		// reusing the same login. Install with
+		// `npm i -g @agentclientprotocol/claude-agent-acp`.
+		ACP: ACPSpec{
+			Command:     "claude-agent-acp",
+			Package:     "@agentclientprotocol/claude-agent-acp",
+			InstallSize: "303MB",
+			AuthCommand: []string{"auth", "login"},
+		},
+		Skills: SkillsSpec{
+			UserDirs: []string{"~/.claude/skills"},
+			RepoDirs: []string{".claude/skills"},
+			// The three sources `claude --setting-sources` names, in its own
+			// precedence order.
+			SettingsFiles: []string{
+				"~/.claude/settings.json",
+				".claude/settings.json",
+				".claude/settings.local.json",
+			},
+			OverridesKey:     "skillOverrides",
+			AdvertisesSkills: true,
+		}},
+	{Name: "GitHub Copilot", Command: "copilot", Description: "GitHub Copilot in the CLI",
+		// Copilot's own face, transcribed from its welcome banner, in GitHub's
+		// purple.
+		Brand: BrandSpec{Colour: "#A371F7", Mark: "◉",
+			Logo: []string{
+				"╭─╮╭─╮",
+				"╰─╯╰─╯",
+				"█ ▘▝ █",
+				" ▔▔▔▔",
+			}},
+		// Copilot serves ACP itself, and its login is a verb on the same binary
+		// rather than the `auth login` pair the other two use.
+		ACP: ACPSpec{Args: []string{"--acp"}, AuthCommand: []string{"login"}},
+		// The four sources `copilot skill --help` names, confirmed by asking
+		// `copilot skill list` what it found in a directory holding one candidate
+		// tree at a time. It reads two trees it does not own — Claude Code's and
+		// the shared .agents one — and has no way to switch a skill off: its own
+		// verbs are add, list and remove.
+		Skills: SkillsSpec{
+			UserDirs: []string{"~/.copilot/skills"},
+			// Canonical first: .github/skills is Copilot's own, and the one
+			// opentree creates. The rest are read, not written to.
+			RepoDirs:     []string{".github/skills", ".agents/skills", ".claude/skills"},
+			ExternalDirs: []string{"~/.agents/skills"},
+			// `copilot skill add <dir>` records absolute paths here, and the
+			// directories are searched at any depth: a SKILL.md two levels down
+			// was listed as a skill of its own.
+			ConfigFiles:      []string{"~/.copilot/settings.json"},
+			ConfigKey:        "skillDirectories",
+			AdvertisesSkills: true,
+		}},
+	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent",
+		// Gemini CLI's sparkle and wordmark, transcribed from its splash screen,
+		// in Google's blue.
+		Brand: BrandSpec{Colour: "#4285F4", Mark: "✦",
+			Logo: []string{
+				" ▝▜▄      ▗█▀▀▜▙▝█▛▀▀▌▜██▖▟██▘▜█▘▜██▖▝█▛▝█▛",
+				"   ▝▜▄    █▌     █▙▟  ▐█▝█▛▐█ ▐█ ▐█▝█▖█▌ █▌",
+				"  ▗▟▀     ▜▙ ▝█▛ █▌▝ ▖▐█   ▐█ ▐█ ▐█ ▝██▌ █▌",
+				" ▝▀        ▀▀▀▀▘▝▀▀▀▀▘▀▀▘  ▀▀▘▀▀▘▀▀▘ ▝▀▀▝▀▀",
+			}},
+		// `--acp` since 0.55; `--experimental-acp` is the deprecated spelling.
+		//
+		// No AuthCommand: Gemini has no login subcommand — it authenticates from
+		// inside its own TUI — and the stopped panel is better off naming the
+		// method the agent reports than offering a key that runs the wrong thing.
+		//
+		// A fresh worktree is a folder Gemini has not been told to trust, and its
+		// trust prompt is a TUI dialog it cannot raise over ACP: it starts anyway
+		// and skips the project's own agents, hooks and settings. `--skip-trust`
+		// would silence that by trusting every worktree opentree hands it, which
+		// is the user's decision to make and not opentree's.
+		ACP: ACPSpec{Args: []string{"--acp"}},
+		// Established the same way as the others, by planting a marker skill in
+		// each candidate directory and asking `gemini skills list --all` what it
+		// found. It reads the shared .agents trees and neither of Claude Code's.
+		//
+		// Two things the directories do not say. A skill it has been told to
+		// ignore is a name in a list rather than a state in a map, so DisabledKey
+		// rather than OverridesKey. And an untrusted folder costs it every
+		// project tree here — a fresh worktree sees the user's skills and none of
+		// the repository's, whatever this entry says.
+		//
+		// No AdvertisesSkills: asked over ACP, Gemini names twenty commands of
+		// its own and not one skill, trusted folder or not. `v` has nothing to
+		// check against and says so rather than reporting every skill missing.
+		Skills: SkillsSpec{
+			UserDirs:      []string{"~/.gemini/skills"},
+			RepoDirs:      []string{".gemini/skills", ".agents/skills"},
+			ExternalDirs:  []string{"~/.agents/skills"},
+			SettingsFiles: []string{"~/.gemini/settings.json", ".gemini/settings.json"},
+			DisabledKey:   "skills.disabled",
+		}},
+}
+
+// Brand is the agent's mark and colour, resolved from whatever name a
+// workspace recorded — which may be a command, a display name, or an agent
+// opentree has never heard of. The fallback is deliberately unstyled rather
+// than absent: an unknown agent should still be named in the list.
+func Brand(name string) (mark, colour, display string) {
+	if a := FindAgent(name); a != nil {
+		return a.Brand.Mark, a.Brand.Colour, a.Name
+	}
+	return "·", "", name
+}
+
+// ACPCommand is the binary that serves ACP for this agent: its own, unless the
+// spec names a separate adapter.
+func (a PredefinedAgent) ACPCommand() string {
+	if a.ACP.Command != "" {
+		return a.ACP.Command
+	}
+	return a.Command
+}
+
+// ACPArgs is the full argument list for the ACP server, including the worktree
+// when the agent wants it as a flag.
+func (a PredefinedAgent) ACPArgs(worktree string) []string {
+	args := append([]string{}, a.ACP.Args...)
+	if a.ACP.CwdFlag != "" {
+		args = append(args, a.ACP.CwdFlag, worktree)
+	}
+	return args
 }
 
 // FindAgent performs a case-insensitive lookup by Name or Command, falling back
@@ -55,14 +348,28 @@ func FirstInstalledAgent() *PredefinedAgent {
 	return nil
 }
 
-// knownAgentCommands returns the registry's commands as a comma-separated
-// list for error messages.
-func knownAgentCommands() string {
+// AgentCommands returns the registry's commands, which is also the full list of
+// agents opentree can drive.
+func AgentCommands() []string {
 	cmds := make([]string, len(PredefinedAgents))
 	for i, a := range PredefinedAgents {
 		cmds[i] = a.Command
 	}
-	return strings.Join(cmds, ", ")
+	return cmds
+}
+
+// knownAgentCommands is AgentCommands as one comma-separated line, for error
+// messages.
+func knownAgentCommands() string {
+	return strings.Join(AgentCommands(), ", ")
+}
+
+// UnknownAgentError is the refusal for a name outside the registry. Every
+// place that refuses says this one sentence — config validation, workspace
+// launch, `opentree chat` — so it is built here and rewording it is one edit.
+func UnknownAgentError(command string) error {
+	return fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s",
+		command, knownAgentCommands())
 }
 
 // AgentNames returns display names of all predefined agents.

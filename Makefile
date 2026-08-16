@@ -13,8 +13,11 @@ install: build
 uninstall:
 	rm -f $(INSTALL_DIR)/$(BINARY)
 
+# Worktrees live inside the repo, so a plain find would reformat the checked-out
+# copies of this project sitting under them. git ls-files lists only what this
+# checkout actually tracks.
 fmt:
-	goimports -w -local github.com/axelgar/opentree $(shell find . -name "*.go")
+	goimports -w -local github.com/axelgar/opentree $(shell git ls-files '*.go')
 
 lint:
 	golangci-lint run

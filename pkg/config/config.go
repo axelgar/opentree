@@ -9,27 +9,39 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/axelgar/opentree/pkg/fsutil"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/notify"
 )
 
 // Config represents the opentree configuration
 type Config struct {
-	Agent    AgentConfig    `toml:"agent"`
-	Worktree WorktreeConfig `toml:"worktree"`
-	Tmux     TmuxConfig     `toml:"tmux"`
-	GitHub   GitHubConfig   `toml:"github"`
+	Agent     AgentConfig     `toml:"agent"`
+	Worktree  WorktreeConfig  `toml:"worktree"`
+	Workspace WorkspaceConfig `toml:"workspace"`
+	Tmux      TmuxConfig      `toml:"tmux"`
+	GitHub    GitHubConfig    `toml:"github"`
+	Notify    NotifyConfig    `toml:"notify"`
 }
 
 // AgentConfig configures the coding agent
 type AgentConfig struct {
-	Command string   `toml:"command"`
-	Args    []string `toml:"args"`
+	Command string `toml:"command"`
 }
 
-// Validate checks that the agent command exists on PATH.
+// Validate checks that the agent is one opentree can drive, and that it is
+// installed.
+//
+// Being on PATH is not enough: opentree only speaks the Agent Client Protocol,
+// so an agent it has no ACP spec for cannot be run at all. Catching that here
+// turns it into one clear message at `opentree new` rather than a puzzling
+// failure later, inside the chat that was supposed to open.
 func (a AgentConfig) Validate() error {
 	if a.Command == "" {
 		return fmt.Errorf("agent command is empty")
+	}
+	if FindAgent(a.Command) == nil {
+		return UnknownAgentError(a.Command)
 	}
 	if _, err := exec.LookPath(a.Command); err != nil {
 		return fmt.Errorf("agent command %q not found on PATH — install it or set [agent] command in opentree.toml (known agents: %s)", a.Command, knownAgentCommands())
@@ -43,6 +55,24 @@ type WorktreeConfig struct {
 	DefaultBase string `toml:"default_base"`
 }
 
+// WorkspaceConfig is what a worktree needs beyond what git carries.
+//
+// A worktree created by `git worktree add` holds only tracked files: no .env,
+// no node_modules, no .venv. Seed names the untracked files to link in, setup
+// the commands that build what linking cannot copy, and run the dev server to
+// start on demand.
+//
+// It lives in the repository's own opentree.toml rather than the global one on
+// purpose: a bootstrap sequence is a property of the project, and one kept per
+// machine drifts until nobody maintains it. That also makes setup and run
+// executable code arriving with a clone, which is why they are gated by trust
+// before they run.
+type WorkspaceConfig struct {
+	Setup []string `toml:"setup"`
+	Seed  []string `toml:"seed"`
+	Run   string   `toml:"run"`
+}
+
 // TmuxConfig configures tmux behavior
 type TmuxConfig struct {
 	SessionPrefix string `toml:"session_prefix"`
@@ -53,14 +83,39 @@ type GitHubConfig struct {
 	AutoPush *bool `toml:"auto_push,omitempty"`
 }
 
+// NotifyConfig is how you like to be interrupted when an agent needs you.
+//
+// It is read from the global config only, and stripped from a repository's own
+// (see LoadWithSources). This inverts the rule WorkspaceConfig follows, on
+// purpose: a bootstrap sequence is a property of the project, but notification
+// preference is a property of the person and the room they are sitting in.
+// There is no version of "this repository would like to send you desktop
+// banners" that is a reasonable thing for a clone to be able to say.
+type NotifyConfig struct {
+	// On is the events worth an interruption: "blocked", "done", "stopped".
+	// An empty list switches notifications off entirely.
+	On []string `toml:"on"`
+
+	// Desktop is whether to raise an OS banner as well as the tmux bell. A
+	// pointer so an explicit false in the file is not the same as saying
+	// nothing.
+	Desktop *bool `toml:"desktop"`
+}
+
 // ConfigSource tracks which config file provided each value.
 type ConfigSource struct {
 	AgentCommand        string
-	AgentArgs           string
 	WorktreeBaseDir     string
 	WorktreeDefaultBase string
+	WorkspaceSetup      string
+	WorkspaceSeed       string
+	WorkspaceRun        string
 	TmuxSessionPrefix   string
 	GitHubAutoPush      string
+	// The notify keys have no repo source to report: LoadWithSources strips
+	// that layer before the merge.
+	NotifyOn      string
+	NotifyDesktop string
 }
 
 const (
@@ -77,7 +132,6 @@ func Default() *Config {
 	return &Config{
 		Agent: AgentConfig{
 			Command: "opencode",
-			Args:    []string{},
 		},
 		Worktree: WorktreeConfig{
 			BaseDir:     ".opentree",
@@ -88,6 +142,10 @@ func Default() *Config {
 		},
 		GitHub: GitHubConfig{
 			AutoPush: boolPtr(true),
+		},
+		Notify: NotifyConfig{
+			On:      notify.Default(),
+			Desktop: boolPtr(true),
 		},
 	}
 }
@@ -177,20 +235,32 @@ func mergeInto(dst, src *Config) {
 	if src.Agent.Command != "" {
 		dst.Agent.Command = src.Agent.Command
 	}
-	if src.Agent.Args != nil {
-		dst.Agent.Args = src.Agent.Args
-	}
 	if src.Worktree.BaseDir != "" {
 		dst.Worktree.BaseDir = src.Worktree.BaseDir
 	}
 	if src.Worktree.DefaultBase != "" {
 		dst.Worktree.DefaultBase = src.Worktree.DefaultBase
 	}
+	if src.Workspace.Setup != nil {
+		dst.Workspace.Setup = src.Workspace.Setup
+	}
+	if src.Workspace.Seed != nil {
+		dst.Workspace.Seed = src.Workspace.Seed
+	}
+	if src.Workspace.Run != "" {
+		dst.Workspace.Run = src.Workspace.Run
+	}
 	if src.Tmux.SessionPrefix != "" {
 		dst.Tmux.SessionPrefix = src.Tmux.SessionPrefix
 	}
 	if src.GitHub.AutoPush != nil {
 		dst.GitHub.AutoPush = src.GitHub.AutoPush
+	}
+	if src.Notify.On != nil {
+		dst.Notify.On = src.Notify.On
+	}
+	if src.Notify.Desktop != nil {
+		dst.Notify.Desktop = src.Notify.Desktop
 	}
 }
 
@@ -199,11 +269,15 @@ func mergeInto(dst, src *Config) {
 func computeSources(resolved, global, repo *Config) ConfigSource {
 	src := ConfigSource{
 		AgentCommand:        SourceDefault,
-		AgentArgs:           SourceDefault,
 		WorktreeBaseDir:     SourceDefault,
 		WorktreeDefaultBase: SourceDefault,
+		WorkspaceSetup:      SourceDefault,
+		WorkspaceSeed:       SourceDefault,
+		WorkspaceRun:        SourceDefault,
 		TmuxSessionPrefix:   SourceDefault,
 		GitHubAutoPush:      SourceDefault,
+		NotifyOn:            SourceDefault,
+		NotifyDesktop:       SourceDefault,
 	}
 
 	if global != nil && global.Agent.Command != "" {
@@ -211,13 +285,6 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 	}
 	if repo != nil && repo.Agent.Command != "" {
 		src.AgentCommand = SourceRepo
-	}
-
-	if global != nil && global.Agent.Args != nil {
-		src.AgentArgs = SourceGlobal
-	}
-	if repo != nil && repo.Agent.Args != nil {
-		src.AgentArgs = SourceRepo
 	}
 
 	if global != nil && global.Worktree.BaseDir != "" {
@@ -234,6 +301,27 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		src.WorktreeDefaultBase = SourceRepo
 	}
 
+	if global != nil && global.Workspace.Setup != nil {
+		src.WorkspaceSetup = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Setup != nil {
+		src.WorkspaceSetup = SourceRepo
+	}
+
+	if global != nil && global.Workspace.Seed != nil {
+		src.WorkspaceSeed = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Seed != nil {
+		src.WorkspaceSeed = SourceRepo
+	}
+
+	if global != nil && global.Workspace.Run != "" {
+		src.WorkspaceRun = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Run != "" {
+		src.WorkspaceRun = SourceRepo
+	}
+
 	if global != nil && global.Tmux.SessionPrefix != "" {
 		src.TmuxSessionPrefix = SourceGlobal
 	}
@@ -246,6 +334,15 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 	}
 	if repo != nil && repo.GitHub.AutoPush != nil {
 		src.GitHubAutoPush = SourceRepo
+	}
+
+	// No repo arm for these two: the section is stripped from that layer before
+	// it is merged, so global is as far as they go.
+	if global != nil && global.Notify.On != nil {
+		src.NotifyOn = SourceGlobal
+	}
+	if global != nil && global.Notify.Desktop != nil {
+		src.NotifyDesktop = SourceGlobal
 	}
 
 	return src
@@ -271,21 +368,27 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 		return nil, ConfigSource{}, fmt.Errorf("failed to read repo config %s: %w", repoPath, err)
 	}
 
+	// The one section a repository may not carry. Everything else here is a
+	// property of the project; how you like to be interrupted is a property of
+	// you, and a cloned repository does not get to start sending you desktop
+	// banners. Dropped rather than refused: an opentree.toml written for
+	// somebody else's machine should still load.
+	if repoCfg != nil {
+		repoCfg.Notify = NotifyConfig{}
+	}
+
 	resolved := Default()
 	mergeInto(resolved, globalCfg)
 	mergeInto(resolved, repoCfg)
 
 	sources := computeSources(resolved, globalCfg, repoCfg)
 
-	// No config file touched the [agent] section: use the first installed
-	// agent so the first run works with whatever the user already has. If a
-	// file set args — even without a command — detection stays off so user
-	// args are never paired with a binary they didn't choose; the hardcoded
-	// default stands and Validate reports it if it isn't installed.
-	if sources.AgentCommand == SourceDefault && sources.AgentArgs == SourceDefault {
+	// No config file named an agent: use the first installed one so the first
+	// run works with whatever the user already has. The hardcoded default
+	// stands otherwise, and Validate reports it if it isn't installed.
+	if sources.AgentCommand == SourceDefault {
 		if a := FirstInstalledAgent(); a != nil {
 			resolved.Agent.Command = a.Command
-			resolved.Agent.Args = a.Args
 		}
 	}
 
@@ -352,34 +455,5 @@ func SetKeys(path string, values map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, out)
-}
-
-// writeFileAtomic writes data via a temp file + rename so a crash mid-write
-// can't leave a truncated config behind.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmpPath, 0600)
-	}
-	if err == nil {
-		err = os.Rename(tmpPath, path)
-	}
-	if err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return fsutil.WriteAtomic(path, out)
 }

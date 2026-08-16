@@ -1,0 +1,26 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "sessions": [
+      {
+        "sessionId": "18db7f0f-40e3-486e-b083-02e134482eb7",
+        "cwd": "/Users/dev/repo/.opentree/worktrees/fix-auth",
+        "title": "Investigate missing resum command in opentree chat",
+        "updatedAt": "2026-08-12T12:27:41.764Z"
+      },
+      {
+        "sessionId": "b4912e29-3ae6-42e1-b3cb-8221b8646796",
+        "cwd": "/Users/dev/repo/.opentree/worktrees/fix-auth",
+        "title": "Design skills management UI for opentree",
+        "updatedAt": "2026-08-12T12:24:22.991Z"
+      },
+      {
+        "sessionId": "64eede44-19ac-45b5-b09f-b510970d382e",
+        "cwd": "/Users/dev/repo/.opentree/worktrees/fix-auth",
+        "title": "Direct to chat after workspace creation",
+        "updatedAt": "2026-08-12T10:53:46.033Z"
+      }
+    ]
+  }
+}

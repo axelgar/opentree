@@ -3,35 +3,50 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up     key.Binding
-	Down   key.Binding
-	New    key.Binding
-	Issue  key.Binding
-	Remote key.Binding
-	Enter  key.Binding
-	Diff   key.Binding
-	PR     key.Binding
-	Open   key.Binding
-	Review key.Binding
-	Delete key.Binding
-	Select key.Binding
-	Filter key.Binding
-	Sort   key.Binding
-	Agent  key.Binding
-	ErrLog key.Binding
-	Quit   key.Binding
-	Help   key.Binding
+	Up      key.Binding
+	Down    key.Binding
+	New     key.Binding
+	Issue   key.Binding
+	Remote  key.Binding
+	Enter   key.Binding
+	Diff    key.Binding
+	PR      key.Binding
+	Open    key.Binding
+	Review  key.Binding
+	Delete  key.Binding
+	Select  key.Binding
+	Filter  key.Binding
+	Sort    key.Binding
+	Agent   key.Binding
+	Answer  key.Binding
+	Stop    key.Binding
+	Msg     key.Binding
+	Server  key.Binding
+	Blocked key.Binding
+	ErrLog  key.Binding
+	// CopyErrLog is only ever consulted inside the error log, which swallows
+	// every other key. That is why it can share a letter with Stop without
+	// either becoming ambiguous — the log is modal, and the list is not
+	// reachable behind it.
+	CopyErrLog key.Binding
+	Tab        key.Binding
+	Quit       key.Binding
+	Help       key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.New, k.Issue, k.Remote, k.Enter, k.Diff, k.Delete, k.Agent, k.Quit, k.Help}
+	// Messaging is in, creating from a remote branch is out: driving the
+	// agent without attaching is the everyday action, and r remains one '?'
+	// away in the full help.
+	return []key.Binding{k.New, k.Issue, k.Enter, k.Diff, k.Msg, k.Answer, k.Delete, k.Quit, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
-		{k.Filter, k.Sort, k.Agent, k.ErrLog, k.Quit, k.Help},
+		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
+		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -96,13 +111,54 @@ var keys = keyMap{
 		key.WithKeys("A"),
 		key.WithHelp("A", "switch agent"),
 	),
+	Answer: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "answer agent"),
+	),
+	Stop: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "interrupt agent"),
+	),
+	// The one server key on this tab. Starting the thing you are looking at is
+	// the everyday action; everything else about servers lives in the Servers
+	// tab, which has a keyspace of its own.
+	Server: key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "start/stop server"),
+	),
+	Msg: key.NewBinding(
+		key.WithKeys("m"),
+		key.WithHelp("m", "message agent"),
+	),
+	// The other half of a notification. Sorting is a preference you set once;
+	// "who needs me now" is a question you ask at a moment, and a list that
+	// reordered itself every ten seconds as agents changed state would be
+	// unusable for everything else it is for.
+	Blocked: key.NewBinding(
+		key.WithKeys("b"),
+		key.WithHelp("b", "next blocked"),
+	),
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),
 		key.WithHelp("E", "error log"),
 	),
+	// Out of both help lists on purpose: it works on one screen, and that
+	// screen's own footer names it. Advertising it beside keys that work
+	// everywhere would only send people to press it where it does nothing.
+	CopyErrLog: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "copy all"),
+	),
+	// Three places now, walked in the order the bar draws them.
+	Tab: key.NewBinding(
+		key.WithKeys("tab", "left", "right"),
+		key.WithHelp("tab/←→", "skills · servers"),
+	),
 	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
-		key.WithHelp("q", "quit"),
+		// esc is the way out of the workspace list; from Skills it only steps
+		// back a tab, which that tab handles before this binding is consulted.
+		key.WithKeys("q", "ctrl+c", "esc"),
+		key.WithHelp("q/esc", "quit"),
 	),
 	Help: key.NewBinding(
 		key.WithKeys("?"),

@@ -1,13 +1,13 @@
 [agent]
-command = 'claude'
 args = []
+command = 'claude'
 
-[worktree]
-base_dir = '.opentree'
-default_base = 'main'
+[github]
+auto_push = true
 
 [tmux]
 session_prefix = 'opentree'
 
-[github]
-auto_push = true
+[worktree]
+base_dir = '.opentree'
+default_base = 'main'

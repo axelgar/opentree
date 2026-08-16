@@ -12,11 +12,32 @@ import (
 
 var configKeys = map[string]string{
 	"agent.command":         "Command to run as the coding agent",
-	"agent.args":            "Extra arguments passed to the agent (comma-separated)",
 	"worktree.base_dir":     "Directory to store worktrees",
 	"worktree.default_base": "Default base branch for new workspaces",
+	"workspace.seed":        "Untracked files to link into each new worktree",
 	"tmux.session_prefix":   "Prefix for tmux session names",
 	"github.auto_push":      "Auto-push branch before creating PR (true/false)",
+	"notify.on":             "Events worth an interruption: blocked, done, stopped",
+	"notify.desktop":        "Raise an OS banner as well as the tmux bell (true/false)",
+}
+
+// listValuedKeys are the keys `config set` cannot write, and what a list of
+// each holds. `set` takes one string and would have to invent a splitting
+// syntax for these — one nobody would guess right first time, and that would
+// quote wrongly the first time a path contained a comma. They are read from
+// here and edited in the file.
+var listValuedKeys = map[string]string{
+	"workspace.seed": "paths",
+	"notify.on":      "event names",
+}
+
+// globalOnlyKeys are the settings a repository may not carry. `config set`
+// refuses them without --global rather than writing a key that would be
+// stripped on the next read, which is a setting that saves, prints back, and
+// does nothing.
+var globalOnlyKeys = map[string]bool{
+	"notify.on":      true,
+	"notify.desktop": true,
 }
 
 var ConfigCmd = &cobra.Command{
@@ -33,11 +54,16 @@ Use --global to read/write the global config instead of the repo config.
 
 Available keys:
   agent.command          Command to run as the coding agent
-  agent.args             Extra arguments passed to the agent (comma-separated)
   worktree.base_dir      Directory to store worktrees
   worktree.default_base  Default base branch for new workspaces
+  workspace.seed         Untracked files to link into each new worktree (edit the file)
   tmux.session_prefix    Prefix for tmux session names
-  github.auto_push       Auto-push branch before creating PR (true/false)`,
+  github.auto_push       Auto-push branch before creating PR (true/false)
+  notify.on              Events worth an interruption (global only, edit the file)
+  notify.desktop         OS banner as well as the tmux bell (global only)
+
+notify.* is read from the global config only: how you like to be interrupted is
+a property of you, not of a repository you cloned.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
@@ -56,11 +82,13 @@ var configListCmd = &cobra.Command{
 				return fmt.Errorf("failed to load global config: %w", err)
 			}
 			fmt.Printf("agent.command = %s\n", cfg.Agent.Command)
-			fmt.Printf("agent.args = %s\n", strings.Join(cfg.Agent.Args, ","))
 			fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
 			fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
+			fmt.Printf("workspace.seed = %s\n", formatList(cfg.Workspace.Seed))
 			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
 			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush)
+			fmt.Printf("notify.on = %s\n", formatList(cfg.Notify.On))
+			fmt.Printf("notify.desktop = %t\n", cfg.Notify.Desktop == nil || *cfg.Notify.Desktop)
 			return nil
 		}
 
@@ -70,11 +98,13 @@ var configListCmd = &cobra.Command{
 		}
 
 		fmt.Printf("agent.command = %s  (%s)\n", cfg.Agent.Command, sources.AgentCommand)
-		fmt.Printf("agent.args = %s  (%s)\n", strings.Join(cfg.Agent.Args, ","), sources.AgentArgs)
 		fmt.Printf("worktree.base_dir = %s  (%s)\n", cfg.Worktree.BaseDir, sources.WorktreeBaseDir)
 		fmt.Printf("worktree.default_base = %s  (%s)\n", cfg.Worktree.DefaultBase, sources.WorktreeDefaultBase)
+		fmt.Printf("workspace.seed = %s  (%s)\n", formatList(cfg.Workspace.Seed), sources.WorkspaceSeed)
 		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
 		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush, sources.GitHubAutoPush)
+		fmt.Printf("notify.on = %s  (%s)\n", formatList(cfg.Notify.On), sources.NotifyOn)
+		fmt.Printf("notify.desktop = %t  (%s)\n", cfg.Notify.Desktop == nil || *cfg.Notify.Desktop, sources.NotifyDesktop)
 		return nil
 	},
 }
@@ -120,6 +150,12 @@ var configSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
 
+		if globalOnlyKeys[key] && !configSetGlobal {
+			return fmt.Errorf("%s is global only — run with --global (a cloned repository does not get to decide how you are interrupted)", key)
+		}
+		if held, ok := listValuedKeys[key]; ok {
+			return fmt.Errorf("%s is a list of %s — edit it in %s", key, held, configFileFor(key))
+		}
 		if _, ok := configKeys[key]; !ok {
 			return fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 		}
@@ -152,18 +188,22 @@ var configSetCmd = &cobra.Command{
 	},
 }
 
+// configFileFor is the file a key is edited in: the global one for the keys a
+// repository may not carry, and this repository's for everything else.
+func configFileFor(key string) string {
+	if globalOnlyKeys[key] {
+		return config.GlobalConfigPath()
+	}
+	return config.FindConfigFile()
+}
+
 // parseConfigValue converts a CLI string value into the TOML type for key.
 func parseConfigValue(key, value string) (any, error) {
 	switch key {
-	case "agent.args":
-		if value == "" {
-			return []string{}, nil
-		}
-		return strings.Split(value, ","), nil
-	case "github.auto_push":
+	case "github.auto_push", "notify.desktop":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid value for github.auto_push: must be true or false")
+			return nil, fmt.Errorf("invalid value for %s: must be true or false", key)
 		}
 		return b, nil
 	default:
@@ -175,19 +215,33 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 	switch key {
 	case "agent.command":
 		return cfg.Agent.Command, nil
-	case "agent.args":
-		return strings.Join(cfg.Agent.Args, ","), nil
 	case "worktree.base_dir":
 		return cfg.Worktree.BaseDir, nil
 	case "worktree.default_base":
 		return cfg.Worktree.DefaultBase, nil
+	case "workspace.seed":
+		return formatList(cfg.Workspace.Seed), nil
 	case "tmux.session_prefix":
 		return cfg.Tmux.SessionPrefix, nil
 	case "github.auto_push":
 		return strconv.FormatBool(cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush), nil
+	case "notify.on":
+		return formatList(cfg.Notify.On), nil
+	case "notify.desktop":
+		return strconv.FormatBool(cfg.Notify.Desktop == nil || *cfg.Notify.Desktop), nil
 	default:
 		return "", fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 	}
+}
+
+// formatList renders a list-valued setting the way the config file spells it,
+// so what `config list` prints is what you would type back into opentree.toml.
+func formatList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, v := range values {
+		quoted = append(quoted, strconv.Quote(v))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func configKeyCompletions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

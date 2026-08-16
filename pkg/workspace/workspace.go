@@ -8,9 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -116,43 +118,150 @@ func (s *Service) WorktreePath(name string) string {
 	return filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(name))
 }
 
-// StatusFileName is the conventional file agents write to signal completion.
-const StatusFileName = ".opentree-status.json"
-
-// agentEnv builds the environment for an agent window: OPENTREE_STATUS_FILE
-// tells status hooks (see `opentree agents setup`) where to write; they stay
-// inert outside opentree. Set via the window environment (not typed into the
-// shell) so the visible launch line stays clean.
-func agentEnv(worktreePath string) []string {
-	return []string{"OPENTREE_STATUS_FILE=" + filepath.Join(worktreePath, StatusFileName)}
-}
-
-// launchAgentWindow git-excludes the agent status file, then starts the
-// configured agent in a new window for name's worktree. On failure the
-// just-created worktree is rolled back; deleteBranch controls whether its
-// branch is deleted too (a pre-existing branch may hold the user's own
-// local-only commits).
+// launchAgentWindow starts the workspace's agent in a new tmux window for
+// name's worktree. On failure the just-created worktree is rolled back;
+// deleteBranch controls whether its branch is deleted too (a pre-existing
+// branch may hold the user's own local-only commits).
 func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, error) {
 	worktreePath := s.WorktreePath(name)
-	s.worktrees.EnsureExcluded(StatusFileName)
-	if err := s.process.CreateWindow(name, worktreePath, s.cfg.Agent.Command, agentEnv(worktreePath), s.cfg.Agent.Args...); err != nil {
+
+	launch, err := s.agentLaunch(name, s.cfg.Agent.Command, worktreePath)
+	if err != nil {
+		_ = s.worktrees.Delete(name, deleteBranch)
+		return "", err
+	}
+	if err := launch(); err != nil {
 		_ = s.worktrees.Delete(name, deleteBranch)
 		return "", fmt.Errorf("failed to create tmux window: %w", err)
 	}
 	return worktreePath, nil
 }
 
+// agentLaunch is the not-yet-run window creation for a workspace. Both callers
+// go through it so the choice cannot drift between creating a workspace and
+// reopening one.
+//
+// Every window runs `opentree chat`, which holds the ACP connection and draws
+// the conversation itself. An agent the registry does not know is an error
+// rather than a fallback: it is a workspace created by an older opentree that
+// still supported agents drawing their own screen, and quietly opening a chat
+// for a binary that cannot serve one would fail further from the cause.
+func (s *Service) agentLaunch(name, agentName, worktreePath string) (func() error, error) {
+	agent := config.FindAgent(agentName)
+	if agent == nil {
+		return nil, config.UnknownAgentError(agentName)
+	}
+	command, env, args := chatCommand(name, agent.Command)
+	return func() error { return s.process.CreateAppWindow(name, worktreePath, command, env, args...) }, nil
+}
+
+// chatCommand is how a tmux window runs opentree's own chat view.
+//
+// The binary is resolved from the running process rather than PATH: opentree is
+// frequently run from a build directory, and a window that launches a different
+// opentree than the one that created it would be a confusing way to fail.
+//
+// The agent is passed explicitly for a subtler reason. The chat runs with its
+// working directory inside the worktree, where opentree.toml is a checked-out
+// file that can name a different agent than the repository's — a branch that
+// edits it, or simply an uncommitted change to the one the launcher read.
+// Deciding once here and telling the child is the only way the two agree.
+func chatCommand(name, agentCommand string) (string, []string, []string) {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "opentree"
+	}
+	return exe, nil, []string{"chat", name, "--agent", agentCommand}
+}
+
+// EnsureWindow reopens a workspace's agent window when it no longer serves one,
+// and reports whether it had to. Losing the window is an ordinary thing: the
+// chat is its window's process, so anything that ends it — a killed window, a
+// restarted tmux server, a chat run outside opentree and quit — takes the
+// window too, while the worktree and its resumable conversation both outlive
+// that. Attaching should bring the workspace back rather than refuse.
+func (s *Service) EnsureWindow(name string) (bool, error) {
+	ws, err := s.state.GetWorkspace(name)
+	if err != nil {
+		return false, err
+	}
+
+	if !s.needsWindow(name) {
+		return false, nil
+	}
+
+	worktreePath := s.WorktreePath(name)
+	launch, err := s.agentLaunch(name, ws.Agent, worktreePath)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		return false, fmt.Errorf("worktree for %q is missing: %w", name, err)
+	}
+	if err := launch(); err != nil {
+		return false, fmt.Errorf("failed to reopen window for %q: %w", name, err)
+	}
+	return true, nil
+}
+
+// needsWindow reports whether the workspace has no usable window.
+//
+// A missing window is the easy case. A window sitting at a bare shell is the
+// one worth naming: the chat is its window's process, so a shell in its place
+// means the chat is gone and attaching would land the user at a prompt rather
+// than in the conversation.
+func (s *Service) needsWindow(name string) bool {
+	cmd, err := s.process.PaneCurrentCommand(name)
+	if err != nil {
+		return true // no window at all
+	}
+	return isShell(cmd)
+}
+
+// seedWorktree gives a fresh worktree what git does not carry: the
+// repository's own skills, and the untracked config files the project names.
+//
+// One function because they are one idea — a worktree holds only tracked
+// files, and the things it needs anyway have to be put there by whatever made
+// it. Skills are the instance opentree already knew about; the seed list is the
+// general case.
+//
+// Best-effort, in the shape of the other worktree conveniences: a workspace
+// that came up without its skills or its .env is still a workspace, and failing
+// creation over a symlink would trade a smaller problem for a larger one. Every
+// mistake readable out of the config was already reported by checkPrerequisites
+// before the worktree existed, and the Skills view reports what is missing — so
+// a failure here is visible where it can be acted on rather than swallowed.
+func (s *Service) seedWorktree(name string) {
+	worktreePath := s.WorktreePath(name)
+	_, _ = skills.Link(s.repoRoot, worktreePath)
+	_, _ = bootstrap.Seed(s.repoRoot, worktreePath, s.cfg.Workspace.Seed)
+}
+
+// checkPrerequisites rejects a configuration no workspace could be created
+// from, before anything is created.
+//
+// Both are the same kind of mistake: wrong for every workspace this repository
+// will ever make, with no per-workspace recovery. Failing here is one clear
+// message rather than a "✓ Launched" followed by a dead shell window, or a
+// worktree that quietly never receives its .env.
+func (s *Service) checkPrerequisites() error {
+	if err := s.cfg.Agent.Validate(); err != nil {
+		return err
+	}
+	return bootstrap.ValidateSeed(s.repoRoot, s.cfg.Workspace.Seed)
+}
+
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
-	// Fail before creating anything, not with a "✓ Launched" success message
-	// and a dead shell window.
-	if err := s.cfg.Agent.Validate(); err != nil {
+	if err := s.checkPrerequisites(); err != nil {
 		return nil, err
 	}
 
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
+	s.seedWorktree(name)
 
 	worktreePath, err := s.launchAgentWindow(name, true)
 	if err != nil {
@@ -215,7 +324,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 // CreateFromRemoteBranch creates a workspace from an existing remote branch.
 // The branch is fetched from origin and checked out into a new worktree.
 func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, error) {
-	if err := s.cfg.Agent.Validate(); err != nil {
+	if err := s.checkPrerequisites(); err != nil {
 		return nil, err
 	}
 
@@ -223,6 +332,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree from remote: %w", err)
 	}
+	s.seedWorktree(branchName)
 
 	worktreePath, err := s.launchAgentWindow(branchName, createdBranch)
 	if err != nil {
@@ -258,8 +368,12 @@ func (s *Service) Delete(name string) error {
 		return fmt.Errorf("failed to delete worktree: %w", err)
 	}
 
-	// Kill tmux window (ignore error if window doesn't exist)
+	// Kill tmux window (ignore error if window doesn't exist), and the server's
+	// window with it: the directory it was serving has just gone, and a dev
+	// server left running against a deleted worktree holds its port and prints
+	// stack traces at nobody.
 	_ = s.process.KillWindow(name)
+	_ = s.process.KillWindow(s.ServerWindow(name))
 
 	if err := s.state.DeleteWorkspace(name); err != nil {
 		return fmt.Errorf("failed to delete workspace state: %w", err)
@@ -283,6 +397,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 			continue
 		}
 		_ = s.process.KillWindow(name)
+		_ = s.process.KillWindow(s.ServerWindow(name))
 		if err := s.state.DeleteWorkspace(name); err != nil {
 			errs = append(errs, fmt.Errorf("delete state %s: %w", name, err))
 		}
@@ -325,42 +440,8 @@ func (s *Service) HasChanges(name string) (string, error) {
 	return diff, nil
 }
 
-// SendReviewsToAgent fetches all PR review comments for the workspace's branch
-// and sends them as a formatted prompt to the running agent in the tmux window.
-// Returns the number of review comments sent, or 0 if none were found.
-func (s *Service) SendReviewsToAgent(name string) (int, error) {
-	ws, err := s.state.GetWorkspace(name)
-	if err != nil {
-		return 0, fmt.Errorf("workspace not found: %w", err)
-	}
-
-	comments, err := s.github.FetchPRReviews(ws.Branch)
-	// Partial results (top-level reviews fetched, inline-thread fetch failed)
-	// are still sent rather than discarded.
-	if err != nil && len(comments) == 0 {
-		return 0, fmt.Errorf("failed to fetch PR reviews: %w", err)
-	}
-	if len(comments) == 0 {
-		return 0, nil
-	}
-
-	// Review bodies are attacker-controlled text (anyone can review a public
-	// PR). Pasting them into a pane sitting at a shell prompt — agent
-	// crashed or exited — would execute them as shell commands.
-	if cmdName, err := s.process.PaneCurrentCommand(name); err == nil && isShell(cmdName) {
-		return 0, fmt.Errorf("the agent is not running in workspace %q (its window is at a shell prompt) — start it before sending reviews", name)
-	}
-
-	prompt := github.FormatReviewsPrompt(comments)
-	if err := s.process.SendMessage(name, prompt); err != nil {
-		return 0, fmt.Errorf("failed to send reviews to agent: %w", err)
-	}
-
-	return len(comments), nil
-}
-
 // isShell reports whether a pane's current command is an interactive shell
-// rather than a running agent.
+// rather than a running chat.
 func isShell(command string) bool {
 	switch command {
 	case "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh":
@@ -399,15 +480,23 @@ func (s *Service) CreatePR(name, title, body string) (string, error) {
 	return prURL, nil
 }
 
+// PruneResult is what a prune reaped: the workspaces whose worktree had gone,
+// and the server windows left behind with nothing to serve. Two lists rather
+// than one, because they are two different things to tell someone about.
+type PruneResult struct {
+	Workspaces []string
+	Servers    []string
+}
+
 // Prune removes state entries (and their tmux windows) for workspaces whose
 // worktree directory no longer exists on disk, and clears git's stale
 // worktree metadata. Branches are deliberately left intact.
-func (s *Service) Prune() ([]string, error) {
+func (s *Service) Prune() (PruneResult, error) {
+	var result PruneResult
 	if err := s.worktrees.Prune(); err != nil {
-		return nil, err
+		return result, err
 	}
 
-	var pruned []string
 	for _, ws := range s.state.ListWorkspaces() {
 		dir := ws.WorktreeDir
 		if dir == "" {
@@ -417,10 +506,43 @@ func (s *Service) Prune() ([]string, error) {
 			continue
 		}
 		_ = s.process.KillWindow(ws.Name)
+		_ = s.process.KillWindow(s.ServerWindow(ws.Name))
 		if err := s.state.DeleteWorkspace(ws.Name); err != nil {
-			return pruned, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
+			return result, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
 		}
-		pruned = append(pruned, ws.Name)
+		result.Workspaces = append(result.Workspaces, ws.Name)
 	}
-	return pruned, nil
+	result.Servers = s.pruneServerWindows()
+	return result, nil
+}
+
+// pruneServerWindows kills run windows with no workspace behind them, and
+// reports what it killed.
+//
+// The same category of mess prune already means: something opentree started
+// that outlived the thing it belonged to. A server survives its worktree being
+// removed by hand, and holds its port and a Node process while nothing on
+// screen mentions it — the run window is not in the workspace list, so it is
+// invisible until something else wants the port.
+func (s *Service) pruneServerWindows() []string {
+	windows, err := s.process.ListWindows()
+	if err != nil {
+		return nil
+	}
+
+	live := make(map[string]bool)
+	for _, ws := range s.state.ListWorkspaces() {
+		live[s.ServerWindow(ws.Name)] = true
+	}
+
+	var killed []string
+	for _, w := range windows {
+		if !strings.HasSuffix(w.Name, tmux.RunSuffix) || live[w.Name] {
+			continue
+		}
+		if err := s.process.KillWindow(w.Name); err == nil {
+			killed = append(killed, w.Name)
+		}
+	}
+	return killed
 }

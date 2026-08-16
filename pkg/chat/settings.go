@@ -1,0 +1,370 @@
+package chat
+
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/axelgar/opentree/pkg/acp"
+)
+
+// settings is the picker over an agent's declared config options. It is written
+// against whatever the agent sends rather than against model-and-mode, so an
+// agent offering different controls — or none — needs no code here.
+type settings struct {
+	open bool
+
+	// configID is empty while choosing which option to change, and set to that
+	// option's id while choosing its value.
+	configID string
+	cursor   int
+}
+
+func (s settings) choosingValue() bool { return s.configID != "" }
+
+// configOption finds a declared option by id.
+func configOption(options []acp.ConfigOption, id string) (acp.ConfigOption, bool) {
+	for _, o := range options {
+		if o.ID == id {
+			return o, true
+		}
+	}
+	return acp.ConfigOption{}, false
+}
+
+// settingsRows is what the picker currently lists: the options themselves, or
+// the values of the one being changed.
+func (m Model) settingsRows() []completionItem {
+	if !m.settings.choosingValue() {
+		rows := make([]completionItem, 0, len(m.configOptions))
+		for _, o := range m.configOptions {
+			rows = append(rows, completionItem{value: o.Name, desc: valueLabel(o)})
+		}
+		return rows
+	}
+
+	opt, ok := configOption(m.configOptions, m.settings.configID)
+	if !ok {
+		return nil
+	}
+	rows := make([]completionItem, 0, len(opt.Options))
+	for _, v := range opt.Options {
+		desc := firstLine(v.Description)
+		if v.Value == opt.CurrentValue {
+			desc = "current"
+		}
+		rows = append(rows, completionItem{value: v.Name, desc: desc})
+	}
+	return rows
+}
+
+func (m Model) openSettings() (tea.Model, tea.Cmd) {
+	if len(m.configOptions) == 0 {
+		m.err = fmt.Errorf("%s declares no settings to change", m.opts.Agent.Name)
+		return m.relayout(), nil
+	}
+	m.settings = settings{open: true}
+	return m.relayout(), nil
+}
+
+// handleSettingsKey drives the picker with the shared keys. Closing steps
+// back a level rather than closing outright, so a wrong turn into a
+// thirty-item model list costs one key.
+func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	rows := m.settingsRows()
+	switch action, i := pickerKey(msg, &m.settings.cursor, len(rows)); action {
+	case pickerClosed:
+		if m.settings.choosingValue() {
+			m.settings = settings{open: true}
+		} else {
+			m.settings = settings{}
+		}
+		return m.relayout(), nil
+	case pickerMoved:
+		return m.relayout(), nil
+	case pickerChose:
+		return m.chooseSetting(i, rows)
+	}
+	return m, nil
+}
+
+func (m Model) chooseSetting(i int, rows []completionItem) (tea.Model, tea.Cmd) {
+	if i < 0 || i >= len(rows) {
+		return m, nil
+	}
+
+	if !m.settings.choosingValue() {
+		m.settings = settings{open: true, configID: m.configOptions[i].ID}
+		// Land on whatever is currently set, so the picker opens where you are.
+		if opt, ok := configOption(m.configOptions, m.settings.configID); ok {
+			for j, v := range opt.Options {
+				if v.Value == opt.CurrentValue {
+					m.settings.cursor = j
+				}
+			}
+		}
+		return m.relayout(), nil
+	}
+
+	opt, ok := configOption(m.configOptions, m.settings.configID)
+	if !ok || i >= len(opt.Options) {
+		return m, nil
+	}
+	configID, value := opt.ID, opt.Options[i].Value
+	m.settings = settings{}
+	return m.relayout(), m.setConfigCmd(configID, value)
+}
+
+func (m Model) setConfigCmd(configID, value string) tea.Cmd {
+	client, sessionID := m.client, m.sessionID
+	return func() tea.Msg {
+		options, err := client.SetConfigOption(m.ctx, sessionID, configID, value)
+		return configChangedMsg{configID: configID, value: value, options: options, err: err}
+	}
+}
+
+// settingsView renders the picker, scrolled to keep the cursor visible.
+func (m Model) settingsView() string {
+	title := m.opts.Agent.Name + " settings"
+	if m.settings.choosingValue() {
+		if opt, ok := configOption(m.configOptions, m.settings.configID); ok {
+			title = opt.Name
+		}
+	}
+	return pickerView(title, m.settingsRows(), m.settings.cursor, m.width)
+}
+
+// settingsHeight is the footer space the picker needs.
+func (m Model) settingsHeight() int { return pickerHeight(len(m.settingsRows())) }
+
+// clientCommand is one of opentree's own slash commands: the name the palette
+// offers, and what pressing enter on it opens.
+type clientCommand struct {
+	acp.Command
+	run func(Model) (tea.Model, tea.Cmd)
+}
+
+// clientCommandTable is the commands that are not derived from a setting.
+//
+// Each carries the condition it can be served under, checked against what the
+// agent advertised rather than against which agent it is — that is what lets an
+// agent opentree has never met get /resume for free, and stops one that cannot
+// reopen a conversation from being offered it.
+//
+// ponytail: a table, not a registry with registration. One entry today; the
+// next one is three lines.
+var clientCommandTable = []struct {
+	name, desc string
+	available  func(Model) bool
+	run        func(Model) (tea.Model, tea.Cmd)
+}{{
+	name:      "resume",
+	desc:      "reopen an earlier conversation",
+	available: Model.canPickSession,
+	run:       Model.openSessions,
+}, {
+	name:      "login",
+	desc:      "log in again, or as somebody else",
+	available: Model.canAuthenticate,
+	run:       Model.startLogin,
+}, {
+	name:      "output",
+	desc:      "what the agent printed outside the conversation",
+	available: Model.canShowOutput,
+	run:       Model.showOutput,
+}}
+
+// clientCommandList is opentree's own slash commands, in the order the palette
+// shows them: the ones derived from the settings the agent declares — /model,
+// /mode and /effort exist exactly where those settings do, and an agent
+// declaring something else gets a command for it too — then the table above.
+//
+// They are opentree's because the protocol has no equivalent. An agent's
+// available_commands are its prompt-level skills: opencode advertises
+// thirty-five without a /model among them, and Claude Code's adapter passes on
+// ninety without a /resume, because resuming is a capability there rather than
+// a command.
+func (m Model) clientCommandList() []clientCommand {
+	advertised := make(map[string]bool, len(m.commands))
+	for _, c := range m.commands {
+		advertised[c.Name] = true
+	}
+
+	var out []clientCommand
+	for _, o := range m.configOptions {
+		// An agent that advertises the same name keeps it; its own command is
+		// the more specific thing.
+		if advertised[o.ID] {
+			continue
+		}
+		desc := "change " + strings.ToLower(o.Name)
+		if o.CurrentValue != "" {
+			desc += " (now " + o.CurrentValue + ")"
+		}
+		configID := o.ID
+		out = append(out, clientCommand{
+			Command: acp.Command{Name: configID, Description: desc},
+			run:     func(m Model) (tea.Model, tea.Cmd) { return m.openSettingsAt(configID) },
+		})
+	}
+
+	for _, c := range clientCommandTable {
+		if advertised[c.name] || !c.available(m) {
+			continue
+		}
+		out = append(out, clientCommand{
+			Command: acp.Command{Name: c.name, Description: c.desc},
+			run:     c.run,
+		})
+	}
+	return out
+}
+
+// clientCommands is the same list as names alone, which is what the palette
+// and the completion matcher want.
+func (m Model) clientCommands() []acp.Command {
+	list := m.clientCommandList()
+	out := make([]acp.Command, 0, len(list))
+	for _, c := range list {
+		out = append(out, c.Command)
+	}
+	return out
+}
+
+// paletteCommands is everything the slash palette offers.
+func (m Model) paletteCommands() []acp.Command {
+	return append(m.clientCommands(), m.commands...)
+}
+
+// clientCommandFor reports whether typed text is one of opentree's own
+// commands, and if so what it opens instead of being sent to the agent.
+func (m Model) clientCommandFor(text string) (func(Model) (tea.Model, tea.Cmd), bool) {
+	name := strings.TrimPrefix(strings.TrimSpace(text), "/")
+	if name == text || name == "" {
+		return nil, false
+	}
+	for _, c := range m.clientCommandList() {
+		if c.Name == name {
+			return c.run, true
+		}
+	}
+	return nil, false
+}
+
+// openSettingsAt jumps straight into one option's values, which is what
+// /model is for.
+func (m Model) openSettingsAt(configID string) (tea.Model, tea.Cmd) {
+	opt, ok := configOption(m.configOptions, configID)
+	if !ok {
+		return m, nil
+	}
+	m.settings = settings{open: true, configID: configID}
+	for j, v := range opt.Options {
+		if v.Value == opt.CurrentValue {
+			m.settings.cursor = j
+		}
+	}
+	return m.relayout(), nil
+}
+
+// categoryMode is the agent-declared category holding the session mode. The
+// agent can change it on its own, so more than one place needs to name it.
+const categoryMode = "mode"
+
+// valueLabel is what to show for an option's current setting, which is normally
+// the value itself: agents spell these to be read, and "build", "low" and a
+// model id are all better on screen than the prose names beside them.
+//
+// ACP's own ids for the well-known session modes are URLs, though, and Copilot
+// uses them — which put
+// "https://agentclientprotocol.com/protocol/session-modes#agent" in the flag
+// beside the input, where it meant "Agent". A value carrying a scheme is an id
+// and never a label, so that one takes the name the agent gave it instead.
+func valueLabel(o acp.ConfigOption) string {
+	if !strings.Contains(o.CurrentValue, "://") {
+		return o.CurrentValue
+	}
+	for _, v := range o.Options {
+		if v.Value == o.CurrentValue && v.Name != "" {
+			return v.Name
+		}
+	}
+	return o.CurrentValue
+}
+
+// nextMode is the mode that follows the current one, or ok=false when the agent
+// declares no mode to cycle.
+func nextMode(options []acp.ConfigOption) (configID, value string, ok bool) {
+	for _, o := range options {
+		if o.Category != categoryMode || len(o.Options) < 2 {
+			continue
+		}
+		next := 0
+		for i, v := range o.Options {
+			if v.Value == o.CurrentValue {
+				next = (i + 1) % len(o.Options)
+			}
+		}
+		return o.ID, o.Options[next].Value, true
+	}
+	return "", "", false
+}
+
+// cycleMode advances the session mode by one, so the common flip between
+// build and plan does not need the picker at all.
+func (m Model) cycleMode() (tea.Model, tea.Cmd) {
+	configID, value, ok := nextMode(m.configOptions)
+	if !ok {
+		return m, nil
+	}
+	return m, m.setConfigCmd(configID, value)
+}
+
+// settingsSummary is what the header shows: the model, which is a fact about
+// the session rather than a flag you flip.
+func (m Model) settingsSummary() []string {
+	var out []string
+	for _, o := range m.configOptions {
+		if o.Category != "model" || o.CurrentValue == "" {
+			continue
+		}
+		out = append(out, valueLabel(o))
+	}
+	return out
+}
+
+// flagCategories are the settings worth permanent space beside the input: how
+// the next turn is allowed to behave, and how hard it will think.
+//
+// Not every declared option earns a flag. Claude Code declares five — adding
+// "fast" and a persona picker — and showing them all produced
+// "auto · high · off · default", which crowded the help off the line to report
+// two things nobody changes mid-conversation. Everything else stays one ctrl+g
+// or /command away. These are ACP's own category values, not agent names, so an
+// agent declaring a mode gets a flag whoever it is.
+var flagCategories = map[string]int{
+	"mode":          0, // first: the one shift+tab cycles
+	"thought_level": 1,
+}
+
+// flagsSummary is what sits beside the input, shown permanently rather than
+// announced once and scrolled away.
+func (m Model) flagsSummary() []string {
+	ordered := make([]string, len(flagCategories))
+	for _, o := range m.configOptions {
+		rank, ok := flagCategories[o.Category]
+		if !ok || o.CurrentValue == "" {
+			continue
+		}
+		ordered[rank] = valueLabel(o)
+	}
+
+	out := make([]string, 0, len(ordered))
+	for _, v := range ordered {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}

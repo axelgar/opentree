@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
@@ -19,20 +21,24 @@ import (
 // mockProcessManager is a test double for ProcessManager that records calls
 // and returns configurable results.
 type mockProcessManager struct {
-	createWindowCalls []string
-	createWindowEnvs  [][]string
-	createWindowErr   error
-	killWindowCalls   []string
-	killSessionCalled bool
-	sendMessageCalls  []sendMessageCall
-	sendMessageErr    error
-	windows           []Window
-	paneCommand       string // returned by PaneCurrentCommand; "" simulates "no window"
+	createWindowCalls    []string
+	createWindowEnvs     [][]string
+	createWindowCommands []string
+	createWindowArgs     [][]string
+	createWindowErr      error
+	appWindowCalls       []string // names passed to CreateAppWindow
+	killWindowCalls      []string
+	killSessionCalled    bool
+	windows              []Window
+	paneCommand          string // returned by PaneCurrentCommand; "" simulates "no window"
 }
 
-func (m *mockProcessManager) CreateWindow(name, workdir, command string, env []string, args ...string) error {
+func (m *mockProcessManager) CreateAppWindow(name, workdir, command string, env []string, args ...string) error {
+	m.appWindowCalls = append(m.appWindowCalls, name)
 	m.createWindowCalls = append(m.createWindowCalls, name)
 	m.createWindowEnvs = append(m.createWindowEnvs, env)
+	m.createWindowCommands = append(m.createWindowCommands, command)
+	m.createWindowArgs = append(m.createWindowArgs, args)
 	return m.createWindowErr
 }
 
@@ -50,7 +56,6 @@ func (m *mockProcessManager) KillSession() error {
 	m.killSessionCalled = true
 	return nil
 }
-func (m *mockProcessManager) CapturePane(name string, lines int) (string, error) { return "", nil }
 func (m *mockProcessManager) PaneCurrentCommand(name string) (string, error) {
 	if m.paneCommand == "" {
 		return "", errors.New("no tmux window")
@@ -59,15 +64,6 @@ func (m *mockProcessManager) PaneCurrentCommand(name string) (string, error) {
 }
 func (m *mockProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return time.Time{}, nil
-}
-func (m *mockProcessManager) SendMessage(name, text string) error {
-	m.sendMessageCalls = append(m.sendMessageCalls, sendMessageCall{name: name, text: text})
-	return m.sendMessageErr
-}
-
-type sendMessageCall struct {
-	name string
-	text string
 }
 
 // mockGitHubManager is a test double for GitHubManager.
@@ -101,225 +97,9 @@ func newWithMockFull(repoRoot string, cfg *config.Config, pm ProcessManager, gh 
 	return NewService(repoRoot, cfg, wt, pm, st, gh), nil
 }
 
-// ---- SendReviewsToAgent tests ----
-
-func TestSendReviewsToAgent_WorkspaceNotFound(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	svc, err := newWithMockFull(repoDir, cfg, &mockProcessManager{}, &mockGitHubManager{})
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-
-	_, err = svc.SendReviewsToAgent("nonexistent-workspace")
-	if err == nil {
-		t.Fatal("expected error for nonexistent workspace, got nil")
-	}
-	if !strings.Contains(err.Error(), "workspace not found") {
-		t.Errorf("error = %q, want to contain 'workspace not found'", err.Error())
-	}
-}
-
-func TestSendReviewsToAgent_FetchError(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	cfg.Worktree.BaseDir = ".opentree"
-
-	fetchErr := errors.New("gh: authentication required")
-	mock := &mockProcessManager{}
-	ghMock := &mockGitHubManager{fetchReviewsErr: fetchErr}
-
-	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-	ws, err := svc.Create("my-branch", "main")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	_, sendErr := svc.SendReviewsToAgent(ws.Name)
-	if sendErr == nil {
-		t.Fatal("expected error from FetchPRReviews, got nil")
-	}
-	if !strings.Contains(sendErr.Error(), "failed to fetch PR reviews") {
-		t.Errorf("error = %q, want to contain 'failed to fetch PR reviews'", sendErr.Error())
-	}
-	if !strings.Contains(sendErr.Error(), fetchErr.Error()) {
-		t.Errorf("error = %q, want to contain wrapped error %q", sendErr.Error(), fetchErr.Error())
-	}
-}
-
-func TestSendReviewsToAgent_PartialFetchStillSendsComments(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	cfg.Worktree.BaseDir = ".opentree"
-
-	mock := &mockProcessManager{}
-	ghMock := &mockGitHubManager{
-		fetchReviewsResult: []github.ReviewComment{{Author: "alice", Body: "Fix this.", State: "CHANGES_REQUESTED"}},
-		fetchReviewsErr:    errors.New("graphql query failed"),
-	}
-
-	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-	ws, err := svc.Create("my-branch", "main")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	count, err := svc.SendReviewsToAgent(ws.Name)
-	if err != nil {
-		t.Fatalf("SendReviewsToAgent() with partial fetch: unexpected error: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("count = %d, want 1 (partial results still sent)", count)
-	}
-	if len(mock.sendMessageCalls) != 1 {
-		t.Errorf("SendMessage calls = %d, want 1", len(mock.sendMessageCalls))
-	}
-}
-
-func TestSendReviewsToAgent_NoComments(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	cfg.Worktree.BaseDir = ".opentree"
-
-	mock := &mockProcessManager{}
-	ghMock := &mockGitHubManager{fetchReviewsResult: nil}
-
-	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-	ws, err := svc.Create("my-branch", "main")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	count, err := svc.SendReviewsToAgent(ws.Name)
-	if err != nil {
-		t.Fatalf("SendReviewsToAgent() unexpected error: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("SendReviewsToAgent() count = %d, want 0 when no reviews", count)
-	}
-	if len(mock.sendMessageCalls) != 0 {
-		t.Errorf("SendMessage should not be called when there are no reviews")
-	}
-}
-
-func TestSendReviewsToAgent_SendsPromptToAgent(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	cfg.Worktree.BaseDir = ".opentree"
-
-	reviews := []github.ReviewComment{
-		{Author: "alice", Body: "Fix this bug.", State: "CHANGES_REQUESTED"},
-		{Author: "bob", Body: "Rename variable.", State: "COMMENTED", Path: "pkg/x.go", Line: 5},
-	}
-	mock := &mockProcessManager{}
-	ghMock := &mockGitHubManager{fetchReviewsResult: reviews}
-
-	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-	ws, err := svc.Create("my-branch", "main")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	count, err := svc.SendReviewsToAgent(ws.Name)
-	if err != nil {
-		t.Fatalf("SendReviewsToAgent() unexpected error: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("SendReviewsToAgent() count = %d, want 2", count)
-	}
-	if len(mock.sendMessageCalls) != 1 {
-		t.Fatalf("expected 1 SendMessage call, got %d", len(mock.sendMessageCalls))
-	}
-	call := mock.sendMessageCalls[0]
-	if call.name != ws.Name {
-		t.Errorf("SendMessage target = %q, want %q", call.name, ws.Name)
-	}
-	if !strings.Contains(call.text, "Fix this bug.") {
-		t.Errorf("prompt missing first review body: %s", call.text)
-	}
-	if !strings.Contains(call.text, "Rename variable.") {
-		t.Errorf("prompt missing second review body: %s", call.text)
-	}
-	if !strings.Contains(call.text, "pkg/x.go:5") {
-		t.Errorf("prompt missing inline comment location: %s", call.text)
-	}
-	if !strings.Contains(call.text, "Please address all of these review comments.") {
-		t.Errorf("prompt missing closing instruction: %s", call.text)
-	}
-}
-
-func TestSendReviewsToAgent_SendMessageError(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	cfg.Worktree.BaseDir = ".opentree"
-
-	reviews := []github.ReviewComment{
-		{Author: "alice", Body: "Fix this.", State: "CHANGES_REQUESTED"},
-	}
-	sendErr := errors.New("tmux: no such window")
-	mock := &mockProcessManager{sendMessageErr: sendErr}
-	ghMock := &mockGitHubManager{fetchReviewsResult: reviews}
-
-	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-	ws, err := svc.Create("my-branch", "main")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	_, err = svc.SendReviewsToAgent(ws.Name)
-	if err == nil {
-		t.Fatal("expected error from SendMessage, got nil")
-	}
-	if !strings.Contains(err.Error(), "failed to send reviews to agent") {
-		t.Errorf("error = %q, want 'failed to send reviews to agent'", err.Error())
-	}
-	if !strings.Contains(err.Error(), sendErr.Error()) {
-		t.Errorf("error = %q, want to contain wrapped error %q", err.Error(), sendErr.Error())
-	}
-}
-
 func TestWorktreePath(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 	svc := &Service{repoRoot: "/repo", cfg: cfg}
 
@@ -342,7 +122,7 @@ func TestWorktreePath(t *testing.T) {
 
 func TestWorktreePath_CustomBaseDir(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = "worktrees"
 	svc := &Service{repoRoot: "/home/user/project", cfg: cfg}
 
@@ -391,7 +171,7 @@ func TestCreateAndDelete(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -412,23 +192,7 @@ func TestCreateAndDelete(t *testing.T) {
 		t.Errorf("ws.BaseBranch = %q, want %q", ws.BaseBranch, "main")
 	}
 	if len(mock.createWindowCalls) != 1 || mock.createWindowCalls[0] != "test-branch" {
-		t.Errorf("expected CreateWindow called with test-branch, got %v", mock.createWindowCalls)
-	}
-
-	// The status-file env var travels via the window environment, not the
-	// typed command line.
-	wantEnv := "OPENTREE_STATUS_FILE=" + filepath.Join(svc.WorktreePath("test-branch"), StatusFileName)
-	if len(mock.createWindowEnvs) != 1 || len(mock.createWindowEnvs[0]) != 1 || mock.createWindowEnvs[0][0] != wantEnv {
-		t.Errorf("CreateWindow env = %v, want [%q]", mock.createWindowEnvs, wantEnv)
-	}
-
-	// The status file must be git-excluded so agents can't commit it.
-	exclude, err := os.ReadFile(filepath.Join(repoDir, ".git", "info", "exclude"))
-	if err != nil {
-		t.Fatalf("read .git/info/exclude: %v", err)
-	}
-	if !strings.Contains(string(exclude), StatusFileName) {
-		t.Errorf(".git/info/exclude does not contain %q:\n%s", StatusFileName, exclude)
+		t.Errorf("expected a window created for test-branch, got %v", mock.createWindowCalls)
 	}
 
 	worktreePath := svc.WorktreePath("test-branch")
@@ -461,7 +225,7 @@ func TestDeleteMultiple(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -483,11 +247,62 @@ func TestDeleteMultiple(t *testing.T) {
 		t.Fatalf("DeleteMultiple: %v", err)
 	}
 
-	if len(mock.killWindowCalls) != 2 {
-		t.Errorf("expected 2 KillWindow calls, got %d", len(mock.killWindowCalls))
+	// Two windows per workspace: the chat, and the dev server's own. A server
+	// left running against a deleted worktree holds its port and prints stack
+	// traces at nobody.
+	want := []string{"branch-a", "branch-a:run", "branch-b", "branch-b:run"}
+	for _, name := range want {
+		if !slices.Contains(mock.killWindowCalls, name) {
+			t.Errorf("KillWindow calls = %v, missing %q", mock.killWindowCalls, name)
+		}
+	}
+	if len(mock.killWindowCalls) != len(want) {
+		t.Errorf("expected %d KillWindow calls, got %d", len(want), len(mock.killWindowCalls))
 	}
 	if !mock.killSessionCalled {
 		t.Error("expected KillSession after deleting all workspaces")
+	}
+}
+
+// A dev server outlives the worktree it was serving: the run window is not in
+// the workspace list, so it holds its port and a Node process while nothing on
+// screen mentions it. That is the same mess prune already means.
+func TestPrune_ReapsOrphanedServerWindows(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("keep-me", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// One server for a workspace that still exists, one left behind by a
+	// workspace that does not.
+	mock.windows = []Window{
+		{ID: "@1", Name: "keep-me"},
+		{ID: "@2", Name: "keep-me:run"},
+		{ID: "@3", Name: "long-gone:run"},
+	}
+
+	pruned, err := svc.Prune()
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(pruned.Servers) != 1 || pruned.Servers[0] != "long-gone:run" {
+		t.Errorf("Prune().Servers = %v, want [long-gone:run]", pruned.Servers)
+	}
+	if slices.Contains(mock.killWindowCalls, "keep-me:run") {
+		t.Error("prune killed a server whose workspace is still here")
 	}
 }
 
@@ -538,7 +353,7 @@ func TestCreate_CleansUpWorktreeOnWindowFailure(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo"
+	useAgent(t, cfg)
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{createWindowErr: errors.New("boom")}
@@ -571,7 +386,7 @@ func TestCreateFromRemoteBranch(t *testing.T) {
 
 	localDir := initRepoWithRemote(t, "feat/remote-thing")
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -614,7 +429,7 @@ func TestHasChanges_NoWorkspace(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 
 	svc, err := New(repoDir, cfg)
 	if err != nil {
@@ -637,8 +452,8 @@ func TestCreatePR_AutoPushesBranch(t *testing.T) {
 	}
 
 	localDir := initRepoWithRemote(t, "feat/seed")
-	cfg := config.Default()    // AutoPush defaults to true
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	cfg := config.Default() // AutoPush defaults to true
+	useAgent(t, cfg)        // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	ghMock := &mockGitHubManager{createPRResult: "https://github.com/acme/repo/pull/7"}
@@ -690,7 +505,7 @@ func TestCreatePR_NoAutoPushWhenDisabled(t *testing.T) {
 
 	localDir := initRepoWithRemote(t, "feat/seed")
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 	off := false
 	cfg.GitHub.AutoPush = &off
@@ -727,7 +542,7 @@ func TestWindowStatuses(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -776,7 +591,7 @@ func TestPrune_RemovesStaleEntries(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	mock := &mockProcessManager{}
@@ -801,8 +616,8 @@ func TestPrune_RemovesStaleEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	if len(pruned) != 1 || pruned[0] != "stale-one" {
-		t.Errorf("Prune() = %v, want [stale-one]", pruned)
+	if len(pruned.Workspaces) != 1 || pruned.Workspaces[0] != "stale-one" {
+		t.Errorf("Prune() = %v, want [stale-one]", pruned.Workspaces)
 	}
 
 	st, err := state.New(repoDir)
@@ -846,7 +661,7 @@ func TestHasChanges_ReportsUntrackedFiles(t *testing.T) {
 
 	repoDir := initGitRepo(t)
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 
 	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
@@ -882,7 +697,7 @@ func TestHasChanges_ReportsUntrackedFiles(t *testing.T) {
 
 func TestNewService_NilFields(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	svc := NewService("/repo", cfg, nil, nil, nil, nil)
 	if svc.repoRoot != "/repo" {
 		t.Errorf("repoRoot = %q, want %q", svc.repoRoot, "/repo")
@@ -894,7 +709,7 @@ func TestNewService_NilFields(t *testing.T) {
 
 func TestSanitizeBranchNameInPath(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
+	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
 	svc := &Service{repoRoot: "/repo", cfg: cfg}
 
@@ -912,59 +727,6 @@ func dirExists(path string) bool {
 	return err == nil
 }
 
-func TestAgentEnv(t *testing.T) {
-	got := agentEnv("/tmp/wt")
-	want := []string{"OPENTREE_STATUS_FILE=/tmp/wt/.opentree-status.json"}
-	if len(got) != 1 || got[0] != want[0] {
-		t.Errorf("agentEnv = %q, want %q", got, want)
-	}
-}
-
-// Regression: review bodies are attacker-controlled; if the agent exited and
-// the pane sits at a shell prompt, pasting them + Enter executes them.
-func TestSendReviewsToAgent_RefusesShellPane(t *testing.T) {
-	if !isGitAvailable() {
-		t.Skip("git not available")
-	}
-	repoDir := initGitRepo(t)
-	cfg := config.Default()
-	cfg.Agent.Command = "echo" // Create validates the agent binary exists
-	cfg.Worktree.BaseDir = ".opentree"
-
-	mock := &mockProcessManager{paneCommand: "zsh"}
-	ghMock := &mockGitHubManager{
-		fetchReviewsResult: []github.ReviewComment{{Author: "mallory", Body: "rm -rf ~", State: "CHANGES_REQUESTED"}},
-	}
-	svc, err := newWithMockFull(repoDir, cfg, mock, ghMock)
-	if err != nil {
-		t.Fatalf("newWithMockFull: %v", err)
-	}
-	ws, err := svc.Create("my-branch", "main")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	_, sendErr := svc.SendReviewsToAgent(ws.Name)
-	if sendErr == nil {
-		t.Fatal("expected refusal when pane shows a shell prompt")
-	}
-	if len(mock.sendMessageCalls) != 0 {
-		t.Error("review text must not be pasted into a shell pane")
-	}
-
-	// With the agent actually running, sending proceeds.
-	mock.paneCommand = "opencode"
-	count, err := svc.SendReviewsToAgent(ws.Name)
-	if err != nil {
-		t.Fatalf("SendReviewsToAgent with running agent: %v", err)
-	}
-	if count != 1 || len(mock.sendMessageCalls) != 1 {
-		t.Errorf("count = %d, sends = %d; want 1 and 1", count, len(mock.sendMessageCalls))
-	}
-}
-
-// Regression: Create with a nonexistent agent binary used to print
-// "✓ Launched ..." and leave a dead shell window behind.
 func TestCreate_RejectsMissingAgentBinary(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
@@ -989,5 +751,336 @@ func TestCreate_RejectsMissingAgentBinary(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(repoDir, ".opentree", "my-branch")); statErr == nil {
 		t.Error("no worktree should be created when the agent binary is missing")
+	}
+}
+
+// ---- ACP agent launch ----
+
+// fakeBinary drops an executable stub named cmd into dir, so Create's agent
+// validation passes without the real agent installed.
+// useAgent points cfg at a registry agent and fakes its binary onto PATH.
+// Create validates both, so a test that only wanted a workspace still needs an
+// agent opentree could plausibly run.
+func useAgent(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	// Prepended, not replaced: the worktree work still needs git.
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg.Agent.Command = "opencode"
+}
+
+func fakeBinary(t *testing.T, dir, cmd string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, cmd), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreate_ACPAgentLaunchesTheChatView(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	// Prepended, not replaced: the worktree work below still needs git.
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode" // has an ACP spec in the registry
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	if _, err := svc.Create("acp-branch", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if len(mock.createWindowArgs) != 1 {
+		t.Fatalf("CreateWindow calls = %d, want 1", len(mock.createWindowArgs))
+	}
+	// The window runs opentree's own chat, not the agent binary.
+	if got := mock.createWindowCommands[0]; got == "opencode" {
+		t.Errorf("command = %q, want the opentree binary rather than the agent", got)
+	}
+	// The agent is passed explicitly: the chat runs inside the worktree, whose
+	// own opentree.toml may name a different agent than the launcher read.
+	wantArgs := []string{"chat", "acp-branch", "--agent", "opencode"}
+	if strings.Join(mock.createWindowArgs[0], " ") != strings.Join(wantArgs, " ") {
+		t.Errorf("args = %v, want %v", mock.createWindowArgs[0], wantArgs)
+	}
+	// Status comes over the control socket now, so the hook env is dead weight.
+	if len(mock.createWindowEnvs[0]) != 0 {
+		t.Errorf("env = %v, want none for an ACP agent", mock.createWindowEnvs[0])
+	}
+}
+
+func TestEnsureWindow_ReopensAClosedWindow(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode"
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("gone", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// paneCommand "" is the mock's way of saying the window is not there,
+	// which is what quitting the chat leaves behind.
+	mock.paneCommand = ""
+	reopened, err := svc.EnsureWindow("gone")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if !reopened {
+		t.Fatal("expected the window to be reopened")
+	}
+	if len(mock.createWindowCalls) != 2 {
+		t.Fatalf("CreateWindow calls = %d, want the create plus the reopen", len(mock.createWindowCalls))
+	}
+	// It must come back as the chat, not the bare agent.
+	want := []string{"chat", "gone", "--agent", "opencode"}
+	if strings.Join(mock.createWindowArgs[1], " ") != strings.Join(want, " ") {
+		t.Errorf("reopen args = %v, want %v", mock.createWindowArgs[1], want)
+	}
+}
+
+func TestEnsureWindow_LeavesALiveWindowAlone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	mock := &mockProcessManager{paneCommand: "opentree"}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("alive", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	reopened, err := svc.EnsureWindow("alive")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if reopened {
+		t.Error("a live window must not be relaunched")
+	}
+	if len(mock.createWindowCalls) != 1 {
+		t.Errorf("CreateWindow calls = %d, want only the original create", len(mock.createWindowCalls))
+	}
+}
+
+func TestEnsureWindow_UnknownWorkspace(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	cfg := config.Default()
+	useAgent(t, cfg)
+	svc, err := newWithMock(initGitRepo(t), cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.EnsureWindow("never-existed"); err == nil {
+		t.Error("expected an error for a workspace that is not in state")
+	}
+}
+
+func TestChatCommand_UsesTheRunningBinary(t *testing.T) {
+	// Resolving from PATH would let a window launch a different opentree than
+	// the one that created it.
+	cmd, env, args := chatCommand("fix-auth", "opencode")
+	if cmd == "opentree" {
+		t.Error("fell back to PATH; os.Executable should have resolved")
+	}
+	if !filepath.IsAbs(cmd) {
+		t.Errorf("command = %q, want an absolute path", cmd)
+	}
+	if env != nil {
+		t.Errorf("env = %v, want none", env)
+	}
+	want := []string{"chat", "fix-auth", "--agent", "opencode"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+// The chat owns its window, so a shell sitting in its place means the chat is
+// gone — attaching would drop the user at a prompt instead of the conversation.
+func TestEnsureWindow_TreatsAShellInPlaceOfTheChatAsGone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode"
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("shelled", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mock.paneCommand = "zsh"
+	reopened, err := svc.EnsureWindow("shelled")
+	if err != nil {
+		t.Fatalf("EnsureWindow: %v", err)
+	}
+	if !reopened {
+		t.Fatal("a window sitting at a shell was reported healthy")
+	}
+}
+
+// A workspace recorded against an agent that has since left the registry cannot
+// be reopened — opentree has no way to run it. Saying so beats opening a chat
+// that dies on the handshake.
+func TestAgentLaunch_RefusesAnAgentTheRegistryDoesNotKnow(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	_, err = svc.agentLaunch("ws", "codex", svc.WorktreePath("ws"))
+	if err == nil {
+		t.Fatal("expected an error for an agent opentree cannot drive")
+	}
+	// The message has to name both the dead agent and the live ones, or the
+	// only remedy is guesswork.
+	for _, want := range []string{"codex", "opencode"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// The reason the skills package exists: git carries only what it tracks, so a
+// worktree made from a repository whose skills are untracked starts unable to
+// see them, and the agent working there is quietly less capable than the same
+// agent one directory up.
+func TestCreate_LinksTheReposSkillsIntoTheWorktree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Worktree.BaseDir = ".opentree"
+
+	// An untracked project skill, which is how most repositories keep them.
+	skillDir := filepath.Join(repoDir, ".claude", "skills", "release")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: release\ndescription: Ship it.\n---\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("feature", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(svc.WorktreePath("feature"), ".claude", "skills", "release", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("the agent in the worktree cannot read the repo's skill: %v", err)
+	}
+	if !strings.Contains(string(got), "name: release") {
+		t.Errorf("skill content = %q", got)
+	}
+	if missing := skills.Missing(repoDir, svc.WorktreePath("feature")); len(missing) != 0 {
+		t.Errorf("Missing = %v after Create, want nothing", missing)
+	}
+}
+
+// The general case of the same problem: the agent's first turn should not go on
+// discovering that the worktree has no .env.
+func TestCreate_SeedsTheConfiguredFilesIntoTheWorktree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Workspace.Seed = []string{".env"}
+
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("TOKEN=hunter2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("feature", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(svc.WorktreePath("feature"), ".env"))
+	if err != nil {
+		t.Fatalf("the agent in the worktree cannot read the repo's .env: %v", err)
+	}
+	if string(got) != "TOKEN=hunter2\n" {
+		t.Errorf(".env content = %q, want the repository's own", got)
+	}
+}
+
+// A seed path that leaves the repository is wrong for every workspace this
+// repository will ever make, so it fails before one is created rather than
+// leaving a worktree behind that quietly never receives its config.
+func TestCreate_RefusesASeedPathOutsideTheRepository(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Workspace.Seed = []string{"../../.ssh/id_rsa"}
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("feature", "main"); err == nil {
+		t.Fatal("Create accepted a seed path outside the repository")
+	}
+	if _, err := os.Stat(svc.WorktreePath("feature")); err == nil {
+		t.Error("a worktree was created despite the invalid config")
 	}
 }

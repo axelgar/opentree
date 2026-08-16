@@ -15,9 +15,11 @@ type Window struct {
 // ProcessManager abstracts process/window management so the workspace service
 // is not coupled to a specific backend (tmux, terminal tabs, etc.).
 type ProcessManager interface {
-	// CreateWindow creates a new window running command in workdir, with
-	// env (KEY=value pairs) set in the window's environment.
-	CreateWindow(name, workdir, command string, env []string, args ...string) error
+	// CreateAppWindow creates a window for a program that owns the whole
+	// screen: the command becomes the window's process, so nothing of the
+	// shell sits behind it and the window closes when it exits. env holds
+	// KEY=value pairs set in the window's environment.
+	CreateAppWindow(name, workdir, command string, env []string, args ...string) error
 
 	// ListWindows returns all windows in the current session.
 	ListWindows() ([]Window, error)
@@ -38,16 +40,10 @@ type ProcessManager interface {
 	// KillSession stops and removes the entire session.
 	KillSession() error
 
-	// CapturePane captures recent output lines from a window.
-	CapturePane(name string, lines int) (string, error)
-
 	// PaneCurrentCommand returns the name of the process currently running
-	// in a window's active pane (e.g. "zsh", "opencode").
+	// in a window's active pane (e.g. "zsh", "opentree").
 	PaneCurrentCommand(name string) (string, error)
 
 	// GetWindowActivity returns the timestamp of the last activity in a window.
 	GetWindowActivity(name string) (time.Time, error)
-
-	// SendMessage sends text followed by Enter to a window, as if typed by the user.
-	SendMessage(name, text string) error
 }

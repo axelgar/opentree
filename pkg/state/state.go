@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -37,9 +38,100 @@ type Workspace struct {
 	PRStatus       string    `json:"pr_status,omitempty"` // "open", "merged", "closed"
 	IssueNumber    int       `json:"issue_number,omitempty"`
 	IssueTitle     string    `json:"issue_title,omitempty"`
+	ACPSessionID   string    `json:"acp_session_id,omitempty"` // resumable agent conversation
 	BranchPushed   bool      `json:"branch_pushed,omitempty"`
 	MergeConflicts bool      `json:"merge_conflicts,omitempty"`
 	RemoteDeleted  bool      `json:"remote_deleted,omitempty"`
+
+	// SetupAt and SetupHash are the project's bootstrap commands, as this
+	// worktree last ran them. The hash is what earns the pair its keep: a chat
+	// starts many times per workspace — losing a window relaunches one — so
+	// without a marker the install would run on every attach, and without the
+	// hash an edited setup would stay stale forever.
+	SetupAt   time.Time `json:"setup_at,omitempty"`
+	SetupHash string    `json:"setup_hash,omitempty"`
+
+	// Port is this workspace's dev server port, given once and kept for the
+	// workspace's life. Kept rather than picked per start because an OAuth
+	// redirect URI is registered against an exact localhost:PORT, and a port
+	// that moved would break every login flow set up against it.
+	Port int `json:"port,omitempty"`
+
+	// ACPSessions is every conversation opentree has opened here, oldest first.
+	// ACPSessionID is the current one; this is what makes the earlier ones
+	// offerable again.
+	ACPSessions []ACPSession `json:"acp_sessions,omitempty"`
+}
+
+// ACPSession is one agent conversation this workspace has had.
+//
+// The agent is recorded with it because a session id is that agent's own
+// bookkeeping: handing an opencode id to Claude Code gets a failed load, not
+// somebody else's conversation.
+type ACPSession struct {
+	Agent     string    `json:"agent,omitempty"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// maxRecordedSessions caps the ledger.
+//
+// ponytail: a fixed cap with the oldest dropped. The picker shows the recent
+// ones and an agent that keeps its own list is the better source anyway; this
+// only has to survive the agent that does not.
+const maxRecordedSessions = 20
+
+// RecordSession makes s the workspace's current conversation and remembers it
+// among the ones that can be reopened later.
+//
+// Empty fields do not erase what is already known: the id is recorded the
+// moment a session is created, and its title only exists once somebody has
+// said something to it.
+func (w *Workspace) RecordSession(s ACPSession) {
+	if s.ID == "" {
+		return
+	}
+	w.ACPSessionID = s.ID
+
+	for i := range w.ACPSessions {
+		if w.ACPSessions[i].ID != s.ID {
+			continue
+		}
+		if s.Title != "" {
+			w.ACPSessions[i].Title = s.Title
+		}
+		if s.Agent != "" {
+			w.ACPSessions[i].Agent = s.Agent
+		}
+		if !s.UpdatedAt.IsZero() {
+			w.ACPSessions[i].UpdatedAt = s.UpdatedAt
+		}
+		return
+	}
+
+	w.ACPSessions = append(w.ACPSessions, s)
+	if len(w.ACPSessions) > maxRecordedSessions {
+		w.ACPSessions = w.ACPSessions[len(w.ACPSessions)-maxRecordedSessions:]
+	}
+}
+
+// ForgetSession drops a conversation the agent no longer has, so nothing offers
+// to reopen it. The workspace falls back to the most recent one left rather than
+// to nothing: an agent that discarded an empty session did not discard the real
+// conversation before it.
+func (w *Workspace) ForgetSession(id string) {
+	if id == "" {
+		return
+	}
+	w.ACPSessions = slices.DeleteFunc(w.ACPSessions, func(s ACPSession) bool { return s.ID == id })
+	if w.ACPSessionID != id {
+		return
+	}
+	w.ACPSessionID = ""
+	if n := len(w.ACPSessions); n > 0 {
+		w.ACPSessionID = w.ACPSessions[n-1].ID
+	}
 }
 
 // New creates a new state store

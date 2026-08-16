@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -9,8 +10,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 func spinnerTickCmd() tea.Cmd {
@@ -55,6 +58,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampDiffScroll()
 		}
 
+	case tea.MouseMsg:
+		return m.handleWheel(msg)
+
 	case tea.KeyMsg:
 		// ctrl+c always quits, even inside dialogs and text inputs where
 		// other keys are captured as text.
@@ -62,9 +68,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		// Error log overlay swallows all keys
+		// The error log swallows every key except its own. Copying is a key
+		// rather than a text selection because the dashboard holds the mouse —
+		// it has to, or the wheel scrolls the terminal's scrollback up over the
+		// alt screen — and a held mouse is one the terminal cannot drag-select
+		// with. One keystroke for the whole log beats a drag anyway: the entry
+		// worth reporting is rarely the only one that matters.
 		if m.showErrLog {
+			if key.Matches(msg, m.keys.CopyErrLog) && len(m.errLog) > 0 {
+				return m, m.copyErrLogCmd()
+			}
 			m.showErrLog = false
+			return m, nil
+		}
+
+		// The Skills tab owns its keys while it has focus. None of the
+		// workspace dialogs can be open behind it — there is no way to reach
+		// one from here — so this sits above them rather than after.
+		if m.tab == tabSkills {
+			return m.updateSkills(msg)
+		}
+		// The Servers tab owns its keys the same way, and for the same reason:
+		// none of the workspace dialogs can be open behind it.
+		if m.tab == tabServers {
+			return m.updateServers(msg)
+		}
+
+		// Confirming an adapter download before switching agent
+		if m.agentInstallConfirm != nil {
+			agent := *m.agentInstallConfirm
+			switch msg.String() {
+			case "y", "Y", "enter":
+				m.agentInstallConfirm = nil
+				m.agentPendingSelect = &agent
+				m.agentSelecting = false
+				return m, m.installAdapterCmd(agent)
+			case "n", "esc", "q":
+				m.agentInstallConfirm = nil
+			}
 			return m, nil
 		}
 
@@ -81,22 +122,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.agentCursor++
 				}
 			case "enter":
+				// Enter means "use this agent", so it does whatever that takes
+				// — including fetching an adapter — rather than recording a
+				// choice that cannot start.
 				agent := agents[m.agentCursor]
-				m.cfg.Agent.Command = agent.Command
-				if agent.Args != nil {
-					m.cfg.Agent.Args = agent.Args
-				} else {
-					m.cfg.Agent.Args = []string{}
+				switch status, _ := m.readiness(agent); status {
+				case agentNotFound:
+					return m, m.transientErrCmd(fmt.Sprintf(
+						"%s is not installed — install %s first", agent.Name, agent.Command))
+				case agentAdapterMissing:
+					// A download this size is asked about, not sprung.
+					m.agentInstallConfirm = &agents[m.agentCursor]
+					return m, nil
 				}
 				m.agentSelecting = false
-				// Persist only the agent keys (not the merged config), and
-				// surface failures instead of silently losing the selection.
-				if err := config.SetKeys(config.FindConfigFile(), map[string]any{
-					"agent.command": m.cfg.Agent.Command,
-					"agent.args":    m.cfg.Agent.Args,
-				}); err != nil {
-					return m, m.transientErrCmd(fmt.Sprintf("failed to save agent selection: %v", err))
+				if errMsg := m.selectAgent(agent); errMsg != "" {
+					return m, m.transientErrCmd(errMsg)
 				}
+			case "i":
+				// Installing without switching to it, for preparing ahead.
+				agent := agents[m.agentCursor]
+				if len(agent.ACPInstallCommand()) == 0 {
+					return m, m.transientErrCmd(fmt.Sprintf("%s needs no adapter", agent.Name))
+				}
+				if agent.ACPInstalled() {
+					return m, m.transientErrCmd(fmt.Sprintf("%s is already installed", agent.ACPCommand()))
+				}
+				m.agentSelecting = false
+				return m, m.installAdapterCmd(agent)
 			case "esc", "q":
 				m.agentSelecting = false
 			}
@@ -116,15 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.diffScrollOffset--
 				}
 			case "down", "j":
-				availHeight := m.height - 8
-				if availHeight < 5 {
-					availHeight = 5
-				}
-				maxScroll := len(strings.Split(m.diffContent, "\n")) - availHeight
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.diffScrollOffset < maxScroll {
+				if m.diffScrollOffset < m.maxDiffScroll() {
 					m.diffScrollOffset++
 				}
 			}
@@ -213,7 +258,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "enter":
 				m.filtering = false
 				m.cursor = 0
-				return m, m.capturePreviewCmd()
+				return m, nil
 			case "backspace":
 				if len(m.filterQuery) > 0 {
 					m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
@@ -323,13 +368,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Answering a chat agent's permission prompt
+		if m.answering {
+			return m.handleAnswerKey(msg)
+		}
+
+		// Sending a prompt to a chat agent without attaching
+		if m.prompting {
+			switch msg.String() {
+			case "enter":
+				text := strings.TrimSpace(m.input.Value())
+				wsName := m.promptWs
+				m.prompting, m.promptWs = false, ""
+				m.input.Reset()
+				if text == "" {
+					return m, nil
+				}
+				return m, m.sendAgentCommand(wsName, "sent", chat.Command{
+					Type: chat.CommandPrompt, Text: text,
+				})
+			case "esc":
+				m.prompting, m.promptWs = false, ""
+				m.input.Reset()
+				return m, nil
+			}
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
 		// Normal mode
 		visible := m.visibleWorkspaces()
 		switch {
+		case key.Matches(msg, m.keys.Tab):
+			// left walks the bar backwards, which from the first place is the
+			// last one. tab and right go forward, into Skills — and rescan on
+			// the way in, since skills are edited by hand and by other agents,
+			// so the tab shows what is on disk now rather than what was there
+			// when opentree started.
+			if msg.String() == "left" {
+				m.tab = tabServers
+				return m, nil
+			}
+			m.tab = tabSkills
+			return m, m.scanSkillsCmd
 		case msg.String() == "esc" && m.filterQuery != "":
 			m.filterQuery = ""
 			m.cursor = 0
-			return m, m.capturePreviewCmd()
+			return m, nil
 		case key.Matches(msg, m.keys.Quit):
 			// Quitting mid create/delete would orphan a half-built workspace
 			// (worktree and window exist, state entry not yet written).
@@ -340,12 +425,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
 				m.cursor--
-				return m, m.capturePreviewCmd()
+				return m, nil
 			}
 		case key.Matches(msg, m.keys.Down):
 			if m.cursor < len(visible)-1 {
 				m.cursor++
-				return m, m.capturePreviewCmd()
+				return m, nil
 			}
 		case key.Matches(msg, m.keys.New):
 			m.creating = true
@@ -416,8 +501,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.isWorkspaceInFlight(ws.Name) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
+				if reason := ws.chatUnavailable(); reason != "" {
+					return m, m.transientErrCmd(reason)
+				}
 				if ws.PRURL != "" {
-					return m, m.sendReviewsCmd(ws.Name)
+					return m, m.sendReviewsCmd(ws)
 				}
 				return m, m.transientErrCmd(fmt.Sprintf("no PR for %q — create one first with 'p'", ws.Name))
 			}
@@ -457,6 +545,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Sort):
 			m.sortMode = (m.sortMode + 1) % 4
 			m.cursor = 0
+			// The reshuffle alone is ambiguous about what changed; name it.
+			return m, m.noticeCmd("sorted by " + sortModeNames[m.sortMode])
 		case key.Matches(msg, m.keys.Agent):
 			m.agentSelecting = true
 			m.agentCursor = 0
@@ -468,6 +558,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case key.Matches(msg, m.keys.Answer):
+			if len(visible) == 0 {
+				return m, nil
+			}
+			ws := visible[m.cursor]
+			if reason := ws.chatUnavailable(); reason != "" {
+				return m, m.transientErrCmd(reason)
+			}
+			if ws.pendingPermission() == nil {
+				return m, m.transientErrCmd(fmt.Sprintf("%s is not waiting on a permission", ws.Name))
+			}
+			return m.openAnswerDialog(ws), nil
+
+		case key.Matches(msg, m.keys.Stop):
+			if len(visible) == 0 {
+				return m, nil
+			}
+			ws := visible[m.cursor]
+			if reason := ws.chatUnavailable(); reason != "" {
+				return m, m.transientErrCmd(reason)
+			}
+			if !ws.chatWorking() {
+				return m, m.transientErrCmd(fmt.Sprintf("%s's agent is not working", ws.Name))
+			}
+			return m, m.sendAgentCommand(ws.Name, "interrupted",
+				chat.Command{Type: chat.CommandInterrupt})
+
+		case key.Matches(msg, m.keys.Msg):
+			if len(visible) == 0 {
+				return m, nil
+			}
+			if reason := visible[m.cursor].chatUnavailable(); reason != "" {
+				return m, m.transientErrCmd(reason)
+			}
+			m.prompting = true
+			m.promptWs = visible[m.cursor].Name
+			m.input.Reset()
+			m.input.Placeholder = "Message the agent"
+			m.input.Focus()
+			return m, textinput.Blink
+
+		case key.Matches(msg, m.keys.Server):
+			if len(visible) == 0 {
+				return m, nil
+			}
+			ws := visible[m.cursor]
+			if m.isWorkspaceInFlight(ws.Name) {
+				return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+			}
+			return m, m.toggleServerCmd(ws.Name)
+
+		case key.Matches(msg, m.keys.Blocked):
+			next, ok := nextBlocked(visible, m.cursor)
+			if !ok {
+				return m, m.transientErrCmd("nothing is waiting on you")
+			}
+			m.cursor = next
+
 		case key.Matches(msg, m.keys.ErrLog):
 			m.showErrLog = !m.showErrLog
 		case key.Matches(msg, m.keys.Help):
@@ -476,7 +624,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinnerTickMsg:
 		if m.workspaceCreating || m.workspaceDeleting {
-			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+			m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
 			return m, spinnerTickCmd()
 		}
 		return m, nil
@@ -504,6 +652,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// would point destructive keys at whatever moved under the cursor.
 		prev := m.currentWorkspaceName()
 		m.workspaces = msg.workspaces
+		m.portless = msg.portless
+		m.recordChatErrors()
 		visible := m.visibleWorkspaces()
 		if prev != "" {
 			for i, ws := range visible {
@@ -516,7 +666,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
 		}
-		return m, m.capturePreviewCmd()
+		return m, nil
 
 	case createdWorkspaceMsg:
 		m.workspaceCreating = false
@@ -524,13 +674,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.wsName != "" {
 			// A refresh that read state after AddWorkspace may already have
 			// added the row; appending again would show it twice.
-			exists := false
-			for _, item := range m.workspaces {
-				if item.Name == msg.wsName {
-					exists = true
-					break
-				}
-			}
+			exists := m.workspaceIndex(msg.wsName) >= 0
 			if !exists && m.stateStore != nil {
 				if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
 					item := WorkspaceItem{
@@ -540,7 +684,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.workspaces = append(m.workspaces, item)
 				}
 			}
-			return m, m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false)
+			// Creating a workspace means wanting to work in it: go straight
+			// to the chat. Quitting the chat drops back to the list.
+			return m, tea.Batch(
+				m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false),
+				m.attachWorkspaceCmd(msg.wsName),
+			)
 		}
 		return m, nil
 
@@ -555,13 +704,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workspaceDeleting = false
 			m.workspaceDeletingName = ""
 		}
-		return m, m.loadWorkspacesCmd
-
-	case capturePreviewMsg:
-		// Drop captures for a workspace the cursor has since left.
-		if msg.wsName == m.currentWorkspaceName() {
-			m.agentPreview = msg.lines
+		notice := fmt.Sprintf("deleted %s", strings.Join(msg.names, ", "))
+		if len(msg.names) > 1 {
+			notice = fmt.Sprintf("deleted %d workspaces", len(msg.names))
 		}
+		return m, tea.Batch(m.loadWorkspacesCmd, m.noticeCmd(notice))
 
 	case refreshTickMsg:
 		next := tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} })
@@ -573,12 +720,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshing = true
 		return m, tea.Batch(m.loadWorkspacesCmd, next)
 
-	case previewTickMsg:
-		return m, tea.Batch(
-			m.capturePreviewCmd(),
-			tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return previewTickMsg{} }),
-		)
-
 	case prCreatedMsg:
 		ws, err := m.stateStore.GetWorkspace(msg.wsName)
 		if err == nil {
@@ -588,15 +729,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var branch, worktreeDir string
 		var wasPushed bool
-		for _, item := range m.workspaces {
-			if item.Name == msg.wsName {
-				branch = item.Branch
-				worktreeDir = item.WorktreeDir
-				wasPushed = item.BranchPushed
-				break
-			}
+		if i := m.workspaceIndex(msg.wsName); i >= 0 {
+			branch = m.workspaces[i].Branch
+			worktreeDir = m.workspaces[i].WorktreeDir
+			wasPushed = m.workspaces[i].BranchPushed
 		}
-		return m, tea.Batch(m.loadWorkspacesCmd, m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed))
+		// The URL is the deliverable of the whole flow — show it, and name the
+		// key that opens it, rather than the dialog just closing.
+		return m, tea.Batch(
+			m.loadWorkspacesCmd,
+			m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed),
+			m.noticeCmd(fmt.Sprintf("PR created: %s — o to open", ui.Truncate(msg.prURL, 60))),
+		)
 
 	case prContentGeneratedMsg:
 		// Only accept the generation we are waiting for; a stale result
@@ -640,12 +784,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ws.PRStatus = msg.prStatus
 			_ = m.stateStore.UpdateWorkspace(ws)
 		}
-		for i, item := range m.workspaces {
-			if item.Name == msg.wsName {
-				m.workspaces[i].PRURL = msg.prURL
-				m.workspaces[i].PRStatus = msg.prStatus
-				break
-			}
+		if i := m.workspaceIndex(msg.wsName); i >= 0 {
+			m.workspaces[i].PRURL = msg.prURL
+			m.workspaces[i].PRStatus = msg.prStatus
 		}
 
 	case ciStatusCheckedMsg:
@@ -671,20 +812,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			_ = m.stateStore.UpdateWorkspace(ws)
 		}
-		for i, item := range m.workspaces {
-			if item.Name == msg.wsName {
-				if !msg.status.RemoteCheckFailed {
-					m.workspaces[i].BranchPushed = msg.status.Pushed
-					m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
-				}
-				m.workspaces[i].MergeConflicts = msg.status.MergeConflicts
-				if msg.status.PRURL != "" {
-					m.workspaces[i].PRURL = msg.status.PRURL
-				}
-				if msg.status.PRState != "" {
-					m.workspaces[i].PRStatus = msg.status.PRState
-				}
-				break
+		if i := m.workspaceIndex(msg.wsName); i >= 0 {
+			if !msg.status.RemoteCheckFailed {
+				m.workspaces[i].BranchPushed = msg.status.Pushed
+				m.workspaces[i].RemoteDeleted = msg.status.RemoteDeleted
+			}
+			m.workspaces[i].MergeConflicts = msg.status.MergeConflicts
+			if msg.status.PRURL != "" {
+				m.workspaces[i].PRURL = msg.status.PRURL
+			}
+			if msg.status.PRState != "" {
+				m.workspaces[i].PRStatus = msg.status.PRState
 			}
 		}
 		if msg.status.CIStatus != "" {
@@ -701,15 +839,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendErrLog(fmt.Sprintf("PR status check: %v", msg.err))
 
 	case attachFinishedMsg:
-		// ExecProcess's RestoreTerminal re-enters the alt screen but drops mouse
-		// mode, which is what keeps the terminal's own scrollback suppressed. Turn
-		// it back on so returning from a worktree still feels fullscreen.
 		if msg.err != nil {
 			m.err = msg.err
 			m.appendErrLog(msg.err.Error())
-			return m, tea.Batch(tea.EnableMouseCellMotion, m.scheduleErrClear())
+			return m, afterExec(m.scheduleErrClear())
 		}
-		return m, tea.Batch(tea.EnableMouseCellMotion, m.loadWorkspacesCmd)
+		return m, afterExec(m.loadWorkspacesCmd)
 
 	case errMsg:
 		m.workspaceCreating = false
@@ -740,6 +875,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 		}
 
+	case adapterInstalledMsg:
+		pending := m.agentPendingSelect
+		m.agentPendingSelect = nil
+		if msg.err != nil {
+			return m, afterExec(m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err)))
+		}
+		m.notice = fmt.Sprintf("installed %s", msg.adapter)
+		// Enter meant "use this agent"; the install was only what stood in the
+		// way, so finish the job.
+		if pending != nil {
+			if errMsg := m.selectAgent(*pending); errMsg != "" {
+				return m, afterExec(m.transientErrCmd(errMsg))
+			}
+			m.notice += ", now using " + pending.Name
+		}
+		m.noticeSeq++
+		seq := m.noticeSeq
+		return m, afterExec(tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{seq: seq}
+		}))
+
+	case agentCommandSentMsg:
+		m.notice = fmt.Sprintf("%s: %s", msg.wsName, msg.action)
+		m.noticeSeq++
+		seq := m.noticeSeq
+		// Refresh straight away so the badge reflects the answer rather than
+		// waiting out the poll interval.
+		return m, tea.Batch(m.loadWorkspacesCmd, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{seq: seq}
+		}))
+
+	case serverToggledMsg:
+		m.notice = fmt.Sprintf("%s: %s", msg.wsName, msg.action)
+		m.noticeSeq++
+		seq := m.noticeSeq
+		// Refreshed straight away: the row's own server mark comes from tmux,
+		// and waiting out the poll would leave it contradicting the notice.
+		return m, tea.Batch(m.loadWorkspacesCmd, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{seq: seq}
+		}))
+
 	case reviewsSentMsg:
 		if msg.count == 0 {
 			return m, m.transientErrCmd(fmt.Sprintf("no review comments found for %q", msg.wsName))
@@ -751,26 +927,182 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return clearNoticeMsg{seq: seq}
 		})
 
+	case skillsScannedMsg:
+		m.skillsTab.list = msg.skills
+		// The list may have shrunk under the cursor — a deleted skill, or a
+		// filter that no longer matches.
+		if m.skillsTab.cursor >= len(m.visibleSkills()) {
+			m.skillsTab.cursor = max(len(m.visibleSkills())-1, 0)
+		}
+
+	case skillEditedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("editor: " + msg.err.Error())
+		}
+		// The frontmatter is what may have changed, so the row is re-read.
+		return m, m.scanSkillsCmd
+
+	case skillsRelinkedMsg:
+		var done []string
+		if len(msg.bridged) > 0 {
+			done = append(done, "created "+strings.Join(msg.bridged, ", "))
+		}
+		if msg.count > 0 {
+			done = append(done, "linked skills into "+plural(msg.count, "workspace"))
+		}
+		if len(done) == 0 {
+			return m, m.transientErrCmd("every agent and workspace already sees the repo's skills")
+		}
+		// Rescanned as well as reloaded: a bridge is a new tree, and the agent
+		// reading it is a mark the rows do not carry yet.
+		return m, tea.Batch(m.loadWorkspacesCmd, m.scanSkillsCmd,
+			m.noticeCmd(strings.Join(done, " • ")))
+
+	case skillClonedMsg:
+		if msg.err != nil {
+			// Rescanned even so: several trees can be chosen at once, and one
+			// that refused does not mean none of them took it.
+			return m, tea.Batch(m.scanSkillsCmd, m.transientErrCmd(msg.err.Error()))
+		}
+		added := "added " + msg.name
+		if msg.trees > 1 {
+			added += " to " + plural(msg.trees, "tree")
+		}
+		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd(added))
+
+	case skillsDiscoveredMsg:
+		// The flow can be abandoned while the request is still out, and a
+		// stale answer must not reopen it.
+		if !m.skillsTab.discovering || m.skillsTab.addURL != msg.site {
+			return m, nil
+		}
+		m.skillsTab.discovering = false
+		var cmd tea.Cmd
+		if msg.err != nil || len(msg.entries) == 0 {
+			// Not a publisher, which is the ordinary case: the address was a
+			// git URL all along. The error is dropped rather than shown —
+			// git's own is the one worth reading if this fails too.
+			m, cmd = m.pickTree()
+			return m, cmd
+		}
+		m.skillsTab.entries, m.skillsTab.pickCursor = msg.entries, 0
+		if len(msg.entries) == 1 {
+			// One skill is not a choice worth drawing a picker for.
+			chosen := msg.entries[0]
+			m.skillsTab.entry = &chosen
+			m, cmd = m.pickTree()
+			return m, cmd
+		}
+		return m, nil
+
+	case skillUpdatedMsg:
+		m.skillsTab.updating = false
+		if msg.err != nil {
+			return m, m.transientErrCmd(msg.err.Error())
+		}
+		if !msg.changed {
+			return m, m.noticeCmd(msg.name + " is up to date")
+		}
+		// Rescanned: the new version's frontmatter is what the row shows, and
+		// the name and description in it are the parts that may have moved.
+		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("updated "+msg.name))
+
+	case skillProbedMsg:
+		m.skillsTab.probing = false
+		if msg.err != nil {
+			return m, m.transientErrCmd(msg.agent + ": " + msg.err.Error())
+		}
+		m.skillsTab.probe, m.skillsTab.probed = msg.commands, msg.agent
+		return m, m.noticeCmd(fmt.Sprintf("%s advertises %s",
+			msg.agent, plural(len(msg.commands), "command")))
+
 	case clearNoticeMsg:
 		if msg.seq == m.noticeSeq {
 			m.notice = ""
 		}
+
+	case browserOpenedMsg:
+		return m, m.noticeCmd("opened " + ui.Truncate(msg.url, 60) + " in browser")
+
+	case errLogCopiedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("copy failed: " + msg.err.Error())
+		}
+		return m, m.noticeCmd("copied " + plural(msg.count, "error") + " to clipboard")
 	}
 
 	return m, cmd
 }
 
+// afterExec wraps whatever a tea.ExecProcess callback wants to do next with the
+// one thing every such callback must do. ExecProcess's RestoreTerminal re-enters
+// the alt screen but drops mouse mode, and mouse mode is what keeps the wheel
+// inside the app instead of scrolling the terminal's own scrollback. Getting
+// this wrong is invisible until someone scrolls, so it is a helper rather than a
+// rule to remember at each of the handler's return paths.
+func afterExec(cmds ...tea.Cmd) tea.Cmd {
+	return tea.Batch(append([]tea.Cmd{tea.EnableMouseCellMotion}, cmds...)...)
+}
+
+// wheelLines is how far one notch moves a body of text. Matches the viewport's
+// own default so the chat and the diff scroll at the same rate.
+const wheelLines = 3
+
+// busyWithDialog reports whether something in front of the list owns the
+// keyboard. The wheel stays out of those: the cursor it would move is not
+// visible, so the change would only be discovered later as a surprise.
+func (m Model) busyWithDialog() bool {
+	return m.creating || m.deleting || m.filtering || m.prCreating || m.prGenerating ||
+		m.agentSelecting || m.agentInstallConfirm != nil || m.answering || m.prompting ||
+		m.showErrLog
+}
+
+// handleWheel drives whatever is scrollable underneath the pointer. The mouse
+// is captured so the terminal stops scrolling its own scrollback out from under
+// the alt screen; having taken it, the wheel owes the user a response, or the
+// dashboard reads as frozen rather than as focused.
+//
+// Only the wheel is acted on. Clicks and motion arrive too — cell motion is the
+// mode that suppresses the terminal's scrollback — and the list has nothing to
+// do with them.
+func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	var delta int
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		delta = -1
+	case tea.MouseButtonWheelDown:
+		delta = 1
+	default:
+		return m, nil
+	}
+
+	if m.diffViewing {
+		m.diffScrollOffset = min(max(m.diffScrollOffset+delta*wheelLines, 0), m.maxDiffScroll())
+		return m, nil
+	}
+	if m.busyWithDialog() {
+		return m, nil
+	}
+
+	// Anywhere else the wheel walks the selection, which is the only thing the
+	// list has to move.
+	next := min(max(m.cursor+delta, 0), max(len(m.visibleWorkspaces())-1, 0))
+	if next == m.cursor {
+		return m, nil
+	}
+	m.cursor = next
+	return m, nil
+}
+
+// maxDiffScroll is the furthest the diff can scroll before the last line is on
+// screen. Shared so the keys, the wheel and the resize clamp cannot disagree.
+func (m Model) maxDiffScroll() int {
+	availHeight := max(m.height-8, 5)
+	return max(len(strings.Split(m.diffContent, "\n"))-availHeight, 0)
+}
+
 func (m *Model) clampDiffScroll() {
-	lines := len(strings.Split(m.diffContent, "\n"))
-	availHeight := m.height - 8
-	if availHeight < 5 {
-		availHeight = 5
-	}
-	maxScroll := lines - availHeight
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.diffScrollOffset > maxScroll {
+	if maxScroll := m.maxDiffScroll(); m.diffScrollOffset > maxScroll {
 		m.diffScrollOffset = maxScroll
 	}
 }
@@ -802,6 +1134,39 @@ func (m *Model) transientErrCmd(msg string) tea.Cmd {
 	m.err = fmt.Errorf("%s", msg)
 	m.appendErrLog(msg)
 	return m.scheduleErrClear()
+}
+
+// noticeCmd raises a success banner and arms its 3s auto-clear. The sequence
+// number is what stops an older banner's timer from wiping a newer one.
+func (m *Model) noticeCmd(msg string) tea.Cmd {
+	m.notice = msg
+	m.noticeSeq++
+	seq := m.noticeSeq
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return clearNoticeMsg{seq: seq}
+	})
+}
+
+// recordChatErrors copies failures reported by chat processes into the error
+// log. A setup command that failed in a window nobody attached to has nowhere
+// else to be seen, and the chat itself cannot reach this log — it is a
+// different process.
+//
+// The same failure stays on the socket until the window is dealt with, and it
+// is read again on every refresh — so a message already in the log is left
+// alone rather than re-stamped. The first time it happened is the useful time,
+// and two failing workspaces would otherwise take turns appending forever.
+func (m *Model) recordChatErrors() {
+	for _, ws := range m.workspaces {
+		if ws.ChatStatus == nil || ws.ChatStatus.Error == "" {
+			continue
+		}
+		text := ws.ChatStatus.Error
+		if slices.ContainsFunc(m.errLog, func(e string) bool { return strings.HasSuffix(e, "] "+text) }) {
+			continue
+		}
+		m.appendErrLog(text)
+	}
 }
 
 func (m *Model) appendErrLog(msg string) {

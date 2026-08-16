@@ -9,10 +9,30 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/bootstrap"
+	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/workspace"
 )
+
+// copyErrLogCmd puts the whole log on the system clipboard. The whole log
+// rather than the entry under some cursor: there is no cursor here, and an
+// error worth reporting is usually the one before or after the one that got
+// noticed. The lines are snapshotted before the command runs, so a failure
+// arriving while the log is being written to still copies what was on screen.
+func (m Model) copyErrLogCmd() tea.Cmd {
+	entries := append([]string(nil), m.errLog...)
+	text := strings.Join(entries, "\n") + "\n"
+	return func() tea.Msg {
+		if err := copyToClipboard(text); err != nil {
+			return errLogCopiedMsg{err: err}
+		}
+		return errLogCopiedMsg{count: len(entries)}
+	}
+}
 
 // baseOr returns base, falling back to the configured default base branch
 // for workspaces persisted before the base was recorded.
@@ -63,11 +83,19 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 				win, exists = windowMap[sanitizedName]
 			}
 
+			_, serving := windowMap[m.svc.ServerWindow(ws.Name)]
+			// Dialled only for a server that could be up: a port nothing was
+			// started on has nothing to say, and the refresh cannot afford
+			// pointless waits.
+			listening := serving && ws.Port != 0 && bootstrap.Listening(ws.Port)
+
 			item := WorkspaceItem{
-				Workspace:   ws,
-				DiffStat:    diffStat,
-				Active:      exists && win.Active,
-				FileChanges: fileChanges,
+				Workspace:       ws,
+				DiffStat:        diffStat,
+				Active:          exists && win.Active,
+				FileChanges:     fileChanges,
+				ServerRunning:   serving,
+				ServerListening: listening,
 			}
 			if exists {
 				item.WindowID = win.ID
@@ -75,7 +103,10 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 			if ws.WorktreeDir != "" {
 				item.UncommittedCount = countUncommitted(ws.WorktreeDir)
-				item.AgentStatus = readAgentStatus(ws.WorktreeDir)
+				item.ChatStatus = readChatStatus(m.repoRoot, ws.Name)
+				// A couple of stats per workspace, so it rides the same refresh
+				// rather than needing a poll of its own.
+				item.MissingSkills = skills.Missing(m.repoRoot, ws.WorktreeDir)
 			}
 
 			if exists {
@@ -89,7 +120,16 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 	}
 	wg.Wait()
 
-	return loadedWorkspacesMsg{workspaces: items}
+	// Asked once per refresh rather than once per row: whether portless can
+	// serve is a fact about this machine. Only asked at all when the project
+	// configures a server, since it is a LookPath and a dial for nothing
+	// otherwise.
+	var portless bootstrap.Portless
+	if m.cfg.Workspace.Run != "" {
+		portless = bootstrap.CheckPortless()
+	}
+
+	return loadedWorkspacesMsg{workspaces: items, portless: portless}
 }
 
 func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
@@ -160,6 +200,87 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 	}
 }
 
+// toggleServerCmd starts a workspace's dev server, or stops it if it is already
+// running. One key for both because the state is on screen: the row says
+// whether a server is up, so the key means "change that".
+//
+// Which of the two it does is decided here rather than from what the list last
+// drew — a refresh is up to a tick stale, and a server killed by hand in its own
+// window would otherwise be "stopped" a second time.
+func (m Model) toggleServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if m.svc.ServerRunning(name) {
+			if err := m.svc.StopServer(name); err != nil {
+				return errMsg{err}
+			}
+			return serverToggledMsg{wsName: name, action: "server stopped"}
+		}
+		port, err := m.svc.StartServer(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server started on :%d", port)}
+	}
+}
+
+// startServerCmd, stopServerCmd and restartServerCmd are the Servers tab's
+// three actions. They are separate rather than one toggle because that tab
+// draws the state it is acting on — a row that says "stopped" wants a key that
+// means start, not one that means "the other thing".
+func (m Model) startServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		port, err := m.svc.StartServer(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server started on :%d", port)}
+	}
+}
+
+func (m Model) stopServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.svc.StopServer(name); err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: "server stopped"}
+	}
+}
+
+// restartServerCmd is the everyday one: a config file the server does not watch,
+// a dependency it loaded at boot. Stopping a server that is not running is not
+// an error here — restart means "be running, freshly".
+func (m Model) restartServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if m.svc.ServerRunning(name) {
+			if err := m.svc.StopServer(name); err != nil {
+				return errMsg{err}
+			}
+		}
+		port, err := m.svc.StartServer(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server restarted on :%d", port)}
+	}
+}
+
+// attachServerCmd opens the window the server is running in, which holds all of
+// its output — the answer to "where did that log line go".
+func (m Model) attachServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		cmd, err := m.svc.Process().AttachCmd(m.svc.ServerWindow(name))
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to attach to %s's server: %w", name, err)}
+		}
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				err = fmt.Errorf("failed to attach to %s's server: %w", name, err)
+			}
+			return attachFinishedMsg{err: err}
+		})()
+	}
+}
+
 func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.svc.DeleteMultiple(names); err != nil {
@@ -171,11 +292,22 @@ func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
+		// Quitting the chat closes its window; the worktree and the agent
+		// conversation both survive, so attaching reopens rather than refuses.
+		if _, err := m.svc.EnsureWindow(name); err != nil {
+			return errMsg{err}
+		}
 		cmd, err := m.svc.Process().AttachCmd(name)
 		if err != nil {
 			return errMsg{err}
 		}
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				// tmux's own message is lost to ExecProcess, so a bare
+				// "exit status 1" is all that survives — at least name the
+				// workspace it was trying to reach.
+				err = fmt.Errorf("failed to attach to %q: %w", name, err)
+			}
 			return attachFinishedMsg{err: err}
 		})()
 	}
@@ -244,35 +376,27 @@ func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bo
 	}
 }
 
-func (m Model) capturePreviewCmd() tea.Cmd {
-	if len(m.workspaces) == 0 {
-		return nil
-	}
-	visible := m.visibleWorkspaces()
-	if len(visible) == 0 || m.cursor >= len(visible) {
-		return func() tea.Msg { return capturePreviewMsg{lines: ""} }
-	}
-	ws := visible[m.cursor]
-	if ws.WindowID == "" {
-		return func() tea.Msg { return capturePreviewMsg{wsName: ws.Name, lines: ""} }
-	}
-	wsName := ws.Name
+// sendReviewsCmd hands a workspace's open PR review comments to its agent as a
+// prompt, over the chat's control socket. The socket refuses a prompt the chat
+// cannot honour — mid-turn, or no chat running — so "sent" stays truthful.
+func (m Model) sendReviewsCmd(ws WorkspaceItem) tea.Cmd {
+	repoRoot, wsName, branch := m.repoRoot, ws.Name, ws.Branch
 	return func() tea.Msg {
-		output, err := m.svc.Process().CapturePane(wsName, 5)
-		if err != nil {
-			return capturePreviewMsg{wsName: wsName, lines: ""}
+		comments, err := m.prMgr.FetchPRReviews(branch)
+		// Partial results (top-level reviews fetched, inline-thread fetch
+		// failed) are still sent rather than discarded.
+		if err != nil && len(comments) == 0 {
+			return errMsg{fmt.Errorf("failed to fetch PR reviews: %w", err)}
 		}
-		return capturePreviewMsg{wsName: wsName, lines: cleanPreview(output)}
-	}
-}
-
-func (m Model) sendReviewsCmd(wsName string) tea.Cmd {
-	return func() tea.Msg {
-		count, err := m.svc.SendReviewsToAgent(wsName)
-		if err != nil {
-			return errMsg{err}
+		if len(comments) == 0 {
+			return reviewsSentMsg{wsName: wsName}
 		}
-		return reviewsSentMsg{wsName: wsName, count: count}
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), chat.Command{
+			Type: chat.CommandPrompt, Text: github.FormatReviewsPrompt(comments),
+		}); err != nil {
+			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
+		}
+		return reviewsSentMsg{wsName: wsName, count: len(comments)}
 	}
 }
 

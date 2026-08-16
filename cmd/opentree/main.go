@@ -53,6 +53,7 @@ func init() {
 	rootCmd.AddCommand(cmd.NewCmd)
 	rootCmd.AddCommand(cmd.ListCmd)
 	rootCmd.AddCommand(cmd.AttachCmd)
+	rootCmd.AddCommand(cmd.ChatCmd)
 	rootCmd.AddCommand(cmd.DeleteCmd)
 	rootCmd.AddCommand(cmd.DiffCmd)
 	rootCmd.AddCommand(cmd.PrCmd)
@@ -62,6 +63,11 @@ func init() {
 	rootCmd.AddCommand(cmd.AgentsCmd)
 	rootCmd.AddCommand(cmd.ReviewCmd)
 	rootCmd.AddCommand(cmd.PruneCmd)
+	rootCmd.AddCommand(cmd.TrustCmd)
+	rootCmd.AddCommand(cmd.SetupCmd)
+	rootCmd.AddCommand(cmd.SeedCmd)
+	rootCmd.AddCommand(cmd.SkillsCmd)
+	rootCmd.AddCommand(cmd.NotifyCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {

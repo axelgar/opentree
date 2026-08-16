@@ -44,12 +44,7 @@ var agentsListCmd = &cobra.Command{
 				name += " *"
 			}
 
-			cmdStr := agent.Command
-			if len(agent.Args) > 0 {
-				cmdStr += " " + strings.Join(agent.Args, " ")
-			}
-
-			fmt.Printf("%-18s %-12s %-10s %s\n", name, cmdStr, status, agent.Description)
+			fmt.Printf("%-18s %-12s %-10s %s\n", name, agent.Command, status, agent.Description)
 		}
 		return nil
 	},
@@ -81,16 +76,9 @@ var agentsUseCmd = &cobra.Command{
 			return fmt.Errorf("agent %q not found", args[0])
 		}
 
-		args0 := agent.Args
-		if args0 == nil {
-			args0 = []string{}
-		}
-		// Write only the agent keys into the raw target file: saving a
-		// merged Config would freeze every default/global value into it.
-		values := map[string]any{
-			"agent.command": agent.Command,
-			"agent.args":    args0,
-		}
+		// Write only the agent key into the raw target file: saving a merged
+		// Config would freeze every default/global value into it.
+		values := map[string]any{"agent.command": agent.Command}
 
 		if agentsUseGlobal {
 			path := config.GlobalConfigPath()

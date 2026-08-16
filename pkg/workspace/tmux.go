@@ -17,8 +17,8 @@ func NewTmuxProcessManager(ctrl *tmux.Controller) *TmuxProcessManager {
 	return &TmuxProcessManager{ctrl: ctrl}
 }
 
-func (t *TmuxProcessManager) CreateWindow(name, workdir, command string, env []string, args ...string) error {
-	return t.ctrl.CreateWindow(name, workdir, command, env, args...)
+func (t *TmuxProcessManager) CreateAppWindow(name, workdir, command string, env []string, args ...string) error {
+	return t.ctrl.CreateAppWindow(name, workdir, command, env, args...)
 }
 
 func (t *TmuxProcessManager) ListWindows() ([]Window, error) {
@@ -53,18 +53,10 @@ func (t *TmuxProcessManager) KillSession() error {
 	return t.ctrl.KillSession()
 }
 
-func (t *TmuxProcessManager) CapturePane(name string, lines int) (string, error) {
-	return t.ctrl.CapturePane(name, lines)
-}
-
 func (t *TmuxProcessManager) PaneCurrentCommand(name string) (string, error) {
 	return t.ctrl.PaneCurrentCommand(name)
 }
 
 func (t *TmuxProcessManager) GetWindowActivity(name string) (time.Time, error) {
 	return t.ctrl.GetWindowActivity(name)
-}
-
-func (t *TmuxProcessManager) SendMessage(name, text string) error {
-	return t.ctrl.SendMessage(name, text)
 }

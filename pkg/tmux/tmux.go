@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,21 @@ import (
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
+
+// ErrNotInstalled is what window creation fails with when there is no tmux on
+// PATH. It is named rather than left to exec's "executable file not found in
+// $PATH", which arrives wrapped twice over and is the first thing a truncating
+// caller cuts — leaving the user with a window that failed and no reason why.
+var ErrNotInstalled = errors.New("tmux is not installed — install it (macOS: brew install tmux) and try again")
+
+// Installed reports whether a tmux binary is on PATH. Every workspace's agent
+// runs in a tmux window, so this is the difference between opentree working and
+// nothing working at all; the dashboard asks once at startup so it can say so
+// before the user has tried and failed.
+func Installed() bool {
+	_, err := exec.LookPath("tmux")
+	return err == nil
+}
 
 // Controller manages tmux sessions and windows
 type Controller struct {
@@ -31,74 +47,81 @@ func New(sessionPrefix string) *Controller {
 	}
 }
 
-// CreateWindow creates a new tmux window and runs a command in it. env holds
-// KEY=value pairs set in the window's environment (tmux new-window -e, ≥3.0)
-// rather than typed into the shell, keeping the visible command line clean.
-func (c *Controller) CreateWindow(name, workdir, command string, env []string, args ...string) error {
+// CreateAppWindow creates a window whose process *is* the command. Nothing is
+// typed into a shell, which is the difference that matters for a full-screen
+// program: tmux's alternate screen preserves whatever the pane held before the
+// program started and puts it back when it exits, so a shell launched first
+// leaves its startup output, its prompt and the launch line sitting behind the
+// program — reachable by scrolling, and revealed the moment it quits.
+//
+// Running the program directly leaves the pane with nothing behind it, and the
+// window closes when the program does.
+func (c *Controller) CreateAppWindow(name, workdir, command string, env []string, args ...string) error {
+	// exec so the program replaces the shell rather than being its child;
+	// otherwise the pane's process is sh and nothing has really changed.
+	_, err := c.newWindow(name, workdir, env, "--", "sh", "-c", launchLine(command, args))
+	return err
+}
+
+// newWindow creates the window and returns its unique tmux id. Commands target
+// the id rather than the name: names prefix-match, and "." or digits in one are
+// parsed specially by tmux's target syntax.
+func (c *Controller) newWindow(name, workdir string, env []string, trailing ...string) (string, error) {
 	// Fail with a clear message before creating a session: on tmux <3.0 the
 	// new-window -e flag below would die with an opaque usage error.
 	if err := c.checkVersion(); err != nil {
-		return err
+		return "", err
 	}
 
 	sessionName := c.getSessionName()
-
-	// Ensure tmux session exists
 	if !c.sessionExists(sessionName) {
 		if err := c.createSession(sessionName); err != nil {
-			return fmt.Errorf("failed to create tmux session: %w", err)
+			return "", fmt.Errorf("failed to create tmux session: %w", err)
 		}
+	} else {
+		// Sessions predating this option, or made by hand, get it too — setting
+		// it is idempotent and cheaper than explaining why one repo's windows
+		// scroll and another's do not.
+		c.enableMouse(sessionName)
 	}
 
-	// Create new window, capturing its unique window ID so later commands
-	// target exactly this window (names would prefix-match and "." or digits
-	// in a name are parsed specially by tmux target syntax).
-	windowName := c.sanitizeWindowName(name)
-	newWindowArgs := []string{"new-window", "-t", exactSession(sessionName) + ":",
-		"-n", windowName, "-c", workdir, "-P", "-F", "#{window_id}"}
+	args := []string{"new-window", "-t", exactSession(sessionName) + ":",
+		"-n", c.sanitizeWindowName(name), "-c", workdir, "-P", "-F", "#{window_id}"}
 	for _, e := range env {
-		newWindowArgs = append(newWindowArgs, "-e", e)
+		args = append(args, "-e", e)
 	}
-	cmd := exec.Command("tmux", newWindowArgs...)
-	output, err := cmd.CombinedOutput()
+	args = append(args, trailing...)
+
+	output, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
+		return "", fmt.Errorf("failed to create tmux window: %w\nOutput: %s", err, output)
 	}
-	windowID := strings.TrimSpace(string(output))
-
-	// Send command to the window, raising the file descriptor limit first
-	// so that tools like claude and opencode don't hit the default macOS limit.
-	fullCmd := command
-	if len(args) > 0 {
-		quoted := make([]string, len(args))
-		for i, a := range args {
-			quoted[i] = shellQuote(a)
-		}
-		fullCmd = command + " " + strings.Join(quoted, " ")
-	}
-	fullCmd = fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", fullCmd)
-
-	// -l types the command line literally so tmux never interprets it as key names.
-	sendCmd := exec.Command("tmux", "send-keys", "-l", "-t", windowID, "--", fullCmd)
-	if output, err := sendCmd.CombinedOutput(); err != nil {
-		// Don't leave a dead window behind for the retry to collide with.
-		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
-		return fmt.Errorf("failed to send command to window: %w\nOutput: %s", err, output)
-	}
-	enterCmd := exec.Command("tmux", "send-keys", "-t", windowID, "Enter")
-	if output, err := enterCmd.CombinedOutput(); err != nil {
-		_ = exec.Command("tmux", "kill-window", "-t", windowID).Run()
-		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
-	}
-
-	return nil
+	return strings.TrimSpace(string(output)), nil
 }
 
-// checkVersion fails when the installed tmux predates 3.0, which CreateWindow
-// requires for new-window -e. Cached per Controller. A missing/broken tmux
-// binary passes: the command that actually needs tmux reports that error.
+// launchLine is the shell line that starts the window's program. The file
+// descriptor limit is raised first so the agents behind the chat do not hit the
+// default macOS limit; exec then replaces the shell, so the pane's process is
+// the program itself.
+func launchLine(command string, args []string) string {
+	parts := []string{"exec", command}
+	for _, a := range args {
+		parts = append(parts, shellQuote(a))
+	}
+	return fmt.Sprintf("ulimit -n 2147483646 2>/dev/null; %s", strings.Join(parts, " "))
+}
+
+// checkVersion fails when there is no tmux at all, and when the installed one
+// predates 3.0 (which newWindow requires for new-window -e). Cached per
+// Controller. A tmux that is present but cannot answer -V still passes: the
+// command that actually needs it reports that error, and refusing on an
+// unreadable version would block unusual builds that work fine.
 func (c *Controller) checkVersion() error {
 	c.versionOnce.Do(func() {
+		if !Installed() {
+			c.versionErr = ErrNotInstalled
+			return
+		}
 		out, err := exec.Command("tmux", "-V").Output()
 		if err != nil {
 			return
@@ -230,11 +253,81 @@ func isTerminal(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
+// returnOption is left on a window opentree attaches to, naming how a
+// full-screen program running there hands the terminal back to the workspace
+// list. Only the attaching client knows the answer — the list may be outside
+// tmux, in another window of this session, or in another session entirely —
+// and tmux's own "last" targets cover the two inside cases, so the value never
+// has to name a target.
+const returnOption = "@opentree-return"
+
+const (
+	returnDetach  = "detach"
+	returnWindow  = "window"
+	returnSession = "session"
+)
+
+// recordReturn stamps name's window with the way back, best effort: failing to
+// record it costs a nicer exit, not the attach that is about to happen.
+func (c *Controller) recordReturn(name string, env tmuxEnv) {
+	var value string
+	switch env {
+	case envOutsideTmux:
+		value = returnDetach
+	case envInsideSameSession:
+		value = returnWindow
+	case envInsideDifferentSession:
+		value = returnSession
+	default:
+		return
+	}
+	windowID, err := c.findWindowID(name)
+	if err != nil {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-w", "-t", windowID, returnOption, value).Run()
+}
+
+// ReturnToList sends the client viewing the current pane back to opentree's
+// workspace list, and reports whether it could. It is for the programs opentree
+// runs as a tmux window's own process: exiting drops the user in whatever
+// window tmux picks next, which is not where they came from.
+func ReturnToList() bool {
+	if os.Getenv("TMUX") == "" {
+		return false
+	}
+	out, err := exec.Command("tmux", "show-options", "-wqv", returnOption).Output()
+	if err != nil {
+		return false
+	}
+	args := returnArgs(strings.TrimSpace(string(out)))
+	if args == nil {
+		return false
+	}
+	return exec.Command("tmux", args...).Run() == nil
+}
+
+// returnArgs maps a recorded return to the tmux command that performs it. A
+// missing or unknown value returns nil: a window opentree never attached to is
+// one whose caller has to decide for itself what leaving means.
+func returnArgs(value string) []string {
+	switch value {
+	case returnDetach:
+		return []string{"detach-client"}
+	case returnWindow:
+		return []string{"select-window", "-l"}
+	case returnSession:
+		return []string{"switch-client", "-l"}
+	}
+	return nil
+}
+
 // AttachWindow attaches to a specific tmux window using the correct
 // strategy based on the current environment.
 func (c *Controller) AttachWindow(name string) error {
 	env := c.detectEnv()
 	sessionName := c.getSessionName()
+	c.recordReturn(name, env)
 
 	switch env {
 	case envNoTTY:
@@ -286,6 +379,7 @@ func (c *Controller) AttachWindow(name string) error {
 func (c *Controller) AttachCmd(name string) (*exec.Cmd, error) {
 	env := c.detectEnv()
 	sessionName := c.getSessionName()
+	c.recordReturn(name, env)
 
 	switch env {
 	case envNoTTY:
@@ -329,32 +423,6 @@ func (c *Controller) KillWindow(name string) error {
 	return nil
 }
 
-// SendMessage sends a text message to a tmux window as if typed by the user,
-// followed by Enter. The text is delivered through a tmux paste buffer with
-// bracketed paste so multi-line payloads and words that look like tmux key
-// names ("Enter", "C-c", ...) arrive literally instead of being interpreted.
-func (c *Controller) SendMessage(name, text string) error {
-	target, err := c.findWindowID(name)
-	if err != nil {
-		return err
-	}
-
-	load := exec.Command("tmux", "load-buffer", "-b", "opentree-msg", "-")
-	load.Stdin = strings.NewReader(text)
-	if output, err := load.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to load message buffer: %w\nOutput: %s", err, output)
-	}
-	paste := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", "opentree-msg", "-t", target)
-	if output, err := paste.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to paste message to window: %w\nOutput: %s", err, output)
-	}
-	enter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
-	if output, err := enter.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send Enter to window: %w\nOutput: %s", err, output)
-	}
-	return nil
-}
-
 // KillSession stops and removes the tmux session
 func (c *Controller) KillSession() error {
 	sessionName := c.getSessionName()
@@ -376,23 +444,6 @@ func (c *Controller) KillSession() error {
 	}
 
 	return nil
-}
-
-// CapturePane captures recent output from a window
-func (c *Controller) CapturePane(name string, lines int) (string, error) {
-	windowID, err := c.findWindowID(name)
-	if err != nil {
-		return "", err
-	}
-
-	cmd := exec.Command("tmux", "capture-pane", "-t", windowID,
-		"-p", "-S", fmt.Sprintf("-%d", lines))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to capture pane: %w", err)
-	}
-
-	return string(output), nil
 }
 
 // PaneCurrentCommand returns the name of the process currently running in a
@@ -473,11 +524,45 @@ func (c *Controller) createSession(name string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create session: %w\nOutput: %s", err, output)
 	}
+	c.enableMouse(name)
 	return nil
 }
 
-// sanitizeWindowName converts a branch name to a valid tmux window name
+// enableMouse makes tmux report mouse events to the program in the pane. tmux
+// defaults to mouse off, which does not mean "no mouse" — it means tmux never
+// asks the outer terminal for mouse reporting, so the wheel is handled by the
+// terminal itself and scrolls its scrollback, walking straight out of whatever
+// full-screen view opentree is drawing and into the shell history behind it.
+// Both of opentree's views capture the mouse; this is what lets the events
+// reach them.
+//
+// Scoped to opentree's own session with -t rather than -g: the user's global
+// tmux preference is theirs, and opentree only speaks for the session it made.
+// Best-effort — a tmux too old to know the option is not a reason to fail
+// creating the session.
+//
+// The target needs the trailing colon. set-option rejects a bare "=name" with
+// "no such session"; "=name:" is the form that both resolves exactly and is
+// accepted, which is why it is what new-window uses too.
+func (c *Controller) enableMouse(session string) {
+	_ = exec.Command("tmux", "set-option", "-t", exactSession(session)+":", "mouse", "on").Run()
+}
+
+// RunSuffix marks a workspace's second window, the one holding its dev server:
+// "feat-dark-mode:run" beside "feat-dark-mode".
+//
+// The colon is provably free rather than probably. SanitizeBranchName replaces
+// every ":" it is given — and git refuses one in a ref name to begin with — so
+// the only colon a window name can hold is the one opentree appended, and
+// reading it back is one CutSuffix.
+const RunSuffix = ":run"
+
+// sanitizeWindowName converts a branch name to a valid tmux window name,
+// keeping the reserved suffix if it carries one.
 func (c *Controller) sanitizeWindowName(name string) string {
+	if base, ok := strings.CutSuffix(name, RunSuffix); ok {
+		return gitutil.SanitizeBranchName(base) + RunSuffix
+	}
 	return gitutil.SanitizeBranchName(name)
 }
 
