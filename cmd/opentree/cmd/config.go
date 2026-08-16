@@ -17,6 +17,8 @@ var configKeys = map[string]string{
 	"workspace.seed":        "Untracked files to link into each new worktree",
 	"tmux.session_prefix":   "Prefix for tmux session names",
 	"github.auto_push":      "Auto-push branch before creating PR (true/false)",
+	"notify.on":             "Events worth an interruption: blocked, done, stopped",
+	"notify.desktop":        "Raise an OS banner as well as the tmux bell (true/false)",
 }
 
 // listValuedKeys are the keys `config set` cannot write, and what a list of
@@ -26,6 +28,16 @@ var configKeys = map[string]string{
 // here and edited in the file.
 var listValuedKeys = map[string]string{
 	"workspace.seed": "paths",
+	"notify.on":      "event names",
+}
+
+// globalOnlyKeys are the settings a repository may not carry. `config set`
+// refuses them without --global rather than writing a key that would be
+// stripped on the next read, which is a setting that saves, prints back, and
+// does nothing.
+var globalOnlyKeys = map[string]bool{
+	"notify.on":      true,
+	"notify.desktop": true,
 }
 
 var ConfigCmd = &cobra.Command{
@@ -46,7 +58,12 @@ Available keys:
   worktree.default_base  Default base branch for new workspaces
   workspace.seed         Untracked files to link into each new worktree (edit the file)
   tmux.session_prefix    Prefix for tmux session names
-  github.auto_push       Auto-push branch before creating PR (true/false)`,
+  github.auto_push       Auto-push branch before creating PR (true/false)
+  notify.on              Events worth an interruption (global only, edit the file)
+  notify.desktop         OS banner as well as the tmux bell (global only)
+
+notify.* is read from the global config only: how you like to be interrupted is
+a property of you, not of a repository you cloned.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
@@ -70,6 +87,8 @@ var configListCmd = &cobra.Command{
 			fmt.Printf("workspace.seed = %s\n", formatList(cfg.Workspace.Seed))
 			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
 			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush)
+			fmt.Printf("notify.on = %s\n", formatList(cfg.Notify.On))
+			fmt.Printf("notify.desktop = %t\n", cfg.Notify.Desktop == nil || *cfg.Notify.Desktop)
 			return nil
 		}
 
@@ -84,6 +103,8 @@ var configListCmd = &cobra.Command{
 		fmt.Printf("workspace.seed = %s  (%s)\n", formatList(cfg.Workspace.Seed), sources.WorkspaceSeed)
 		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
 		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush, sources.GitHubAutoPush)
+		fmt.Printf("notify.on = %s  (%s)\n", formatList(cfg.Notify.On), sources.NotifyOn)
+		fmt.Printf("notify.desktop = %t  (%s)\n", cfg.Notify.Desktop == nil || *cfg.Notify.Desktop, sources.NotifyDesktop)
 		return nil
 	},
 }
@@ -129,8 +150,11 @@ var configSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
 
+		if globalOnlyKeys[key] && !configSetGlobal {
+			return fmt.Errorf("%s is global only — run with --global (a cloned repository does not get to decide how you are interrupted)", key)
+		}
 		if held, ok := listValuedKeys[key]; ok {
-			return fmt.Errorf("%s is a list of %s — edit it in %s", key, held, config.FindConfigFile())
+			return fmt.Errorf("%s is a list of %s — edit it in %s", key, held, configFileFor(key))
 		}
 		if _, ok := configKeys[key]; !ok {
 			return fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
@@ -164,13 +188,22 @@ var configSetCmd = &cobra.Command{
 	},
 }
 
+// configFileFor is the file a key is edited in: the global one for the keys a
+// repository may not carry, and this repository's for everything else.
+func configFileFor(key string) string {
+	if globalOnlyKeys[key] {
+		return config.GlobalConfigPath()
+	}
+	return config.FindConfigFile()
+}
+
 // parseConfigValue converts a CLI string value into the TOML type for key.
 func parseConfigValue(key, value string) (any, error) {
 	switch key {
-	case "github.auto_push":
+	case "github.auto_push", "notify.desktop":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid value for github.auto_push: must be true or false")
+			return nil, fmt.Errorf("invalid value for %s: must be true or false", key)
 		}
 		return b, nil
 	default:
@@ -192,6 +225,10 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 		return cfg.Tmux.SessionPrefix, nil
 	case "github.auto_push":
 		return strconv.FormatBool(cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush), nil
+	case "notify.on":
+		return formatList(cfg.Notify.On), nil
+	case "notify.desktop":
+		return strconv.FormatBool(cfg.Notify.Desktop == nil || *cfg.Notify.Desktop), nil
 	default:
 		return "", fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 	}

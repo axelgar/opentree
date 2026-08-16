@@ -232,6 +232,45 @@ Those four are the whole list. opentree drives agents over ACP and nothing else,
 so an agent without an ACP server has no way in — if one ships support, it
 becomes a single registry entry and everything above applies to it unchanged.
 
+### Notifications
+
+The cost of running four agents at once is that idleness becomes invisible: the
+one workspace blocked on a permission prompt looks exactly like the three that
+are working, unless you are staring at the list. So each chat says something
+when it starts needing you:
+
+| Event | |
+| --- | --- |
+| `blocked` | the agent stopped to ask for a permission |
+| `done` | a turn finished |
+| `stopped` | the agent died, failed to start, or its setup commands failed |
+
+Two surfaces. In tmux the window's own bell rings, which tmux renders as an
+inverted window name in the status bar until you select that window — no
+configuration, and it clears itself. Outside the terminal, a desktop banner
+(`osascript` on macOS, `notify-send` on Linux) reaches you with the terminal
+behind a browser or closed.
+
+Nothing is sent while you are looking at the window it happened in, and nothing
+at all when the chat is not running inside tmux. The banners are signposts
+rather than buttons: pressing `b` in the dashboard is what takes you to the
+workspace that has been waiting longest.
+
+```toml
+[notify]
+on      = ["blocked", "stopped"]   # add "done"; [] switches everything off
+desktop = true                     # false: tmux bell only
+```
+
+`blocked` and `stopped` are on by default and `done` is off, because four agents
+finishing turns is a banner every ninety seconds — and a notifier you mute is a
+notifier you deleted.
+
+This section is read from `~/.config/opentree/opentree.toml` only. A repository's
+own `opentree.toml` may configure how the project is built; how you like to be
+interrupted is yours, and a cloned repository does not get to start sending you
+desktop banners.
+
 ### CLI Mode (Direct Commands)
 
 #### Create a Workspace
@@ -351,6 +390,10 @@ session_prefix = "opentree"   # Prefix for the tmux session name
 
 [github]
 auto_push = true              # Push branch before creating a PR (set false to push manually)
+
+[notify]                      # Global config only — see Notifications
+on      = ["blocked", "stopped"]
+desktop = true
 ```
 
 ### Seeding a Worktree

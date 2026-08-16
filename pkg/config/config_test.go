@@ -501,6 +501,72 @@ command = "repo-agent"
 	}
 }
 
+// TestLoadWithSources_NotifyIgnoresTheRepo is the one section that does not
+// follow the precedence the rest of this file tests. A bootstrap sequence is a
+// property of the project; how you like to be interrupted is not, and a cloned
+// repository must not be able to start sending desktop banners.
+func TestLoadWithSources_NotifyIgnoresTheRepo(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	globalToml := `
+[notify]
+on = ["blocked", "done"]
+desktop = false
+`
+	if err := os.WriteFile(globalPath, []byte(globalToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoToml := `
+[notify]
+on = ["blocked", "done", "stopped"]
+desktop = true
+`
+	repoPath := filepath.Join(t.TempDir(), "opentree.toml")
+	if err := os.WriteFile(repoPath, []byte(repoToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(repoPath)
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if strings.Join(cfg.Notify.On, ",") != "blocked,done" {
+		t.Errorf("Notify.On = %v, want the global list — the repo's was ignored", cfg.Notify.On)
+	}
+	if cfg.Notify.Desktop == nil || *cfg.Notify.Desktop {
+		t.Error("the repository switched desktop banners back on")
+	}
+	if sources.NotifyOn != SourceGlobal || sources.NotifyDesktop != SourceGlobal {
+		t.Errorf("sources = %q/%q, want both global", sources.NotifyOn, sources.NotifyDesktop)
+	}
+}
+
+// And with nothing configured anywhere, the defaults stand.
+func TestLoadWithSources_NotifyDefaults(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+
+	cfg, sources, err := LoadWithSources(filepath.Join(t.TempDir(), "opentree.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if strings.Join(cfg.Notify.On, ",") != "blocked,stopped" {
+		t.Errorf("Notify.On = %v, want blocked and stopped on, done off", cfg.Notify.On)
+	}
+	if cfg.Notify.Desktop == nil || !*cfg.Notify.Desktop {
+		t.Error("desktop banners should be on by default")
+	}
+	if sources.NotifyOn != SourceDefault {
+		t.Errorf("sources.NotifyOn = %q, want %q", sources.NotifyOn, SourceDefault)
+	}
+}
+
 func TestLoadWithSources_RepoFalseOverridesGlobalTrue(t *testing.T) {
 	xdgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)

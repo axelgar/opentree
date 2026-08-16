@@ -11,6 +11,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/fsutil"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/notify"
 )
 
 // Config represents the opentree configuration
@@ -20,6 +21,7 @@ type Config struct {
 	Workspace WorkspaceConfig `toml:"workspace"`
 	Tmux      TmuxConfig      `toml:"tmux"`
 	GitHub    GitHubConfig    `toml:"github"`
+	Notify    NotifyConfig    `toml:"notify"`
 }
 
 // AgentConfig configures the coding agent
@@ -81,6 +83,25 @@ type GitHubConfig struct {
 	AutoPush *bool `toml:"auto_push,omitempty"`
 }
 
+// NotifyConfig is how you like to be interrupted when an agent needs you.
+//
+// It is read from the global config only, and stripped from a repository's own
+// (see LoadWithSources). This inverts the rule WorkspaceConfig follows, on
+// purpose: a bootstrap sequence is a property of the project, but notification
+// preference is a property of the person and the room they are sitting in.
+// There is no version of "this repository would like to send you desktop
+// banners" that is a reasonable thing for a clone to be able to say.
+type NotifyConfig struct {
+	// On is the events worth an interruption: "blocked", "done", "stopped".
+	// An empty list switches notifications off entirely.
+	On []string `toml:"on"`
+
+	// Desktop is whether to raise an OS banner as well as the tmux bell. A
+	// pointer so an explicit false in the file is not the same as saying
+	// nothing.
+	Desktop *bool `toml:"desktop"`
+}
+
 // ConfigSource tracks which config file provided each value.
 type ConfigSource struct {
 	AgentCommand        string
@@ -91,6 +112,10 @@ type ConfigSource struct {
 	WorkspaceRun        string
 	TmuxSessionPrefix   string
 	GitHubAutoPush      string
+	// The notify keys have no repo source to report: LoadWithSources strips
+	// that layer before the merge.
+	NotifyOn      string
+	NotifyDesktop string
 }
 
 const (
@@ -117,6 +142,10 @@ func Default() *Config {
 		},
 		GitHub: GitHubConfig{
 			AutoPush: boolPtr(true),
+		},
+		Notify: NotifyConfig{
+			On:      notify.Default(),
+			Desktop: boolPtr(true),
 		},
 	}
 }
@@ -227,6 +256,12 @@ func mergeInto(dst, src *Config) {
 	if src.GitHub.AutoPush != nil {
 		dst.GitHub.AutoPush = src.GitHub.AutoPush
 	}
+	if src.Notify.On != nil {
+		dst.Notify.On = src.Notify.On
+	}
+	if src.Notify.Desktop != nil {
+		dst.Notify.Desktop = src.Notify.Desktop
+	}
 }
 
 // computeSources compares a resolved config against global and repo raw configs
@@ -241,6 +276,8 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		WorkspaceRun:        SourceDefault,
 		TmuxSessionPrefix:   SourceDefault,
 		GitHubAutoPush:      SourceDefault,
+		NotifyOn:            SourceDefault,
+		NotifyDesktop:       SourceDefault,
 	}
 
 	if global != nil && global.Agent.Command != "" {
@@ -299,6 +336,15 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		src.GitHubAutoPush = SourceRepo
 	}
 
+	// No repo arm for these two: the section is stripped from that layer before
+	// it is merged, so global is as far as they go.
+	if global != nil && global.Notify.On != nil {
+		src.NotifyOn = SourceGlobal
+	}
+	if global != nil && global.Notify.Desktop != nil {
+		src.NotifyDesktop = SourceGlobal
+	}
+
 	return src
 }
 
@@ -320,6 +366,15 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 	repoCfg, err := loadRaw(repoPath)
 	if err != nil {
 		return nil, ConfigSource{}, fmt.Errorf("failed to read repo config %s: %w", repoPath, err)
+	}
+
+	// The one section a repository may not carry. Everything else here is a
+	// property of the project; how you like to be interrupted is a property of
+	// you, and a cloned repository does not get to start sending you desktop
+	// banners. Dropped rather than refused: an opentree.toml written for
+	// somebody else's machine should still load.
+	if repoCfg != nil {
+		repoCfg.Notify = NotifyConfig{}
 	}
 
 	resolved := Default()

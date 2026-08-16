@@ -73,7 +73,7 @@ func runChat(ctx context.Context, name, version string) error {
 		SocketPath: chat.SocketPath(repoRoot, ws.Name),
 		SessionID:  resumableSession(ws, agent.Command),
 		Setup:      setupPhase(repoRoot, store, ws),
-		Notify:     notifier(ws.Name),
+		Notify:     notifier(repoRoot, ws.Name),
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -99,7 +99,7 @@ func runChat(ctx context.Context, name, version string) error {
 // chat is handed answers, not the machinery that produced them. What it gets
 // back is one function that takes a state reading — everything about tmux
 // panes and cooldowns stays on this side of it.
-func notifier(workspace string) func(notify.Signal) {
+func notifier(repoRoot, workspace string) func(notify.Signal) {
 	// Outside tmux there is no window to carry anything out of, and whoever
 	// started this is sitting in front of it.
 	pane := notify.Pane()
@@ -107,10 +107,24 @@ func notifier(workspace string) func(notify.Signal) {
 		return nil
 	}
 
+	// A config that will not parse is reported by every other command that
+	// reads it; here it means the defaults, rather than a chat that silently
+	// stopped notifying. [notify] is global-only, and Load is where the
+	// repository's copy of the section is dropped.
+	cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
+	if err != nil {
+		cfg = config.Default()
+	}
+
+	senders := notify.Senders{notify.Bell{}}
+	if cfg.Notify.Desktop == nil || *cfg.Notify.Desktop {
+		senders = append(senders, notify.Desktop{})
+	}
+
 	w := notify.New(notify.Options{
 		Workspace: workspace,
-		On:        notify.Default(),
-		Send:      notify.Bell{},
+		On:        cfg.Notify.On,
+		Send:      senders,
 		Watched:   func() bool { return notify.Watched(pane) },
 	})
 	if w == nil {
