@@ -68,6 +68,9 @@ func (m Model) View() string {
 	if m.tab == tabSkills {
 		return m.skillsView()
 	}
+	if m.tab == tabServers {
+		return m.serversView()
+	}
 
 	// Adapter download confirmation. Enter on an agent whose adapter is missing
 	// means "use this agent", but 300MB is asked about rather than sprung.

@@ -44,9 +44,16 @@ func TestTab_SwitchesBetweenPlaces(t *testing.T) {
 		t.Error("Skills tab did not render")
 	}
 
+	// Three places, walked in the order the bar draws them, wrapping round to
+	// the list rather than stopping at the end.
+	next, _ = m.Update(keyMsg("tab"))
+	m = next.(Model)
+	if m.tab != tabServers {
+		t.Fatal("tab did not go on to the Servers tab")
+	}
 	next, _ = m.Update(keyMsg("tab"))
 	if next.(Model).tab != tabWorkspaces {
-		t.Error("tab did not return to Workspaces")
+		t.Error("tab did not wrap back to Workspaces")
 	}
 }
 

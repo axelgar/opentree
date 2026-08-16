@@ -37,6 +37,10 @@ type WorkspaceItem struct {
 	// the same window list the rest of the row uses. A server is a process, and
 	// the process list is the only thing about it that cannot be stale.
 	ServerRunning bool
+	// ServerListening is whether its port answered. The window being alive is
+	// not the same as the server being up — a bundler spends a minute compiling
+	// before it listens — and only the socket knows the difference.
+	ServerListening bool
 }
 
 const (
@@ -54,6 +58,7 @@ var sortModeNames = []string{"name", "age", "activity", "PR"}
 const (
 	tabWorkspaces = 0
 	tabSkills     = 1
+	tabServers    = 2
 )
 
 // Model is the main Bubble Tea model for the opentree TUI.
@@ -174,6 +179,9 @@ type Model struct {
 	// skillsTab is the Skills tab's own state, defined beside its behaviour
 	// in skills.go.
 	skillsTab skillsTab
+
+	// serversTab is the Servers tab's own, in servers.go, for the same reason.
+	serversTab serversTab
 
 	help help.Model
 	keys keyMap

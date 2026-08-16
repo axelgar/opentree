@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -83,13 +84,18 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 			}
 
 			_, serving := windowMap[m.svc.ServerWindow(ws.Name)]
+			// Dialled only for a server that could be up: a port nothing was
+			// started on has nothing to say, and the refresh cannot afford
+			// pointless waits.
+			listening := serving && ws.Port != 0 && bootstrap.Listening(ws.Port)
 
 			item := WorkspaceItem{
-				Workspace:     ws,
-				DiffStat:      diffStat,
-				Active:        exists && win.Active,
-				FileChanges:   fileChanges,
-				ServerRunning: serving,
+				Workspace:       ws,
+				DiffStat:        diffStat,
+				Active:          exists && win.Active,
+				FileChanges:     fileChanges,
+				ServerRunning:   serving,
+				ServerListening: listening,
 			}
 			if exists {
 				item.WindowID = win.ID
@@ -205,6 +211,64 @@ func (m Model) toggleServerCmd(name string) tea.Cmd {
 			return errMsg{err}
 		}
 		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server started on :%d", port)}
+	}
+}
+
+// startServerCmd, stopServerCmd and restartServerCmd are the Servers tab's
+// three actions. They are separate rather than one toggle because that tab
+// draws the state it is acting on — a row that says "stopped" wants a key that
+// means start, not one that means "the other thing".
+func (m Model) startServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		port, err := m.svc.StartServer(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server started on :%d", port)}
+	}
+}
+
+func (m Model) stopServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.svc.StopServer(name); err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: "server stopped"}
+	}
+}
+
+// restartServerCmd is the everyday one: a config file the server does not watch,
+// a dependency it loaded at boot. Stopping a server that is not running is not
+// an error here — restart means "be running, freshly".
+func (m Model) restartServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if m.svc.ServerRunning(name) {
+			if err := m.svc.StopServer(name); err != nil {
+				return errMsg{err}
+			}
+		}
+		port, err := m.svc.StartServer(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server restarted on :%d", port)}
+	}
+}
+
+// attachServerCmd opens the window the server is running in, which holds all of
+// its output — the answer to "where did that log line go".
+func (m Model) attachServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		cmd, err := m.svc.Process().AttachCmd(m.svc.ServerWindow(name))
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to attach to %s's server: %w", name, err)}
+		}
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				err = fmt.Errorf("failed to attach to %s's server: %w", name, err)
+			}
+			return attachFinishedMsg{err: err}
+		})()
 	}
 }
 

@@ -88,6 +88,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tab == tabSkills {
 			return m.updateSkills(msg)
 		}
+		// The Servers tab owns its keys the same way, and for the same reason:
+		// none of the workspace dialogs can be open behind it.
+		if m.tab == tabServers {
+			return m.updateServers(msg)
+		}
 
 		// Confirming an adapter download before switching agent
 		if m.agentInstallConfirm != nil {
@@ -395,9 +400,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		visible := m.visibleWorkspaces()
 		switch {
 		case key.Matches(msg, m.keys.Tab):
-			// Rescan on the way in: skills are edited by hand and by other
-			// agents, so the tab shows what is on disk now rather than what was
-			// there when opentree started.
+			// left walks the bar backwards, which from the first place is the
+			// last one. tab and right go forward, into Skills — and rescan on
+			// the way in, since skills are edited by hand and by other agents,
+			// so the tab shows what is on disk now rather than what was there
+			// when opentree started.
+			if msg.String() == "left" {
+				m.tab = tabServers
+				return m, nil
+			}
 			m.tab = tabSkills
 			return m, m.scanSkillsCmd
 		case msg.String() == "esc" && m.filterQuery != "":

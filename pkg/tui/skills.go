@@ -844,8 +844,14 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
-	case "tab", "shift+tab", "left", "right", "esc":
-		if msg.String() == "esc" && m.skillsTab.filter != "" {
+	case "tab", "right":
+		m.tab = tabServers
+	case "shift+tab", "left":
+		m.tab = tabWorkspaces
+	case "esc":
+		// esc clears the filter first, and only then steps out: a filter is
+		// what esc most recently did something to.
+		if m.skillsTab.filter != "" {
 			m.skillsTab.filter = ""
 			m.skillsTab.cursor = 0
 			return m, nil
@@ -1261,7 +1267,7 @@ func (m Model) skillsStatusBar() string {
 	return strings.Join(parts, statusBarStyle.Render("  •  "))
 }
 
-// tabBar renders the two top-level places, the active one highlighted.
+// tabBar renders the top-level places, the active one highlighted.
 func (m Model) tabBar() string {
 	name := func(label string, tab int) string {
 		if m.tab == tab {
@@ -1269,7 +1275,8 @@ func (m Model) tabBar() string {
 		}
 		return tabInactiveStyle.Render(label)
 	}
-	return name("Workspaces", tabWorkspaces) + tabInactiveStyle.Render("  ") + name("Skills", tabSkills)
+	gap := tabInactiveStyle.Render("  ")
+	return name("Workspaces", tabWorkspaces) + gap + name("Skills", tabSkills) + gap + name("Servers", tabServers)
 }
 
 func plural(n int, noun string) string {

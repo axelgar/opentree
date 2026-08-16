@@ -203,7 +203,7 @@ seeded-file drift from `lstat`.
 | 3 | Setup phase in the chat: run before the ACP connect, stream into the view, `SetupAt`+`SetupHash` marker, `esc` cancels the process group, stopped panel with `[r]`/`[s]` on failure, error to the error log. | `pkg/bootstrap/setup.go` (new), `pkg/chat/setup.go` (new), `pkg/chat/{model,update,view,keys,socket}.go`, `pkg/state/state.go`, `cmd/opentree/cmd/chat.go`, `pkg/tui/{agentctl,update}.go` | done |
 | 4 | `opentree setup <branch>` inline (re-seed, then commands), `--check`, `opentree seed detach`. | `cmd/opentree/cmd/setup.go` (new), `cmd/opentree/cmd/seed.go` (new), `pkg/bootstrap/seed.go` | done |
 | 5 | Ports assigned and persisted; `<name>:run` window; `w` starts/stops from the Workspaces tab. | `pkg/bootstrap/run.go` (new), `pkg/workspace/server.go` (new), `pkg/state/state.go`, `pkg/tmux/tmux.go`, `pkg/tui/{keys,update,commands,model,view}.go` | done |
-| 6 | Servers tab: derived from tmux, dial for three-state, own keyspace (`s`/`x`/`r`/`enter`/`o`), empty state when `run` is unset. | `pkg/tui/servers.go` (new), `model.go`, `view.go` | todo |
+| 6 | Servers tab: derived from tmux, dial for three-state, own keyspace (`s`/`x`/`r`/`enter`/`o`), empty state when `run` is unset. | `pkg/tui/servers.go` (new), `model.go`, `view.go`, `update.go`, `commands.go`, `keys.go`, `skills.go` (tab bar), `pkg/bootstrap/run.go` | done |
 | 7 | portless: detect on PATH, detect initialised, `<branch>.<repo>.localhost`, URL in the view, fall back to the port with a reason. | `pkg/bootstrap/run.go`, `pkg/tui/servers.go`, `README.md` | todo |
 | 8 | `opentree setup --suggest` from `package.json` + `Procfile`; `prune` extended to reap orphaned run windows. | `cmd/opentree/cmd/setup.go`, `pkg/workspace/workspace.go` | todo |
 
