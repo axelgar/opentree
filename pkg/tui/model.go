@@ -33,6 +33,10 @@ type WorkspaceItem struct {
 	// MissingSkills are the repository skill trees this worktree cannot see —
 	// empty for the common case where the repo has none or git carries them.
 	MissingSkills []string
+	// ServerRunning is whether this workspace's run window exists, read from
+	// the same window list the rest of the row uses. A server is a process, and
+	// the process list is the only thing about it that cannot be stale.
+	ServerRunning bool
 }
 
 const (
@@ -264,6 +268,12 @@ type adapterInstalledMsg struct {
 }
 
 type agentCommandSentMsg struct {
+	wsName string
+	action string
+}
+
+// serverToggledMsg is what the w key did, for the notice line.
+type serverToggledMsg struct {
 	wsName string
 	action string
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -246,8 +247,17 @@ func TestDeleteMultiple(t *testing.T) {
 		t.Fatalf("DeleteMultiple: %v", err)
 	}
 
-	if len(mock.killWindowCalls) != 2 {
-		t.Errorf("expected 2 KillWindow calls, got %d", len(mock.killWindowCalls))
+	// Two windows per workspace: the chat, and the dev server's own. A server
+	// left running against a deleted worktree holds its port and prints stack
+	// traces at nobody.
+	want := []string{"branch-a", "branch-a:run", "branch-b", "branch-b:run"}
+	for _, name := range want {
+		if !slices.Contains(mock.killWindowCalls, name) {
+			t.Errorf("KillWindow calls = %v, missing %q", mock.killWindowCalls, name)
+		}
+	}
+	if len(mock.killWindowCalls) != len(want) {
+		t.Errorf("expected %d KillWindow calls, got %d", len(want), len(mock.killWindowCalls))
 	}
 	if !mock.killSessionCalled {
 		t.Error("expected KillSession after deleting all workspaces")

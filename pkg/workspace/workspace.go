@@ -368,8 +368,12 @@ func (s *Service) Delete(name string) error {
 		return fmt.Errorf("failed to delete worktree: %w", err)
 	}
 
-	// Kill tmux window (ignore error if window doesn't exist)
+	// Kill tmux window (ignore error if window doesn't exist), and the server's
+	// window with it: the directory it was serving has just gone, and a dev
+	// server left running against a deleted worktree holds its port and prints
+	// stack traces at nobody.
 	_ = s.process.KillWindow(name)
+	_ = s.process.KillWindow(s.ServerWindow(name))
 
 	if err := s.state.DeleteWorkspace(name); err != nil {
 		return fmt.Errorf("failed to delete workspace state: %w", err)
@@ -393,6 +397,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 			continue
 		}
 		_ = s.process.KillWindow(name)
+		_ = s.process.KillWindow(s.ServerWindow(name))
 		if err := s.state.DeleteWorkspace(name); err != nil {
 			errs = append(errs, fmt.Errorf("delete state %s: %w", name, err))
 		}

@@ -548,8 +548,21 @@ func (c *Controller) enableMouse(session string) {
 	_ = exec.Command("tmux", "set-option", "-t", exactSession(session)+":", "mouse", "on").Run()
 }
 
-// sanitizeWindowName converts a branch name to a valid tmux window name
+// RunSuffix marks a workspace's second window, the one holding its dev server:
+// "feat-dark-mode:run" beside "feat-dark-mode".
+//
+// The colon is provably free rather than probably. SanitizeBranchName replaces
+// every ":" it is given — and git refuses one in a ref name to begin with — so
+// the only colon a window name can hold is the one opentree appended, and
+// reading it back is one CutSuffix.
+const RunSuffix = ":run"
+
+// sanitizeWindowName converts a branch name to a valid tmux window name,
+// keeping the reserved suffix if it carries one.
 func (c *Controller) sanitizeWindowName(name string) string {
+	if base, ok := strings.CutSuffix(name, RunSuffix); ok {
+		return gitutil.SanitizeBranchName(base) + RunSuffix
+	}
 	return gitutil.SanitizeBranchName(name)
 }
 

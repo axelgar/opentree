@@ -588,6 +588,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 			return m, textinput.Blink
 
+		case key.Matches(msg, m.keys.Server):
+			if len(visible) == 0 {
+				return m, nil
+			}
+			ws := visible[m.cursor]
+			if m.isWorkspaceInFlight(ws.Name) {
+				return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+			}
+			return m, m.toggleServerCmd(ws.Name)
+
 		case key.Matches(msg, m.keys.ErrLog):
 			m.showErrLog = !m.showErrLog
 		case key.Matches(msg, m.keys.Help):
@@ -873,6 +883,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		seq := m.noticeSeq
 		// Refresh straight away so the badge reflects the answer rather than
 		// waiting out the poll interval.
+		return m, tea.Batch(m.loadWorkspacesCmd, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearNoticeMsg{seq: seq}
+		}))
+
+	case serverToggledMsg:
+		m.notice = fmt.Sprintf("%s: %s", msg.wsName, msg.action)
+		m.noticeSeq++
+		seq := m.noticeSeq
+		// Refreshed straight away: the row's own server mark comes from tmux,
+		// and waiting out the poll would leave it contradicting the notice.
 		return m, tea.Batch(m.loadWorkspacesCmd, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 			return clearNoticeMsg{seq: seq}
 		}))

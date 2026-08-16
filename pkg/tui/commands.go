@@ -82,11 +82,14 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 				win, exists = windowMap[sanitizedName]
 			}
 
+			_, serving := windowMap[m.svc.ServerWindow(ws.Name)]
+
 			item := WorkspaceItem{
-				Workspace:   ws,
-				DiffStat:    diffStat,
-				Active:      exists && win.Active,
-				FileChanges: fileChanges,
+				Workspace:     ws,
+				DiffStat:      diffStat,
+				Active:        exists && win.Active,
+				FileChanges:   fileChanges,
+				ServerRunning: serving,
 			}
 			if exists {
 				item.WindowID = win.ID
@@ -179,6 +182,29 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 			return errMsg{err}
 		}
 		return deletedWorkspaceMsg{names: []string{name}}
+	}
+}
+
+// toggleServerCmd starts a workspace's dev server, or stops it if it is already
+// running. One key for both because the state is on screen: the row says
+// whether a server is up, so the key means "change that".
+//
+// Which of the two it does is decided here rather than from what the list last
+// drew — a refresh is up to a tick stale, and a server killed by hand in its own
+// window would otherwise be "stopped" a second time.
+func (m Model) toggleServerCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if m.svc.ServerRunning(name) {
+			if err := m.svc.StopServer(name); err != nil {
+				return errMsg{err}
+			}
+			return serverToggledMsg{wsName: name, action: "server stopped"}
+		}
+		port, err := m.svc.StartServer(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return serverToggledMsg{wsName: name, action: fmt.Sprintf("server started on :%d", port)}
 	}
 }
 

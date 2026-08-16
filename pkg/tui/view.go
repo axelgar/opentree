@@ -227,8 +227,13 @@ func (m Model) View() string {
 			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
 		)
 		// The one destructive dialog keeps the red border it already had.
+		//
+		// The server is named because it is the part that is not obviously
+		// implied: a dev server outlives the window it was started from, and
+		// one still running against a deleted worktree holds its port and
+		// prints stack traces at nobody.
 		return m.dialogCard(titleMsg,
-			confirmLabelStyle.Render("The worktree, tmux window, and all local changes will be removed."),
+			confirmLabelStyle.Render("The worktree, its tmux windows — including any dev server — and all local changes will be removed."),
 			footer, dialogDanger)
 	}
 
@@ -447,6 +452,13 @@ func (m Model) View() string {
 
 			if meta := chatMeta(ws.ChatStatus); meta != "" {
 				descParts = append(descParts, meta)
+			}
+
+			// A running server, and the port it was given — which is the thing
+			// you actually need from it, since five worktrees of one project all
+			// wanted the same one.
+			if ws.ServerRunning {
+				descParts = append(descParts, agentWorkingStyle.Render(fmt.Sprintf("server :%d", ws.Port)))
 			}
 
 			if !ws.LastActivity.IsZero() {

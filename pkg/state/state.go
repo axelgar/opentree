@@ -51,6 +51,12 @@ type Workspace struct {
 	SetupAt   time.Time `json:"setup_at,omitempty"`
 	SetupHash string    `json:"setup_hash,omitempty"`
 
+	// Port is this workspace's dev server port, given once and kept for the
+	// workspace's life. Kept rather than picked per start because an OAuth
+	// redirect URI is registered against an exact localhost:PORT, and a port
+	// that moved would break every login flow set up against it.
+	Port int `json:"port,omitempty"`
+
 	// ACPSessions is every conversation opentree has opened here, oldest first.
 	// ACPSessionID is the current one; this is what makes the earlier ones
 	// offerable again.

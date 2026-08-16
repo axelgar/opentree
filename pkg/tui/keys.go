@@ -21,6 +21,7 @@ type keyMap struct {
 	Answer key.Binding
 	Stop   key.Binding
 	Msg    key.Binding
+	Server key.Binding
 	ErrLog key.Binding
 	// CopyErrLog is only ever consulted inside the error log, which swallows
 	// every other key. That is why it can share a letter with Stop without
@@ -43,8 +44,8 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
-		{k.Answer, k.Stop, k.Msg, k.Filter, k.Sort, k.Agent},
-		{k.Tab, k.ErrLog, k.Quit, k.Help},
+		{k.Answer, k.Stop, k.Msg, k.Server, k.Filter, k.Sort},
+		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -116,6 +117,13 @@ var keys = keyMap{
 	Stop: key.NewBinding(
 		key.WithKeys("c"),
 		key.WithHelp("c", "interrupt agent"),
+	),
+	// The one server key on this tab. Starting the thing you are looking at is
+	// the everyday action; everything else about servers lives in the Servers
+	// tab, which has a keyspace of its own.
+	Server: key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "start/stop server"),
 	),
 	Msg: key.NewBinding(
 		key.WithKeys("m"),
