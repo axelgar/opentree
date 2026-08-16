@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/notify"
 )
 
 // socketPath keeps the path short: unix sockets are capped near 104 bytes and
@@ -282,6 +283,62 @@ func TestStatus_SinceStampsTheChange(t *testing.T) {
 	}
 	if !last.Since.After(first.Since) {
 		t.Errorf("Since = %v, want a later moment than %v", last.Since, first.Since)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// What a notifier sees
+// ---------------------------------------------------------------------------
+
+func TestSignalOf(t *testing.T) {
+	tests := []struct {
+		name   string
+		status Status
+		want   notify.Signal
+	}{
+		{"idle", Status{State: StateIdle}, notify.Signal{State: notify.StateIdle}},
+		{"working", Status{State: StateWorking}, notify.Signal{State: notify.StateWorking}},
+		{"stopped", Status{State: StateStopped}, notify.Signal{State: notify.StateStopped}},
+		{"starting is nothing anyone is told about", Status{State: StateStarting}, notify.Signal{State: notify.StateOther}},
+		{"nor is a setup that is still running", Status{State: StateSettingUp}, notify.Signal{State: notify.StateOther}},
+		{
+			// Nothing further happens in that window until somebody deals with
+			// it, which is what stopped means to whoever is waiting.
+			"a setup that failed is a stopped agent",
+			Status{State: StateSettingUp, Error: "fix-auth: pnpm install exited 1"},
+			notify.Signal{State: notify.StateStopped, Detail: "fix-auth: pnpm install exited 1"},
+		},
+		{
+			"blocked carries the question, which is also its fingerprint",
+			Status{State: StateAwaiting, Permission: &Permission{Title: "rm -rf dist"}},
+			notify.Signal{State: notify.StateBlocked, Detail: "rm -rf dist"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := signalOf(tt.status); got != tt.want {
+				t.Errorf("signalOf() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdate_NotifiesEveryReading is the funnel argument: the notifier is
+// edge-triggered itself, so what it needs from the chat is to be told
+// everything rather than to be told what changed.
+func TestUpdate_NotifiesEveryReading(t *testing.T) {
+	m := newTestModel()
+	var seen []notify.Signal
+	m.opts.Notify = func(sig notify.Signal) { seen = append(seen, sig) }
+
+	m, _ = applyUpdate(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	_, _ = applyUpdate(m, permission(allowOnce))
+
+	if len(seen) < 2 {
+		t.Fatalf("saw %d readings, want one per update", len(seen))
+	}
+	if got := seen[len(seen)-1]; got.State != notify.StateBlocked {
+		t.Errorf("last reading = %+v, want the escalation", got)
 	}
 }
 

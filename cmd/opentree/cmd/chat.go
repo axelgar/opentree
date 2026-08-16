@@ -16,6 +16,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/state"
 )
 
@@ -72,6 +73,7 @@ func runChat(ctx context.Context, name, version string) error {
 		SocketPath: chat.SocketPath(repoRoot, ws.Name),
 		SessionID:  resumableSession(ws, agent.Command),
 		Setup:      setupPhase(repoRoot, store, ws),
+		Notify:     notifier(ws.Name),
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -88,6 +90,33 @@ func runChat(ctx context.Context, name, version string) error {
 			return store.UpdateWorkspace(ws)
 		},
 	})
+}
+
+// notifier is what carries this chat's moments out of the window they happen
+// in, or nil for a chat that carries nothing.
+//
+// It is built here rather than in the chat for the reason setupPhase is: the
+// chat is handed answers, not the machinery that produced them. What it gets
+// back is one function that takes a state reading — everything about tmux
+// panes and cooldowns stays on this side of it.
+func notifier(workspace string) func(notify.Signal) {
+	// Outside tmux there is no window to carry anything out of, and whoever
+	// started this is sitting in front of it.
+	pane := notify.Pane()
+	if pane == "" {
+		return nil
+	}
+
+	w := notify.New(notify.Options{
+		Workspace: workspace,
+		On:        notify.Default(),
+		Send:      notify.Bell{},
+		Watched:   func() bool { return notify.Watched(pane) },
+	})
+	if w == nil {
+		return nil
+	}
+	return w.Observe
 }
 
 // setupPhase is the bootstrap work this chat has to do before the agent

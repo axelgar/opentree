@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/tmux"
 	"github.com/axelgar/opentree/pkg/ui"
 )
@@ -39,7 +40,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if nm.publish != nil {
 		nm.publish(st)
 	}
+	if nm.opts.Notify != nil {
+		nm.opts.Notify(signalOf(st))
+	}
 	return nm, cmd
+}
+
+// signalOf is this session as a notifier sees it.
+//
+// The mapping is written out rather than passing the state string through:
+// notify keeps a vocabulary of its own on purpose — a notifier that imported
+// this package could not be tested without an agent to run — and this is the
+// one place the two meet.
+//
+// A setup phase that failed reads as a stopped agent, because that is what it
+// is to anyone waiting on the window: nothing further will happen there until
+// somebody deals with it.
+func signalOf(st Status) notify.Signal {
+	switch {
+	case st.State == StateAwaiting:
+		title := ""
+		if st.Permission != nil {
+			title = st.Permission.Title
+		}
+		return notify.Signal{State: notify.StateBlocked, Detail: title}
+	case st.State == StateSettingUp && st.Error != "":
+		return notify.Signal{State: notify.StateStopped, Detail: st.Error}
+	case st.State == StateStopped:
+		return notify.Signal{State: notify.StateStopped}
+	case st.State == StateWorking:
+		return notify.Signal{State: notify.StateWorking}
+	case st.State == StateIdle:
+		return notify.Signal{State: notify.StateIdle}
+	}
+	return notify.Signal{State: notify.StateOther}
 }
 
 // status is the view of this session the workspace list sees.

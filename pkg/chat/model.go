@@ -24,6 +24,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/notify"
 )
 
 // Options configure one chat session.
@@ -42,6 +43,13 @@ type Options struct {
 	// SocketPath is the control socket the workspace list connects to. Empty
 	// disables it.
 	SocketPath string
+
+	// Notify is where this session's readings go to be turned into
+	// notifications, or nil for a chat that notifies nothing. It is handed
+	// every reading rather than only the changes: deciding what is an edge
+	// belongs to the notifier, and Update is the one method every change
+	// already passes through.
+	Notify func(notify.Signal)
 
 	// Setup is the project's bootstrap phase, run before the agent is
 	// connected. The zero value is a chat with nothing to prepare.
