@@ -341,7 +341,8 @@ default_base = "main"         # Default base branch
 command = "opencode"          # Agent to run: "opencode", "claude", "copilot" or "gemini"
 
 [workspace]
-seed = [".env", ".npmrc"]     # Untracked files to link into each new worktree
+seed  = [".env", ".npmrc"]                  # Untracked files to link into each new worktree
+setup = ["pnpm install --frozen-lockfile"]  # Commands run before the agent starts
 
 [tmux]
 session_prefix = "opentree"   # Prefix for the tmux session name
@@ -373,6 +374,53 @@ symlink, is refused when the workspace is created rather than seeded quietly.
 
 A file the repository does not have is skipped, and one the branch tracks itself
 is left alone: git checking it out is the signal that the branch has its own.
+
+### Setting Up a Worktree
+
+Seeding puts config where git could not. Setup is the other half — what has to
+be built rather than copied:
+
+```toml
+[workspace]
+setup = ["pnpm install --frozen-lockfile"]
+```
+
+The commands run as the first phase of the chat, in the worktree, with their
+output streaming into the window. The agent starts when they finish. That is the
+point of running them there: an agent that starts against a worktree with no
+`node_modules` spends its first turn discovering it, and may "fix" your lockfile
+on the way.
+
+While they run the dashboard shows the workspace as `setting up…`. Nothing is
+timed out — a warm install is two seconds and a cold `cargo build` is twenty
+minutes — so `esc` is how a hung one ends, and it stops the whole process tree
+rather than just the shell. If a command fails, the panel offers `[r]` to try
+again and `[s]` to start the agent anyway, and the failure is recorded in the
+dashboard's error log (`E`). It is never pasted into the conversation: whether
+the agent should see it is your call.
+
+Setup runs once per worktree. It runs again when you edit the commands, and not
+otherwise — losing a chat window relaunches one, and reinstalling on every attach
+would make attaching cost a minute.
+
+#### Approving what it runs
+
+`opentree.toml` is tracked in git, so `setup` and `run` are executable code that
+arrives with a clone, from whoever last had commit rights. opentree asks before
+running them the first time, in the chat, showing exactly what it is about to
+run. The answer is recorded per machine, per repository, and per exact text — an
+edited command is asked about again.
+
+From the command line, for CI or to answer ahead of time:
+
+```bash
+opentree trust          # approve what opentree.toml now says
+opentree trust show     # print those commands, and whether they are approved
+opentree trust revoke   # drop this repository's approvals
+```
+
+Approvals live in `~/.opentree/trust.json`, never in the repository — a
+repository cannot vouch for itself.
 
 ### Using Different Agents
 

@@ -149,6 +149,15 @@ failures are different kinds, and they surface in different places:
 comma-splitting syntax that would quote wrongly the first time a path contained
 a comma. `config list` and `config get` read it; the file is where it is edited.
 
+### On decision 15, and how a failure leaves the window
+
+opentree's error log lives in the dashboard's memory, and the chat is a
+different process — so "goes to the error log" needed a channel. It rides the
+control socket the list already polls: `chat.Status` gained an `Error`, the chat
+fills it while the setup panel is up, and the list copies it in once. A failure
+in a window nobody attaches to still surfaces, and the conversation still never
+sees it.
+
 ### On decision 27
 
 The value portless adds is a stable name instead of a port. Everything else it
@@ -191,7 +200,7 @@ seeded-file drift from `lstat`.
 |---|---|---|---|
 | 1 | `[workspace]` config block; `pkg/bootstrap` seeding — explicit list, symlink files, refuse directories, reject escaping paths. Called from all three creation paths beside `linkSkills`. **Payload with no UI.** | `pkg/config/config.go`, `pkg/bootstrap/seed.go` (new), `pkg/workspace/workspace.go`, `cmd/opentree/cmd/config.go`, `README.md` | done |
 | 2 | Trust: hash `setup`+`run`, record approvals in `~/.opentree/trust.json`, `opentree trust` / `show` / `revoke`. | `pkg/bootstrap/trust.go` (new), `cmd/opentree/cmd/trust.go` (new), `pkg/fsutil` (new, extracted from `config` and `skills`) | done |
-| 3 | Setup phase in the chat: run before the ACP connect, stream into the view, `SetupAt`+`SetupHash` marker, `esc` cancels the process group, stopped panel with `[r]`/`[s]` on failure, error to the error log. | `pkg/chat/*`, `pkg/state/state.go` | todo |
+| 3 | Setup phase in the chat: run before the ACP connect, stream into the view, `SetupAt`+`SetupHash` marker, `esc` cancels the process group, stopped panel with `[r]`/`[s]` on failure, error to the error log. | `pkg/bootstrap/setup.go` (new), `pkg/chat/setup.go` (new), `pkg/chat/{model,update,view,keys,socket}.go`, `pkg/state/state.go`, `cmd/opentree/cmd/chat.go`, `pkg/tui/{agentctl,update}.go` | done |
 | 4 | `opentree setup <branch>` inline (re-seed, then commands), `--check`, `opentree seed detach`. | `cmd/opentree/cmd/setup.go` (new), `cmd/opentree/cmd/seed.go` (new) | todo |
 | 5 | Ports assigned and persisted; `<name>:run` window; `w` starts/stops from the Workspaces tab. | `pkg/bootstrap/run.go` (new), `pkg/tmux/tmux.go`, `pkg/tui/keys.go`, `update.go` | todo |
 | 6 | Servers tab: derived from tmux, dial for three-state, own keyspace (`s`/`x`/`r`/`enter`/`o`), empty state when `run` is unset. | `pkg/tui/servers.go` (new), `model.go`, `view.go` | todo |

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -623,6 +624,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// would point destructive keys at whatever moved under the cursor.
 		prev := m.currentWorkspaceName()
 		m.workspaces = msg.workspaces
+		m.recordChatErrors()
 		visible := m.visibleWorkspaces()
 		if prev != "" {
 			for i, ws := range visible {
@@ -1104,6 +1106,28 @@ func (m *Model) noticeCmd(msg string) tea.Cmd {
 	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return clearNoticeMsg{seq: seq}
 	})
+}
+
+// recordChatErrors copies failures reported by chat processes into the error
+// log. A setup command that failed in a window nobody attached to has nowhere
+// else to be seen, and the chat itself cannot reach this log — it is a
+// different process.
+//
+// The same failure stays on the socket until the window is dealt with, and it
+// is read again on every refresh — so a message already in the log is left
+// alone rather than re-stamped. The first time it happened is the useful time,
+// and two failing workspaces would otherwise take turns appending forever.
+func (m *Model) recordChatErrors() {
+	for _, ws := range m.workspaces {
+		if ws.ChatStatus == nil || ws.ChatStatus.Error == "" {
+			continue
+		}
+		text := ws.ChatStatus.Error
+		if slices.ContainsFunc(m.errLog, func(e string) bool { return strings.HasSuffix(e, "] "+text) }) {
+			continue
+		}
+		m.appendErrLog(text)
+	}
 }
 
 func (m *Model) appendErrLog(msg string) {

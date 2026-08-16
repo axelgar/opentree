@@ -43,6 +43,14 @@ type Workspace struct {
 	MergeConflicts bool      `json:"merge_conflicts,omitempty"`
 	RemoteDeleted  bool      `json:"remote_deleted,omitempty"`
 
+	// SetupAt and SetupHash are the project's bootstrap commands, as this
+	// worktree last ran them. The hash is what earns the pair its keep: a chat
+	// starts many times per workspace — losing a window relaunches one — so
+	// without a marker the install would run on every attach, and without the
+	// hash an edited setup would stay stale forever.
+	SetupAt   time.Time `json:"setup_at,omitempty"`
+	SetupHash string    `json:"setup_hash,omitempty"`
+
 	// ACPSessions is every conversation opentree has opened here, oldest first.
 	// ACPSessionID is the current one; this is what makes the earlier ones
 	// offerable again.

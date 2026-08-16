@@ -765,12 +765,27 @@ func (m Model) renderEntry(e entry, width int) string {
 		return wrap.Inherit(thoughtStyle).Render(e.text)
 	case entryNotice:
 		return noticeStyle.Render("  " + e.text)
+	case entrySetup:
+		// A command's own output, quieter than the conversation and not wrapped:
+		// installers align in columns, and rewrapping their output to the
+		// terminal turns a table into a paragraph.
+		return toolOutputStyle.Render(indentLines(e.text, width))
 	case entryTool:
 		return m.renderTool(e.tool, width)
 	case entryPlan:
 		return renderPlan(e.plan, width)
 	}
 	return ""
+}
+
+// indentLines sets a block of command output in from the margin and trims each
+// line to the column, so one long line cannot push the log sideways.
+func indentLines(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = ui.Truncate("  "+line, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderPlan draws the agent's plan as the checklist it is. Only agents that

@@ -43,6 +43,10 @@ type Options struct {
 	// disables it.
 	SocketPath string
 
+	// Setup is the project's bootstrap phase, run before the agent is
+	// connected. The zero value is a chat with nothing to prepare.
+	Setup Setup
+
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
@@ -130,14 +134,29 @@ func Run(ctx context.Context, opts Options) error {
 		return client, info, gen, nil
 	}
 
-	// A failed first launch is not fatal: the view opens in its stopped state,
-	// where restarting or installing the adapter is one key away. Returning an
-	// error here would print it to a tmux window that then closes.
-	client, info, gen, err := launch()
+	// The agent waits for the setup phase. It is the whole point of running one
+	// here: an agent started against a worktree that has not installed yet
+	// spends its first turn on a problem that has nothing to do with the task.
+	//
+	// Otherwise it starts now. A failed first launch is not fatal: the view
+	// opens in its stopped state, where restarting or installing the adapter is
+	// one key away. Returning an error here would print it to a tmux window
+	// that then closes.
+	var (
+		client *acp.Client
+		info   *acp.InitializeResponse
+		gen    int
+		err    error
+	)
+	if !opts.Setup.wanted() {
+		client, info, gen, err = launch()
+	}
 
 	m := newModel(ctx, client, info, opts, msgs)
 	m.generation = gen
 	m.launch = launch
+	m.send = send
+	m.setup.spec = opts.Setup
 	if err != nil {
 		m.dead, m.err = true, err
 	}
@@ -244,7 +263,16 @@ type clientReadyMsg struct {
 	client     *acp.Client
 	info       *acp.InitializeResponse
 	generation int
+
+	// keepLog spares what is already on screen. A restart replays the whole
+	// conversation and has to start from an empty log; the first launch after a
+	// setup phase has no replay to make room for, and clearing would throw away
+	// the transcript the user just watched.
+	keepLog bool
 }
+
+// setupBeginMsg opens the bootstrap phase, from Init.
+type setupBeginMsg struct{}
 
 type sessionReadyMsg struct {
 	id      string
@@ -315,6 +343,7 @@ const (
 	entryTool
 	entryNotice
 	entryPlan
+	entrySetup
 )
 
 // entry is one renderable item in the conversation log. Message entries
@@ -334,6 +363,15 @@ type Model struct {
 	msgs    <-chan tea.Msg
 	opts    Options
 	publish func(Status)
+
+	// send is the other end of msgs, for the work this view starts itself.
+	// Everything else on that channel comes from the agent's own handlers,
+	// which were given the sender when they were built.
+	send func(tea.Msg)
+
+	// setup is the bootstrap phase, which owns the screen until the worktree is
+	// ready and the agent has been started.
+	setup setupPhase
 
 	generation   int
 	agentVersion string
@@ -535,6 +573,7 @@ type overlay int
 const (
 	overlayNone overlay = iota
 	overlayPermission
+	overlaySetup
 	overlayLogin
 	overlayStopped
 	overlaySettings
@@ -554,6 +593,11 @@ func (m Model) overlay() overlay {
 	switch {
 	case m.perm() != nil:
 		return overlayPermission
+	// Before the agent exists, so nothing it could have left behind — a stale
+	// error, an adapter that was missing last time — can take the screen from
+	// the phase that is holding it back.
+	case m.setup.active():
+		return overlaySetup
 	// Above the stopped panel it was opened from, which is still true underneath
 	// it — an agent wanting credentials is exactly when this picker is up.
 	case m.login.open:
@@ -589,6 +633,7 @@ var overlayDefs map[overlay]overlayDef
 func init() {
 	overlayDefs = map[overlay]overlayDef{
 		overlayPermission: {Model.handlePermissionKey, Model.permissionHeight, Model.permissionView},
+		overlaySetup:      {Model.handleSetupKey, Model.setupHeight, Model.setupView},
 		overlayLogin:      {Model.handleLoginKey, Model.loginHeight, Model.loginView},
 		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
 		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
@@ -613,7 +658,14 @@ func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForMsg(m.msgs), m.startSession(), loadFilesCmd(m.opts.Cwd), textarea.Blink)
+	// With a setup phase to run, the session waits for it: there is no agent
+	// yet to open one against. Init cannot change the model, so the phase
+	// starts by sending itself a message rather than by mutating state here.
+	start := m.startSession()
+	if m.setup.spec.wanted() {
+		start = func() tea.Msg { return setupBeginMsg{} }
+	}
+	return tea.Batch(waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink)
 }
 
 // loadFilesCmd lists the worktree's tracked files for @-mention completion.
@@ -766,7 +818,13 @@ func (m Model) withFiles(files []string) Model {
 }
 
 // restartCmd replaces a dead agent with a fresh process.
-func (m Model) restartCmd() tea.Cmd {
+func (m Model) restartCmd() tea.Cmd { return m.launchCmd(false) }
+
+// launchCmd starts an agent process, whether it is replacing one that died or
+// arriving after a setup phase that was holding it back. A launch that fails is
+// fatal either way: there is no session to fall back on, and the stopped panel
+// is where restarting from is offered.
+func (m Model) launchCmd(keepLog bool) tea.Cmd {
 	old, launch := m.client, m.launch
 	return func() tea.Msg {
 		if old != nil {
@@ -774,9 +832,9 @@ func (m Model) restartCmd() tea.Cmd {
 		}
 		client, info, gen, err := launch()
 		if err != nil {
-			return errMsg{err: err}
+			return errMsg{err: err, fatal: true}
 		}
-		return clientReadyMsg{client: client, info: info, generation: gen}
+		return clientReadyMsg{client: client, info: info, generation: gen, keepLog: keepLog}
 	}
 }
 

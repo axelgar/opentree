@@ -19,6 +19,13 @@ type keyMap struct {
 	Login     key.Binding
 	Back      key.Binding
 
+	// The setup phase's own three. Approve and Decline are the permission
+	// dialog's letters, deliberately: this is the same question — may opentree
+	// run this — asked about the project's commands rather than the agent's.
+	Approve     key.Binding
+	Decline     key.Binding
+	StartAnyway key.Binding
+
 	// Commands and Mentions open the completion palette by being typed into
 	// the message rather than by being intercepted, so they are never passed
 	// to key.Matches. They are here to be listed: a palette nobody knows to
@@ -128,6 +135,19 @@ var keys = keyMap{
 	Back: key.NewBinding(
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("ctrl+c", "back to opentree"),
+	),
+	Approve: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "run setup"),
+	),
+	Decline: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "skip setup"),
+	),
+	// Not "r": that is retry, on the same panel.
+	StartAnyway: key.NewBinding(
+		key.WithKeys("s"),
+		key.WithHelp("s", "start the agent anyway"),
 	),
 	// Both carry their key as well as their help text: bubbles drops a binding
 	// with no keys from the help entirely.

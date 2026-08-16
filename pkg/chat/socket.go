@@ -22,6 +22,7 @@ const (
 	StateAwaiting  = "awaiting_permission"
 	StateStopped   = "stopped"
 	StateStarting  = "starting"
+	StateSettingUp = "setting_up"
 	dialTimeout    = 300 * time.Millisecond
 	commandTimeout = 2 * time.Second
 )
@@ -38,6 +39,12 @@ type Status struct {
 	ContextPct int         `json:"context_pct,omitempty"`
 	Queued     string      `json:"queued,omitempty"`
 	Permission *Permission `json:"permission,omitempty"`
+
+	// Error is a failure worth recording somewhere other than this window — a
+	// setup command that did not finish, in a workspace nobody may ever attach
+	// to. The list copies it into opentree's error log; the chat is where it is
+	// acted on.
+	Error string `json:"error,omitempty"`
 }
 
 // Permission is an escalation waiting on a human, mirrored so the workspace

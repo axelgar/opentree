@@ -7,10 +7,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -69,6 +71,7 @@ func runChat(ctx context.Context, name, version string) error {
 		Version:    version,
 		SocketPath: chat.SocketPath(repoRoot, ws.Name),
 		SessionID:  resumableSession(ws, agent.Command),
+		Setup:      setupPhase(repoRoot, store, ws),
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -85,6 +88,44 @@ func runChat(ctx context.Context, name, version string) error {
 			return store.UpdateWorkspace(ws)
 		},
 	})
+}
+
+// setupPhase is the bootstrap work this chat has to do before the agent
+// starts, or the zero value when there is none.
+//
+// The config is read from the repository root rather than the worktree, for the
+// reason resolveACPAgent gives: a worktree's own opentree.toml is a checked-out
+// file that the branch may have edited, and the commands opentree runs are the
+// repository's, not the branch's.
+//
+// Deciding here rather than in the chat is what keeps that view free of
+// workspaces and trust files. It answers three questions the repository knows —
+// has this worktree already run these exact commands, has this machine approved
+// them, and how is either recorded — and hands over the answers.
+func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.Setup {
+	cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
+	if err != nil || len(cfg.Workspace.Setup) == 0 {
+		return chat.Setup{}
+	}
+
+	commands, run := cfg.Workspace.Setup, cfg.Workspace.Run
+	hash := bootstrap.Hash(commands, run)
+	// Already done, by these exact commands. A chat starts many times per
+	// workspace, and running the install on each would make attaching cost a
+	// minute.
+	if !ws.SetupAt.IsZero() && ws.SetupHash == hash {
+		return chat.Setup{}
+	}
+
+	return chat.Setup{
+		Commands: commands,
+		Trusted:  bootstrap.Trusted(repoRoot, commands, run),
+		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run) },
+		Record: func() error {
+			ws.SetupAt, ws.SetupHash = time.Now(), hash
+			return store.UpdateWorkspace(ws)
+		},
+	}
 }
 
 // knownSessions is what opentree recorded for this workspace, narrowed to the

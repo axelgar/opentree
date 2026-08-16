@@ -39,6 +39,14 @@ func (m Model) status() Status {
 			Title:   toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
 			Options: m.perm().req.Options,
 		}
+	case m.setup.active():
+		st.State = StateSettingUp
+		// A setup failure belongs in opentree's error log, which is the
+		// dashboard's. It is the only way it reaches someone who is not looking
+		// at this window — and the window may be one nobody ever attached to.
+		if m.setup.stage == setupFailed {
+			st.Error = m.opts.Workspace + ": " + setupErrorText(m.setup.err)
+		}
 	case m.dead || m.authNeed:
 		st.State = StateStopped
 	case m.turn:
@@ -140,8 +148,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 		return m.flushQueued()
 
+	case setupBeginMsg:
+		return m.beginSetup()
+
+	case setupStepMsg:
+		m.setup.at = msg.at
+		return m, waitForMsg(m.msgs)
+
+	case setupOutputMsg:
+		m = m.appendSetupLine(msg.line)
+		return m.relayout(), waitForMsg(m.msgs)
+
+	case setupDoneMsg:
+		// The summary goes in the log, never to the agent. Whether it should see
+		// a failed install is the user's call, and pasting it is one action they
+		// can take themselves.
+		m = m.appendNotice(setupSummary(m.setup.spec.Commands, msg.err))
+		return m.finishSetup(msg.err)
+
 	case spinnerTickMsg:
-		if !m.turn {
+		// The setup phase spins for the same reason a turn does: something is
+		// running that prints nothing for minutes at a time.
+		if !m.turn && m.setup.stage != setupRunning {
 			return m, nil
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
@@ -179,9 +207,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.generation = msg.generation
 		m = m.withAgentInfo(msg.info)
 		m.dead, m.authNeed, m.err, m.restarting = false, false, nil, false
+		m.setup.stage = setupNone
 		// The replay rebuilds the log from scratch, so drop what is on screen
 		// rather than rendering the conversation twice.
-		m.entries, m.toolIdx = nil, make(map[string]int)
+		if !msg.keepLog {
+			m.entries, m.toolIdx = nil, make(map[string]int)
+		}
 		m = m.relayout()
 		return m, m.startSession()
 
@@ -282,6 +313,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = false
 		// A restart that failed is over; r has to work again.
 		m.restarting = false
+		// An agent that would not start after the setup phase is a stopped
+		// agent, not a phase still in progress.
+		m.setup.stage = setupNone
 		if msg.fatal {
 			m.dead = true
 		}
@@ -868,6 +902,28 @@ func (m Model) upsertToolCall(call acp.ToolCall) Model {
 	}
 	m.toolIdx[call.ToolCallID] = len(m.entries)
 	m.entries = append(m.entries, entry{kind: entryTool, tool: call})
+	return m
+}
+
+// setupLogLines caps what the transcript keeps. An install prints thousands of
+// lines and the log is re-rendered on every one of them; the end is also the
+// part worth having, since that is where a failure says what went wrong.
+const setupLogLines = 200
+
+// appendSetupLine grows the setup transcript, which is one entry rather than
+// one per line: a thousand entries would be a thousand renders per frame, and
+// the output reads as a block anyway.
+func (m Model) appendSetupLine(line string) Model {
+	n := len(m.entries)
+	if n == 0 || m.entries[n-1].kind != entrySetup {
+		m.entries = append(m.entries, entry{kind: entrySetup, text: line})
+		return m
+	}
+	lines := append(strings.Split(m.entries[n-1].text, "\n"), line)
+	if len(lines) > setupLogLines {
+		lines = lines[len(lines)-setupLogLines:]
+	}
+	m.entries[n-1].text = strings.Join(lines, "\n")
 	return m
 }
 

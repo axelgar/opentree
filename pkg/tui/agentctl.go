@@ -52,6 +52,13 @@ func renderChatBadge(st *chat.Status) string {
 			label += " · 1 queued"
 		}
 		return agentWorkingStyle.Render(ui.Truncate(label, badgeWidth))
+	case chat.StateSettingUp:
+		// Before the agent exists: the window is running the project's setup
+		// commands, which is why nothing has answered a prompt yet.
+		if st.Error != "" {
+			return dangerStyle.Render("setup failed")
+		}
+		return agentWorkingStyle.Render("setting up…")
 	case chat.StateStopped:
 		return dangerStyle.Render("agent stopped")
 	case chat.StateStarting:
