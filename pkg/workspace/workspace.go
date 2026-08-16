@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
@@ -217,30 +218,50 @@ func (s *Service) needsWindow(name string) bool {
 	return isShell(cmd)
 }
 
-// linkSkills gives a fresh worktree the repository's own skills, which git does
-// not carry unless they are committed.
+// seedWorktree gives a fresh worktree what git does not carry: the
+// repository's own skills, and the untracked config files the project names.
+//
+// One function because they are one idea — a worktree holds only tracked
+// files, and the things it needs anyway have to be put there by whatever made
+// it. Skills are the instance opentree already knew about; the seed list is the
+// general case.
 //
 // Best-effort, in the shape of the other worktree conveniences: a workspace
-// that came up without its skills is still a workspace, and failing creation
-// over a symlink would trade a smaller problem for a larger one. The Skills
-// view reports what is missing, so a failure here is visible where it can be
-// acted on rather than swallowed.
-func (s *Service) linkSkills(name string) {
-	_, _ = skills.Link(s.repoRoot, s.WorktreePath(name))
+// that came up without its skills or its .env is still a workspace, and failing
+// creation over a symlink would trade a smaller problem for a larger one. Every
+// mistake readable out of the config was already reported by checkPrerequisites
+// before the worktree existed, and the Skills view reports what is missing — so
+// a failure here is visible where it can be acted on rather than swallowed.
+func (s *Service) seedWorktree(name string) {
+	worktreePath := s.WorktreePath(name)
+	_, _ = skills.Link(s.repoRoot, worktreePath)
+	_, _ = bootstrap.Seed(s.repoRoot, worktreePath, s.cfg.Workspace.Seed)
+}
+
+// checkPrerequisites rejects a configuration no workspace could be created
+// from, before anything is created.
+//
+// Both are the same kind of mistake: wrong for every workspace this repository
+// will ever make, with no per-workspace recovery. Failing here is one clear
+// message rather than a "✓ Launched" followed by a dead shell window, or a
+// worktree that quietly never receives its .env.
+func (s *Service) checkPrerequisites() error {
+	if err := s.cfg.Agent.Validate(); err != nil {
+		return err
+	}
+	return bootstrap.ValidateSeed(s.repoRoot, s.cfg.Workspace.Seed)
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
-	// Fail before creating anything, not with a "✓ Launched" success message
-	// and a dead shell window.
-	if err := s.cfg.Agent.Validate(); err != nil {
+	if err := s.checkPrerequisites(); err != nil {
 		return nil, err
 	}
 
 	if err := s.worktrees.Create(name, baseBranch); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
-	s.linkSkills(name)
+	s.seedWorktree(name)
 
 	worktreePath, err := s.launchAgentWindow(name, true)
 	if err != nil {
@@ -303,7 +324,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 // CreateFromRemoteBranch creates a workspace from an existing remote branch.
 // The branch is fetched from origin and checked out into a new worktree.
 func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, error) {
-	if err := s.cfg.Agent.Validate(); err != nil {
+	if err := s.checkPrerequisites(); err != nil {
 		return nil, err
 	}
 
@@ -311,7 +332,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree from remote: %w", err)
 	}
-	s.linkSkills(branchName)
+	s.seedWorktree(branchName)
 
 	worktreePath, err := s.launchAgentWindow(branchName, createdBranch)
 	if err != nil {

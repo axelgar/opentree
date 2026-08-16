@@ -974,3 +974,61 @@ func TestCreate_LinksTheReposSkillsIntoTheWorktree(t *testing.T) {
 		t.Errorf("Missing = %v after Create, want nothing", missing)
 	}
 }
+
+// The general case of the same problem: the agent's first turn should not go on
+// discovering that the worktree has no .env.
+func TestCreate_SeedsTheConfiguredFilesIntoTheWorktree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Workspace.Seed = []string{".env"}
+
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("TOKEN=hunter2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("feature", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(svc.WorktreePath("feature"), ".env"))
+	if err != nil {
+		t.Fatalf("the agent in the worktree cannot read the repo's .env: %v", err)
+	}
+	if string(got) != "TOKEN=hunter2\n" {
+		t.Errorf(".env content = %q, want the repository's own", got)
+	}
+}
+
+// A seed path that leaves the repository is wrong for every workspace this
+// repository will ever make, so it fails before one is created rather than
+// leaving a worktree behind that quietly never receives its config.
+func TestCreate_RefusesASeedPathOutsideTheRepository(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Workspace.Seed = []string{"../../.ssh/id_rsa"}
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("feature", "main"); err == nil {
+		t.Fatal("Create accepted a seed path outside the repository")
+	}
+	if _, err := os.Stat(svc.WorktreePath("feature")); err == nil {
+		t.Error("a worktree was created despite the invalid config")
+	}
+}

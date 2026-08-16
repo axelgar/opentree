@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -13,8 +14,18 @@ var configKeys = map[string]string{
 	"agent.command":         "Command to run as the coding agent",
 	"worktree.base_dir":     "Directory to store worktrees",
 	"worktree.default_base": "Default base branch for new workspaces",
+	"workspace.seed":        "Untracked files to link into each new worktree",
 	"tmux.session_prefix":   "Prefix for tmux session names",
 	"github.auto_push":      "Auto-push branch before creating PR (true/false)",
+}
+
+// listValuedKeys are the keys `config set` cannot write, and what a list of
+// each holds. `set` takes one string and would have to invent a splitting
+// syntax for these — one nobody would guess right first time, and that would
+// quote wrongly the first time a path contained a comma. They are read from
+// here and edited in the file.
+var listValuedKeys = map[string]string{
+	"workspace.seed": "paths",
 }
 
 var ConfigCmd = &cobra.Command{
@@ -33,6 +44,7 @@ Available keys:
   agent.command          Command to run as the coding agent
   worktree.base_dir      Directory to store worktrees
   worktree.default_base  Default base branch for new workspaces
+  workspace.seed         Untracked files to link into each new worktree (edit the file)
   tmux.session_prefix    Prefix for tmux session names
   github.auto_push       Auto-push branch before creating PR (true/false)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,6 +67,7 @@ var configListCmd = &cobra.Command{
 			fmt.Printf("agent.command = %s\n", cfg.Agent.Command)
 			fmt.Printf("worktree.base_dir = %s\n", cfg.Worktree.BaseDir)
 			fmt.Printf("worktree.default_base = %s\n", cfg.Worktree.DefaultBase)
+			fmt.Printf("workspace.seed = %s\n", formatList(cfg.Workspace.Seed))
 			fmt.Printf("tmux.session_prefix = %s\n", cfg.Tmux.SessionPrefix)
 			fmt.Printf("github.auto_push = %t\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush)
 			return nil
@@ -68,6 +81,7 @@ var configListCmd = &cobra.Command{
 		fmt.Printf("agent.command = %s  (%s)\n", cfg.Agent.Command, sources.AgentCommand)
 		fmt.Printf("worktree.base_dir = %s  (%s)\n", cfg.Worktree.BaseDir, sources.WorktreeBaseDir)
 		fmt.Printf("worktree.default_base = %s  (%s)\n", cfg.Worktree.DefaultBase, sources.WorktreeDefaultBase)
+		fmt.Printf("workspace.seed = %s  (%s)\n", formatList(cfg.Workspace.Seed), sources.WorkspaceSeed)
 		fmt.Printf("tmux.session_prefix = %s  (%s)\n", cfg.Tmux.SessionPrefix, sources.TmuxSessionPrefix)
 		fmt.Printf("github.auto_push = %t  (%s)\n", cfg.GitHub.AutoPush != nil && *cfg.GitHub.AutoPush, sources.GitHubAutoPush)
 		return nil
@@ -115,6 +129,9 @@ var configSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
 
+		if held, ok := listValuedKeys[key]; ok {
+			return fmt.Errorf("%s is a list of %s — edit it in %s", key, held, config.FindConfigFile())
+		}
 		if _, ok := configKeys[key]; !ok {
 			return fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 		}
@@ -169,6 +186,8 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 		return cfg.Worktree.BaseDir, nil
 	case "worktree.default_base":
 		return cfg.Worktree.DefaultBase, nil
+	case "workspace.seed":
+		return formatList(cfg.Workspace.Seed), nil
 	case "tmux.session_prefix":
 		return cfg.Tmux.SessionPrefix, nil
 	case "github.auto_push":
@@ -176,6 +195,16 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
 	}
+}
+
+// formatList renders a list-valued setting the way the config file spells it,
+// so what `config list` prints is what you would type back into opentree.toml.
+func formatList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, v := range values {
+		quoted = append(quoted, strconv.Quote(v))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func configKeyCompletions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

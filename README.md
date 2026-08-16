@@ -340,12 +340,39 @@ default_base = "main"         # Default base branch
 [agent]
 command = "opencode"          # Agent to run: "opencode", "claude", "copilot" or "gemini"
 
+[workspace]
+seed = [".env", ".npmrc"]     # Untracked files to link into each new worktree
+
 [tmux]
 session_prefix = "opentree"   # Prefix for the tmux session name
 
 [github]
 auto_push = true              # Push branch before creating a PR (set false to push manually)
 ```
+
+### Seeding a Worktree
+
+A git worktree carries only what git tracks, so a fresh one has no `.env` and no
+`.npmrc` — and the agent's first turn goes on discovering that. List the
+untracked files a worktree needs and opentree links them in as it creates one:
+
+```toml
+[workspace]
+seed = [".env", ".npmrc", "config/local.json"]
+```
+
+Each entry is a path relative to the repository root, and it lands at the same
+path inside the worktree. They are symlinks rather than copies: one credential
+set, shared, so rotating a token in the repository rotates it in every worktree
+instead of in one out of five.
+
+Files only. A directory is refused — `node_modules` is the output of an install,
+not a file to link, and a worktree that deletes a linked one has just emptied
+your main checkout's. A path that leaves the repository, by `..` or through a
+symlink, is refused when the workspace is created rather than seeded quietly.
+
+A file the repository does not have is skipped, and one the branch tracks itself
+is left alone: git checking it out is the signal that the branch has its own.
 
 ### Using Different Agents
 

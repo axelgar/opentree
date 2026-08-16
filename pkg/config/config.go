@@ -14,10 +14,11 @@ import (
 
 // Config represents the opentree configuration
 type Config struct {
-	Agent    AgentConfig    `toml:"agent"`
-	Worktree WorktreeConfig `toml:"worktree"`
-	Tmux     TmuxConfig     `toml:"tmux"`
-	GitHub   GitHubConfig   `toml:"github"`
+	Agent     AgentConfig     `toml:"agent"`
+	Worktree  WorktreeConfig  `toml:"worktree"`
+	Workspace WorkspaceConfig `toml:"workspace"`
+	Tmux      TmuxConfig      `toml:"tmux"`
+	GitHub    GitHubConfig    `toml:"github"`
 }
 
 // AgentConfig configures the coding agent
@@ -51,6 +52,24 @@ type WorktreeConfig struct {
 	DefaultBase string `toml:"default_base"`
 }
 
+// WorkspaceConfig is what a worktree needs beyond what git carries.
+//
+// A worktree created by `git worktree add` holds only tracked files: no .env,
+// no node_modules, no .venv. Seed names the untracked files to link in, setup
+// the commands that build what linking cannot copy, and run the dev server to
+// start on demand.
+//
+// It lives in the repository's own opentree.toml rather than the global one on
+// purpose: a bootstrap sequence is a property of the project, and one kept per
+// machine drifts until nobody maintains it. That also makes setup and run
+// executable code arriving with a clone, which is why they are gated by trust
+// before they run.
+type WorkspaceConfig struct {
+	Setup []string `toml:"setup"`
+	Seed  []string `toml:"seed"`
+	Run   string   `toml:"run"`
+}
+
 // TmuxConfig configures tmux behavior
 type TmuxConfig struct {
 	SessionPrefix string `toml:"session_prefix"`
@@ -66,6 +85,9 @@ type ConfigSource struct {
 	AgentCommand        string
 	WorktreeBaseDir     string
 	WorktreeDefaultBase string
+	WorkspaceSetup      string
+	WorkspaceSeed       string
+	WorkspaceRun        string
 	TmuxSessionPrefix   string
 	GitHubAutoPush      string
 }
@@ -189,6 +211,15 @@ func mergeInto(dst, src *Config) {
 	if src.Worktree.DefaultBase != "" {
 		dst.Worktree.DefaultBase = src.Worktree.DefaultBase
 	}
+	if src.Workspace.Setup != nil {
+		dst.Workspace.Setup = src.Workspace.Setup
+	}
+	if src.Workspace.Seed != nil {
+		dst.Workspace.Seed = src.Workspace.Seed
+	}
+	if src.Workspace.Run != "" {
+		dst.Workspace.Run = src.Workspace.Run
+	}
 	if src.Tmux.SessionPrefix != "" {
 		dst.Tmux.SessionPrefix = src.Tmux.SessionPrefix
 	}
@@ -204,6 +235,9 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		AgentCommand:        SourceDefault,
 		WorktreeBaseDir:     SourceDefault,
 		WorktreeDefaultBase: SourceDefault,
+		WorkspaceSetup:      SourceDefault,
+		WorkspaceSeed:       SourceDefault,
+		WorkspaceRun:        SourceDefault,
 		TmuxSessionPrefix:   SourceDefault,
 		GitHubAutoPush:      SourceDefault,
 	}
@@ -227,6 +261,27 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 	}
 	if repo != nil && repo.Worktree.DefaultBase != "" {
 		src.WorktreeDefaultBase = SourceRepo
+	}
+
+	if global != nil && global.Workspace.Setup != nil {
+		src.WorkspaceSetup = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Setup != nil {
+		src.WorkspaceSetup = SourceRepo
+	}
+
+	if global != nil && global.Workspace.Seed != nil {
+		src.WorkspaceSeed = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Seed != nil {
+		src.WorkspaceSeed = SourceRepo
+	}
+
+	if global != nil && global.Workspace.Run != "" {
+		src.WorkspaceRun = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Run != "" {
+		src.WorkspaceRun = SourceRepo
 	}
 
 	if global != nil && global.Tmux.SessionPrefix != "" {

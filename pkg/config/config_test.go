@@ -117,6 +117,64 @@ command = "override"
 	}
 }
 
+func TestLoad_WorkspaceBlock(t *testing.T) {
+	toml := `
+[workspace]
+setup = ["pnpm install --frozen-lockfile"]
+seed = [".env", ".npmrc"]
+run = "pnpm dev"
+`
+	path := filepath.Join(t.TempDir(), "opentree.toml")
+	if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if got := strings.Join(cfg.Workspace.Setup, "|"); got != "pnpm install --frozen-lockfile" {
+		t.Errorf("Workspace.Setup = %v", cfg.Workspace.Setup)
+	}
+	if got := strings.Join(cfg.Workspace.Seed, "|"); got != ".env|.npmrc" {
+		t.Errorf("Workspace.Seed = %v", cfg.Workspace.Seed)
+	}
+	if cfg.Workspace.Run != "pnpm dev" {
+		t.Errorf("Workspace.Run = %q, want %q", cfg.Workspace.Run, "pnpm dev")
+	}
+}
+
+// A repository that seeds nothing is the default, and it has to be sayable: an
+// empty list in the repo config must beat a global one rather than being read
+// as "unset, inherit".
+func TestLoad_EmptySeedListOverridesGlobal(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte("[workspace]\nseed = [\".env\"]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoPath := filepath.Join(t.TempDir(), "opentree.toml")
+	if err := os.WriteFile(repoPath, []byte("[workspace]\nseed = []\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(repoPath)
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if len(cfg.Workspace.Seed) != 0 {
+		t.Errorf("Workspace.Seed = %v, want nothing", cfg.Workspace.Seed)
+	}
+	if sources.WorkspaceSeed != SourceRepo {
+		t.Errorf("sources.WorkspaceSeed = %q, want %q", sources.WorkspaceSeed, SourceRepo)
+	}
+}
+
 func TestLoad_MalformedTOML_ReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opentree.toml")
 	if err := os.WriteFile(path, []byte("this is not [valid toml !!@@"), 0644); err != nil {
