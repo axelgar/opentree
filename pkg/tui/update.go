@@ -609,6 +609,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.toggleServerCmd(ws.Name)
 
+		case key.Matches(msg, m.keys.Blocked):
+			next, ok := nextBlocked(visible, m.cursor)
+			if !ok {
+				return m, m.transientErrCmd("nothing is waiting on you")
+			}
+			m.cursor = next
+
 		case key.Matches(msg, m.keys.ErrLog):
 			m.showErrLog = !m.showErrLog
 		case key.Matches(msg, m.keys.Help):

@@ -107,6 +107,7 @@ opentree
 - `x` - Delete selected workspace (shows diff confirmation if uncommitted changes)
 - `R` - Send the workspace's open PR review comments to its agent
 - `w` - Start or stop the workspace's dev server
+- `b` - Jump to the workspace that has been waiting longest on a permission (press again to cycle)
 - `space` - Toggle multi-select on current workspace
 - `/` - Filter workspaces by name
 - `s` - Cycle sort order (name → age → activity → PR)
@@ -254,7 +255,15 @@ behind a browser or closed.
 Nothing is sent while you are looking at the window it happened in, and nothing
 at all when the chat is not running inside tmux. The banners are signposts
 rather than buttons: pressing `b` in the dashboard is what takes you to the
-workspace that has been waiting longest.
+workspace that has been waiting longest, and pressing it again walks the rest.
+Each waiting row says how long it has been at it — `blocked 12m`.
+
+```bash
+opentree notify test          # one of each, through the surfaces you have
+```
+
+Worth running once: macOS silently drops notifications sent by `osascript`
+until they have been allowed, which is otherwise a feature with no symptom.
 
 ```toml
 [notify]

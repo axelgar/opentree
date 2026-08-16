@@ -128,6 +128,104 @@ func TestPendingPermission(t *testing.T) {
 	}
 }
 
+// blockedSince is a workspace waiting on a permission, as of some moment.
+func blockedSince(name string, since time.Time) WorkspaceItem {
+	return wsWithChat(name, &chat.Status{
+		State:      chat.StateAwaiting,
+		Since:      since,
+		Permission: &chat.Permission{Title: "rm -rf dist", Options: awaitingStatus.Permission.Options},
+	})
+}
+
+func TestNextBlocked(t *testing.T) {
+	now := time.Now()
+	// beta has been waiting longest, then delta, then alpha.
+	rows := []WorkspaceItem{
+		blockedSince("alpha", now.Add(-time.Minute)),
+		testWS("gamma"),
+		blockedSince("beta", now.Add(-time.Hour)),
+		blockedSince("delta", now.Add(-30*time.Minute)),
+	}
+
+	// From anywhere that is not itself blocked: the longest wait.
+	got, ok := nextBlocked(rows, 1)
+	if !ok || rows[got].Name != "beta" {
+		t.Fatalf("from gamma went to %v (ok=%v), want beta", name(rows, got), ok)
+	}
+
+	// And repeats walk the rest in order, then come back round.
+	for _, want := range []string{"delta", "alpha", "beta"} {
+		got, ok = nextBlocked(rows, got)
+		if !ok || rows[got].Name != want {
+			t.Fatalf("cycled to %v, want %s", name(rows, got), want)
+		}
+	}
+}
+
+func TestNextBlocked_NothingWaiting(t *testing.T) {
+	rows := []WorkspaceItem{testWS("alpha"), wsWithChat("beta", &chat.Status{State: chat.StateWorking})}
+	if _, ok := nextBlocked(rows, 0); ok {
+		t.Error("nextBlocked found something to go to with nothing waiting")
+	}
+	if _, ok := nextBlocked(nil, 0); ok {
+		t.Error("nextBlocked found something to go to in an empty list")
+	}
+}
+
+// TestNextBlocked_UnstampedGoesLast covers a chat left over from before Status
+// carried the moment: it is waiting, so it is in the cycle, but it cannot claim
+// to have been waiting longest.
+func TestNextBlocked_UnstampedGoesLast(t *testing.T) {
+	rows := []WorkspaceItem{
+		blockedSince("unknown", time.Time{}),
+		blockedSince("known", time.Now().Add(-time.Minute)),
+	}
+	got, ok := nextBlocked(rows, -1)
+	if !ok || rows[got].Name != "known" {
+		t.Errorf("went to %v, want the one whose wait is known", name(rows, got))
+	}
+}
+
+// TestBlockedKey_MovesTheCursor is the key itself: the other half of a
+// notification, and the reason sending one is worth doing.
+func TestBlockedKey_MovesTheCursor(t *testing.T) {
+	now := time.Now()
+	m := newTestModel(
+		testWS("alpha"),
+		blockedSince("beta", now.Add(-time.Minute)),
+		blockedSince("gamma", now.Add(-time.Hour)),
+	)
+	m.cursor = 0
+
+	m, _ = applyUpdate(m, keyMsg("b"))
+	if m.cursor != 2 {
+		t.Fatalf("cursor = %d, want gamma at 2 — the longest wait", m.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("b"))
+	if m.cursor != 1 {
+		t.Fatalf("cursor = %d, want beta at 1 on the second press", m.cursor)
+	}
+}
+
+// And a key that does nothing says why, rather than looking broken.
+func TestBlockedKey_SaysWhenNothingIsWaiting(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m, _ = applyUpdate(m, keyMsg("b"))
+	if m.cursor != 0 {
+		t.Errorf("cursor moved to %d with nothing waiting", m.cursor)
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "waiting") {
+		t.Errorf("err = %v, want it to say nothing is waiting", m.err)
+	}
+}
+
+func name(rows []WorkspaceItem, i int) string {
+	if i < 0 || i >= len(rows) {
+		return fmt.Sprintf("index %d", i)
+	}
+	return rows[i].Name
+}
+
 func TestAnswerDialog_OpensOnlyWhenPending(t *testing.T) {
 	m := newTestModel()
 	if m.openAnswerDialog(wsWithChat("a", nil)).answering {

@@ -586,8 +586,11 @@ func (m Model) statusBar() string {
 		statusBarStyle.Render("sort: " + sortModeNames[m.sortMode] + " (s)"),
 	}
 	if waiting > 0 {
+		// The key is inline for the same reason sort's is: this is the count
+		// you look at after a notification, and it is the one place somebody
+		// who has not opened the full help will see how to act on it.
 		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d", waiting))+
-			statusBarStyle.Render(" waiting"))
+			statusBarStyle.Render(" waiting (b)"))
 	}
 	if len(m.selected) > 0 {
 		parts = append(parts, selectedMarkStyle.Render(fmt.Sprintf("%d", len(m.selected)))+

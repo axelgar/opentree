@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -126,6 +127,46 @@ func compactSince(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
+}
+
+// nextBlocked is the row the b key moves to: the workspace that has been
+// waiting longest, or the next one along when the cursor is already on it.
+//
+// It is what makes a notification worth sending. A banner you cannot act on
+// from where it appears is an interruption; this is the one keystroke that
+// turns it back into an answer, and the cycle is for the case where the reason
+// you were interrupted is that three of them are waiting.
+func nextBlocked(visible []WorkspaceItem, cursor int) (int, bool) {
+	waiting := make([]int, 0, len(visible))
+	for i, ws := range visible {
+		if ws.pendingPermission() != nil {
+			waiting = append(waiting, i)
+		}
+	}
+	if len(waiting) == 0 {
+		return 0, false
+	}
+	sort.SliceStable(waiting, func(a, b int) bool {
+		return blockedLonger(visible[waiting[a]], visible[waiting[b]])
+	})
+
+	for n, i := range waiting {
+		if i == cursor {
+			return waiting[(n+1)%len(waiting)], true
+		}
+	}
+	return waiting[0], true
+}
+
+// blockedLonger reports whether a has been waiting longer than b. A chat too
+// old to stamp the moment sorts last: not knowing how long it has waited is not
+// a claim to have been waiting since 1970.
+func blockedLonger(a, b WorkspaceItem) bool {
+	at, bt := a.ChatStatus.Since, b.ChatStatus.Since
+	if at.IsZero() || bt.IsZero() {
+		return !at.IsZero()
+	}
+	return at.Before(bt)
 }
 
 // pendingPermission is the escalation the selected workspace is blocked on, or

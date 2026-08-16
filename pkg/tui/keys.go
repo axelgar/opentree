@@ -3,26 +3,27 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up     key.Binding
-	Down   key.Binding
-	New    key.Binding
-	Issue  key.Binding
-	Remote key.Binding
-	Enter  key.Binding
-	Diff   key.Binding
-	PR     key.Binding
-	Open   key.Binding
-	Review key.Binding
-	Delete key.Binding
-	Select key.Binding
-	Filter key.Binding
-	Sort   key.Binding
-	Agent  key.Binding
-	Answer key.Binding
-	Stop   key.Binding
-	Msg    key.Binding
-	Server key.Binding
-	ErrLog key.Binding
+	Up      key.Binding
+	Down    key.Binding
+	New     key.Binding
+	Issue   key.Binding
+	Remote  key.Binding
+	Enter   key.Binding
+	Diff    key.Binding
+	PR      key.Binding
+	Open    key.Binding
+	Review  key.Binding
+	Delete  key.Binding
+	Select  key.Binding
+	Filter  key.Binding
+	Sort    key.Binding
+	Agent   key.Binding
+	Answer  key.Binding
+	Stop    key.Binding
+	Msg     key.Binding
+	Server  key.Binding
+	Blocked key.Binding
+	ErrLog  key.Binding
 	// CopyErrLog is only ever consulted inside the error log, which swallows
 	// every other key. That is why it can share a letter with Stop without
 	// either becoming ambiguous — the log is modal, and the list is not
@@ -44,7 +45,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
-		{k.Answer, k.Stop, k.Msg, k.Server, k.Filter, k.Sort},
+		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
 		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
@@ -128,6 +129,14 @@ var keys = keyMap{
 	Msg: key.NewBinding(
 		key.WithKeys("m"),
 		key.WithHelp("m", "message agent"),
+	),
+	// The other half of a notification. Sorting is a preference you set once;
+	// "who needs me now" is a question you ask at a moment, and a list that
+	// reordered itself every ten seconds as agents changed state would be
+	// unusable for everything else it is for.
+	Blocked: key.NewBinding(
+		key.WithKeys("b"),
+		key.WithHelp("b", "next blocked"),
 	),
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),

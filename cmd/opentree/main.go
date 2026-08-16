@@ -67,6 +67,7 @@ func init() {
 	rootCmd.AddCommand(cmd.SetupCmd)
 	rootCmd.AddCommand(cmd.SeedCmd)
 	rootCmd.AddCommand(cmd.SkillsCmd)
+	rootCmd.AddCommand(cmd.NotifyCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {
