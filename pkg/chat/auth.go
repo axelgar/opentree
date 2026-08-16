@@ -2,7 +2,6 @@ package chat
 
 import (
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,8 +68,8 @@ func (m Model) authRemedies() []authRemedy {
 		return out
 	}
 
-	if len(m.opts.AuthCommand) > 0 {
-		r := authRemedy{command: m.opts.Command, args: m.opts.AuthCommand}
+	if len(m.opts.Agent.ACP.AuthCommand) > 0 {
+		r := authRemedy{command: m.opts.Agent.Command, args: m.opts.Agent.ACP.AuthCommand}
 		r.label = r.line()
 		return []authRemedy{r}
 	}
@@ -189,38 +188,21 @@ func (m Model) loginRows() []completionItem {
 }
 
 func (m Model) loginView() string {
-	return pickerView("log in to "+m.opts.Agent, m.loginRows(), m.login.cursor, m.width)
+	return pickerView("log in to "+m.opts.Agent.Name, m.loginRows(), m.login.cursor, m.width)
 }
 
 func (m Model) loginHeight() int { return pickerHeight(len(m.loginRows())) }
 
-// handleLoginKey drives the picker, the same keys as the other two.
+// handleLoginKey drives the picker with the shared keys.
 func (m Model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	rows := m.authRemedies()
-
-	switch msg.String() {
-	case "esc", "ctrl+c":
+	switch action, i := pickerKey(msg, &m.login.cursor, len(m.authRemedies())); action {
+	case pickerClosed:
 		m.login = login{}
 		return m.relayout(), nil
-
-	case "up", "ctrl+p":
-		if len(rows) > 0 {
-			m.login.cursor = (m.login.cursor - 1 + len(rows)) % len(rows)
-		}
+	case pickerMoved:
 		return m.relayout(), nil
-
-	case "down", "ctrl+n":
-		if len(rows) > 0 {
-			m.login.cursor = (m.login.cursor + 1) % len(rows)
-		}
-		return m.relayout(), nil
-
-	case "enter":
-		return m.chooseRemedy(m.login.cursor)
-	}
-
-	if n, err := strconv.Atoi(msg.String()); err == nil && n >= 1 && n <= len(rows) {
-		return m.chooseRemedy(n - 1)
+	case pickerChose:
+		return m.chooseRemedy(i)
 	}
 	return m, nil
 }

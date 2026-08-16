@@ -20,7 +20,7 @@ func (m Model) agentOutput() string {
 	if out == "" {
 		return ""
 	}
-	return m.opts.Agent + " printed:\n" + out
+	return m.opts.Agent.Name + " printed:\n" + out
 }
 
 // canShowOutput reports whether there is an agent to have printed anything.
@@ -35,7 +35,7 @@ func (m Model) canShowOutput() bool { return m.client != nil }
 func (m Model) showOutput() (tea.Model, tea.Cmd) {
 	out := m.agentOutput()
 	if out == "" {
-		out = m.opts.Agent + " has printed nothing outside the conversation"
+		out = m.opts.Agent.Name + " has printed nothing outside the conversation"
 	}
 	return m.appendNotice(out).relayout(), nil
 }

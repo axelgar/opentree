@@ -25,7 +25,7 @@ func known(paths ...string) map[string]bool {
 // compose is composePrompt for the cases that only care about the blocks, with
 // an agent that takes images.
 func compose(text, cwd string, files map[string]bool) []acp.ContentBlock {
-	blocks, _ := composePrompt(text, cwd, files, true, nil)
+	blocks, _ := composer{cwd: cwd, known: files, images: true}.prompt(text, nil)
 	return blocks
 }
 
@@ -150,7 +150,7 @@ func TestComposePrompt_ImagePathBecomesAnImageBlock(t *testing.T) {
 func TestComposePrompt_ImageFallsBackToALinkWhenTheAgentCannotTakeOne(t *testing.T) {
 	path := writeFile(t, "shot.png", onePixelPNG)
 
-	blocks, notices := composePrompt(path, "/repo", known(), false, nil)
+	blocks, notices := composer{cwd: "/repo", known: known(), images: false}.prompt(path, nil)
 	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
 		t.Fatalf("blocks = %+v, want a single resource link", blocks)
 	}
@@ -165,7 +165,7 @@ func TestComposePrompt_OversizeImageFallsBackToALink(t *testing.T) {
 	big := append(append([]byte{}, onePixelPNG...), make([]byte, maxImageBytes)...)
 	path := writeFile(t, "huge.png", big)
 
-	blocks, notices := composePrompt(path, "/repo", known(), true, nil)
+	blocks, notices := composer{cwd: "/repo", known: known(), images: true}.prompt(path, nil)
 	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
 		t.Fatalf("blocks = %+v, want a single resource link", blocks)
 	}
@@ -177,7 +177,7 @@ func TestComposePrompt_OversizeImageFallsBackToALink(t *testing.T) {
 func TestComposePrompt_NonImageFileBecomesALinkWithNoNotice(t *testing.T) {
 	path := writeFile(t, "notes.txt", []byte("plain words"))
 
-	blocks, notices := composePrompt(path, "/repo", known(), true, nil)
+	blocks, notices := composer{cwd: "/repo", known: known(), images: true}.prompt(path, nil)
 	if len(blocks) != 1 || blocks[0].Type != acp.BlockResourceLink {
 		t.Fatalf("blocks = %+v, want a single resource link", blocks)
 	}

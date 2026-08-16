@@ -13,6 +13,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/tmux"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // Update handles one message and republishes the session's status. Publishing
@@ -143,7 +144,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.turn {
 			return m, nil
 		}
-		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
 		return m, spinnerTick()
 
 	case agentGoneMsg:
@@ -163,7 +164,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// which will never run.
 		m = m.cancelPerms()
 		if m.err == nil {
-			m.err = fmt.Errorf("%s exited", m.opts.Command)
+			m.err = fmt.Errorf("%s exited", m.opts.Agent.Command)
 		}
 		// Whatever the agent printed on its way out, into the log where it can be
 		// read. The stopped panel keeps one line — the rest would swamp a footer —
@@ -198,7 +199,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Not an error banner: the recorded conversations are still listed
 			// underneath, and one of them is probably the one being looked for.
-			m.sessions.err = "could not list " + m.opts.Agent + "'s own"
+			m.sessions.err = "could not list " + m.opts.Agent.Name + "'s own"
 			return m.relayout(), nil
 		}
 		m.sessions.rows = mergeSessions(msg.sessions, m.opts.KnownSessions)
@@ -272,7 +273,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// what a login blocks — has one to start, and that is also the answer to
 		// whether the login took: an agent that only claimed to log in fails here.
 		if m.sessionID != "" {
-			return m.appendNotice("logged in to " + m.opts.Agent).relayout(), nil
+			return m.appendNotice("logged in to " + m.opts.Agent.Name).relayout(), nil
 		}
 		return m.relayout(), m.startSession()
 
@@ -318,25 +319,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Whichever panel the footer drew is the one the keys drive. A stopped
 	// agent takes over the keyboard because r and l would otherwise be
 	// swallowed by the textarea, which is useless with nothing to send to.
-	switch m.overlay() {
-	case overlayPermission:
-		return m.handlePermissionKey(msg)
-	case overlayLogin:
-		return m.handleLoginKey(msg)
-	case overlayStopped:
-		return m.handleStoppedKey(msg)
-	case overlaySettings:
-		return m.handleSettingsKey(msg)
-	case overlaySessions:
-		return m.handleSessionsKey(msg)
-	case overlayHelp:
-		// The key list is read-only, so anything at all dismisses it rather
-		// than making people hunt for the one key that closes it.
-		if key.Matches(msg, m.keys.Back) {
-			return m, leave
-		}
-		m.showHelp = false
-		return m.relayout(), nil
+	if def, ok := overlayDefs[m.overlay()]; ok {
+		return def.keys(m, msg)
 	}
 
 	// The palette owns navigation and acceptance while it is open, so arrows
@@ -449,7 +433,7 @@ func (m Model) attachDropped() Model {
 	if start < 0 {
 		return m
 	}
-	block, _, ok := attach(string(runes[start:end]), m.opts.Cwd, m.trackedFiles(), true)
+	block, _, ok := m.composer().attach(string(runes[start:end]))
 	if !ok || block.Type != acp.BlockImage {
 		// A path to something that is not an image reads perfectly well as a
 		// path, and it already travels as a link.
@@ -628,11 +612,16 @@ func (m Model) startTurn(text string) (Model, tea.Cmd) {
 }
 
 // composeTurn is the message about to be sent, as blocks. It exists so the
-// state that feeds composePrompt — the pasted attachments, what this agent
+// state that feeds the composer — the pasted attachments, what this agent
 // accepts, which files git knows about — is reachable from a test without
 // executing the command that would need a live agent behind it.
 func (m Model) composeTurn(text string) ([]acp.ContentBlock, []string) {
-	return composePrompt(text, m.opts.Cwd, m.trackedFiles(), m.canSendImages, m.pending)
+	return m.composer().prompt(text, m.pending)
+}
+
+// composer is this session's view of what composing needs to know.
+func (m Model) composer() composer {
+	return composer{cwd: m.opts.Cwd, known: m.trackedFiles(), images: m.canSendImages}
 }
 
 // flushQueued runs a prompt that arrived while the agent was busy or starting.
@@ -648,6 +637,16 @@ func (m Model) flushQueued() (tea.Model, tea.Cmd) {
 // stopped reports whether the agent is unusable until something is done about
 // it: either it exited, or it refused to work without credentials.
 func (m Model) stopped() bool { return m.dead || m.authNeed }
+
+// handleHelpKey dismisses the key list. It is read-only, so anything at all
+// closes it rather than making people hunt for the one key that does.
+func (m Model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.Back) {
+		return m, leave
+	}
+	m.showHelp = false
+	return m.relayout(), nil
+}
 
 func (m Model) handleStoppedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
@@ -710,27 +709,33 @@ func (m Model) cancelPerms() Model {
 	return m
 }
 
+// permKeys pairs each reflex key with the permission kind it answers. One
+// table serves both directions — resolving a keystroke here, and labelling an
+// option's row in the dialog (kindKey) — so the hint and the handler cannot
+// disagree about which key means what.
+var permKeys = []struct{ key, kind string }{
+	{"a", acp.PermissionAllowOnce},
+	{"A", acp.PermissionAllowAlways},
+	{"d", acp.PermissionRejectOnce},
+}
+
 // optionForKey maps a keystroke to a permission option: a digit picks by
 // position, and a/A/d pick by kind when the agent offers that kind.
 func optionForKey(k string, options []acp.PermissionOption) (string, bool) {
 	if n, err := strconv.Atoi(k); err == nil && n >= 1 && n <= len(options) {
 		return options[n-1].OptionID, true
 	}
-
-	var wantKind string
-	switch k {
-	case "a":
-		wantKind = acp.PermissionAllowOnce
-	case "A":
-		wantKind = acp.PermissionAllowAlways
-	case "d", "r":
-		wantKind = acp.PermissionRejectOnce
-	default:
-		return "", false
+	if k == "r" {
+		k = "d" // rejecting answers to both letters; the dialog shows [d]
 	}
-	for _, o := range options {
-		if o.Kind == wantKind {
-			return o.OptionID, true
+	for _, pk := range permKeys {
+		if pk.key != k {
+			continue
+		}
+		for _, o := range options {
+			if o.Kind == pk.kind {
+				return o.OptionID, true
+			}
 		}
 	}
 	return "", false

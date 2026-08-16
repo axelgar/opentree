@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // agentBrand names the agent running in a workspace, in its own colour.
@@ -122,7 +123,7 @@ func (m Model) View() string {
 			room := m.dialogMaxWidth() - 2*dialogPadding - 3 - lipgloss.Width(head)
 			line := fmt.Sprintf("%s%-18s %-14s %s %s",
 				cursor, name, agent.Command, statusSt.Render(fmt.Sprintf("%-15s", status)),
-				truncate(agent.Description, max(room, 8)))
+				ui.Truncate(agent.Description, max(room, 8)))
 			sb.WriteString(style.Render(line))
 			if i < len(config.PredefinedAgents)-1 {
 				sb.WriteString("\n")
@@ -358,7 +359,7 @@ func (m Model) View() string {
 			// Inline deleting state
 			isDeleting := m.workspaceDeletingName == ws.Name || m.workspaceDeletingNames[ws.Name]
 			if isDeleting {
-				spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
+				spinner := ui.SpinnerFrames[m.spinnerFrame%len(ui.SpinnerFrames)]
 				row := spinner + " " + ws.Name + "  " + pendingLabelStyle.Render("deleting…")
 				s.WriteString(pendingItemStyle.Render(row))
 				s.WriteString("\n")
@@ -478,7 +479,7 @@ func (m Model) View() string {
 
 	// Creating ghost entry (non-selectable, rendered outside the list)
 	if m.workspaceCreating {
-		spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
+		spinner := ui.SpinnerFrames[m.spinnerFrame%len(ui.SpinnerFrames)]
 		s.WriteString(pendingItemStyle.Render(fmt.Sprintf(
 			"  %s %s  %s",
 			spinner,
@@ -520,9 +521,9 @@ func (m Model) tmuxBanner() string {
 		return ""
 	}
 	width := m.panelWidth()
-	return warnStyle.Render(truncate("⚠ tmux is not installed — no workspace can be created", width)) +
+	return warnStyle.Render(ui.Truncate("⚠ tmux is not installed — no workspace can be created", width)) +
 		"\n" +
-		diffStyle.Render(truncate("  opentree runs each agent in a tmux window · brew install tmux", width))
+		diffStyle.Render(ui.Truncate("  opentree runs each agent in a tmux window · brew install tmux", width))
 }
 
 // toastLine renders the transient error or notice into its fixed slot, or ""
@@ -531,10 +532,10 @@ func (m Model) tmuxBanner() string {
 func (m Model) toastLine() string {
 	width := m.panelWidth() - 2 // the ✓/✕ glyph and its space
 	if m.err != nil {
-		return toastErrStyle.Render("✕ " + truncate(m.err.Error(), width))
+		return toastErrStyle.Render("✕ " + ui.Truncate(m.err.Error(), width))
 	}
 	if m.notice != "" {
-		return successStyle.Render("✓ " + truncate(m.notice, width))
+		return successStyle.Render("✓ " + ui.Truncate(m.notice, width))
 	}
 	return ""
 }

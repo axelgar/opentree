@@ -192,7 +192,7 @@ func TestListSessions_ScopesToTheWorktree(t *testing.T) {
 
 	done := make(chan *ListSessionsResponse, 1)
 	go func() {
-		resp, err := f.client.ListSessions(context.Background(), "/repo/worktree", "")
+		resp, err := f.client.ListSessions(context.Background(), "/repo/worktree")
 		if err != nil {
 			t.Errorf("ListSessions: %v", err)
 		}

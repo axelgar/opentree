@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -64,17 +63,12 @@ func runChat(ctx context.Context, name, version string) error {
 	}
 
 	return chat.Run(ctx, chat.Options{
-		Workspace:   ws.Name,
-		Cwd:         ws.WorktreeDir,
-		Agent:       agent.Name,
-		Command:     agent.Command,
-		Binary:      agent.ResolveACPCommand,
-		Args:        agent.ACPArgs(ws.WorktreeDir),
-		InstallHint: installHint(agent),
-		Version:     version,
-		AuthCommand: agent.ACP.AuthCommand,
-		SocketPath:  chat.SocketPath(repoRoot, ws.Name),
-		SessionID:   resumableSession(ws, agent.Command),
+		Workspace:  ws.Name,
+		Cwd:        ws.WorktreeDir,
+		Agent:      agent,
+		Version:    version,
+		SocketPath: chat.SocketPath(repoRoot, ws.Name),
+		SessionID:  resumableSession(ws, agent.Command),
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -163,23 +157,9 @@ func resolveACPAgent(repoRoot string) (*config.PredefinedAgent, error) {
 
 	agent := config.FindAgent(name)
 	if agent == nil {
-		return nil, fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s",
-			name, strings.Join(config.AgentCommands(), ", "))
+		return nil, config.UnknownAgentError(name)
 	}
 	// A missing adapter is deliberately not an error here: the chat opens in its
 	// stopped state instead, where installing it is one key away.
 	return agent, nil
-}
-
-// installHint points at where the adapter is installed from. Not a key to press
-// here: installing belongs with choosing an agent.
-func installHint(agent *config.PredefinedAgent) string {
-	if len(agent.ACPInstallCommand()) == 0 {
-		return ""
-	}
-	size := ""
-	if agent.ACP.InstallSize != "" {
-		size = " (" + agent.ACP.InstallSize + ")"
-	}
-	return fmt.Sprintf("install it%s from opentree's agent list — press A, then i", size)
 }

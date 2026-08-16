@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/worktree"
@@ -191,24 +190,6 @@ func openURLCmd(rawURL string) tea.Cmd {
 		}
 		return browserOpenedMsg{url: rawURL}
 	}
-}
-
-// truncate shortens plain text to width, marking the cut. It is the package's
-// only truncator: a badge, a skill description and a toast all want the same
-// thing, and three copies of it had drifted into three different answers for
-// a narrow width. Never called on styled text: slicing runes through an escape
-// sequence would corrupt it.
-func truncate(s string, width int) string {
-	if lipgloss.Width(s) <= width {
-		return s
-	}
-	if width < 1 {
-		return ""
-	}
-	if width == 1 {
-		return "…"
-	}
-	return string([]rune(s)[:width-1]) + "…"
 }
 
 // workspaceIndex is the row for a name, or -1. Commands finish long after the

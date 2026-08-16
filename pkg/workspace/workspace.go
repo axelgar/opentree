@@ -148,8 +148,7 @@ func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, err
 func (s *Service) agentLaunch(name, agentName, worktreePath string) (func() error, error) {
 	agent := config.FindAgent(agentName)
 	if agent == nil {
-		return nil, fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s",
-			agentName, strings.Join(config.AgentCommands(), ", "))
+		return nil, config.UnknownAgentError(agentName)
 	}
 	command, env, args := chatCommand(name, agent.Command)
 	return func() error { return s.process.CreateAppWindow(name, worktreePath, command, env, args...) }, nil

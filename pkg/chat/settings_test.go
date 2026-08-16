@@ -2,6 +2,8 @@ package chat
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -266,7 +268,7 @@ func TestSettings_LongListScrollsAndCounts(t *testing.T) {
 		t.Errorf("expected a position counter for a list longer than the window\ngot:\n%s", view)
 	}
 	// The footer must not try to grow to thirty rows.
-	if h := m.footerHeight(); h > settingsWindow+8 {
+	if h := m.footerHeight(); h > pickerWindow+8 {
 		t.Errorf("footerHeight = %d, want it capped near the window size", h)
 	}
 }
@@ -499,7 +501,9 @@ func newUnlaunchedModel() Model {
 	m.client = nil
 	m.dead = true
 	m.err = errString("failed to start claude-agent-acp: executable file not found in $PATH")
-	m.opts.InstallHint = "install it (303MB) from opentree's agent list — press A, then i"
+	// The one registry agent behind an adapter, so the panel has an install
+	// hint to derive.
+	m.opts.Agent = testAgent("claude")
 	return m
 }
 
@@ -532,29 +536,33 @@ func TestRunningAgent_IsNotToldToInstallAnything(t *testing.T) {
 }
 
 func TestAcpBinary_ResolvedPerLaunch(t *testing.T) {
-	// Installing the adapter moves it, so a path resolved once at startup is
-	// stale the moment the install finishes — which is why pressing install and
-	// then restart kept failing until the process was restarted.
-	where := "claude-agent-acp"
-	o := Options{Command: "claude", Binary: func() string { return where }}
+	// Installing the adapter moves it, so the path is resolved on every launch
+	// rather than once at startup — which is why pressing install and then
+	// restart kept failing until the process was restarted.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	o := Options{Agent: testAgent("claude")}
 	if got := o.acpBinary(); got != "claude-agent-acp" {
-		t.Errorf("acpBinary() = %q", got)
+		t.Errorf("acpBinary() = %q, want the bare name before the install", got)
 	}
-	where = "/home/u/.opentree/tools/bin/claude-agent-acp"
-	if got := o.acpBinary(); got != where {
-		t.Errorf("after the install acpBinary() = %q, want the freshly resolved %q", got, where)
+	managed := filepath.Join(home, ".opentree", "tools", "bin", "claude-agent-acp")
+	if err := os.MkdirAll(filepath.Dir(managed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managed, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.acpBinary(); got != managed {
+		t.Errorf("after the install acpBinary() = %q, want the freshly resolved %q", got, managed)
 	}
 }
 
 func TestAcpBinary_FallsBackToTheAgentItself(t *testing.T) {
 	// opencode serves ACP directly; there is no separate binary to resolve.
-	o := Options{Command: "opencode"}
+	t.Setenv("HOME", t.TempDir())
+	o := Options{Agent: testAgent("opencode")}
 	if got := o.acpBinary(); got != "opencode" {
 		t.Errorf("acpBinary() = %q, want the agent's own binary", got)
-	}
-	o.Binary = func() string { return "" }
-	if got := o.acpBinary(); got != "opencode" {
-		t.Errorf("acpBinary() with an empty resolver = %q, want the fallback", got)
 	}
 }
 
@@ -562,8 +570,6 @@ func TestAuthUsesTheAgentNotTheAdapter(t *testing.T) {
 	// `claude-agent-acp auth login` is not a thing; the login belongs to the
 	// agent's own binary.
 	m := newUnlaunchedModel()
-	m.opts.Command = "claude"
-	m.opts.AuthCommand = []string{"auth", "login"}
 	m.authNeed = true
 
 	if !strings.Contains(m.footer(), "claude auth login") {

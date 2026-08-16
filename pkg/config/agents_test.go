@@ -62,7 +62,7 @@ func TestEveryAgentServesACP(t *testing.T) {
 		if a.ACPCommand() == "" {
 			t.Errorf("%s has no ACP command — opentree has no other way to run it", a.Name)
 		}
-		if a.Logo == nil {
+		if a.Brand.Logo == nil {
 			t.Errorf("%s has no logo; every agent opens a chat, and the chat draws one", a.Name)
 		}
 	}
@@ -191,7 +191,7 @@ func TestBrand_ResolvesHoweverTheAgentWasRecorded(t *testing.T) {
 // Every agent needs a mark and a colour or the list is inconsistent.
 func TestPredefinedAgents_AllBranded(t *testing.T) {
 	for _, a := range PredefinedAgents {
-		if a.Mark == "" || a.Colour == "" {
+		if a.Brand.Mark == "" || a.Brand.Colour == "" {
 			t.Errorf("%s has no mark or colour", a.Name)
 		}
 	}

@@ -200,13 +200,11 @@ type ResumeSessionResponse struct {
 // narrows them to one worktree, which is the only scope a chat can offer:
 // every session opentree opens is rooted in the worktree it belongs to.
 type ListSessionsRequest struct {
-	Cwd    string `json:"cwd,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	Cwd string `json:"cwd,omitempty"`
 }
 
 type ListSessionsResponse struct {
-	Sessions   []SessionInfo `json:"sessions"`
-	NextCursor string        `json:"nextCursor,omitempty"`
+	Sessions []SessionInfo `json:"sessions"`
 }
 
 // CloseSessionRequest ends one conversation. The agent keeps it — see
@@ -522,20 +520,15 @@ const (
 	StatusFailed     = "failed"
 )
 
+// ToolCall carries only the fields opentree acts on. The wire also sends
+// locations, rawInput and rawOutput; they are left undecoded until something
+// renders them.
 type ToolCall struct {
 	ToolCallID string            `json:"toolCallId"`
 	Title      string            `json:"title,omitempty"`
 	Kind       string            `json:"kind,omitempty"`
 	Status     string            `json:"status,omitempty"`
-	Locations  []Location        `json:"locations,omitempty"`
 	Content    []ToolCallContent `json:"content,omitempty"`
-	RawInput   json.RawMessage   `json:"rawInput,omitempty"`
-	RawOutput  json.RawMessage   `json:"rawOutput,omitempty"`
-}
-
-type Location struct {
-	Path string `json:"path"`
-	Line int    `json:"line,omitempty"`
 }
 
 // ToolCallContent is either a wrapped content block ("content") or a file diff
@@ -566,19 +559,10 @@ func (t *ToolCall) Merge(patch ToolCall) {
 	if patch.Status != "" {
 		t.Status = patch.Status
 	}
-	if patch.Locations != nil {
-		t.Locations = patch.Locations
-	}
 	// Content arrives cumulatively — each update carries the whole array — so
 	// replace rather than append.
 	if patch.Content != nil {
 		t.Content = patch.Content
-	}
-	if patch.RawInput != nil {
-		t.RawInput = patch.RawInput
-	}
-	if patch.RawOutput != nil {
-		t.RawOutput = patch.RawOutput
 	}
 }
 

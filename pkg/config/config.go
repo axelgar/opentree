@@ -37,7 +37,7 @@ func (a AgentConfig) Validate() error {
 		return fmt.Errorf("agent command is empty")
 	}
 	if FindAgent(a.Command) == nil {
-		return fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s", a.Command, knownAgentCommands())
+		return UnknownAgentError(a.Command)
 	}
 	if _, err := exec.LookPath(a.Command); err != nil {
 		return fmt.Errorf("agent command %q not found on PATH — install it or set [agent] command in opentree.toml (known agents: %s)", a.Command, knownAgentCommands())

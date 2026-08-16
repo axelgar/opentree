@@ -112,5 +112,3 @@ var (
 	flagStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F4A261"))
 )
-
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

@@ -295,12 +295,12 @@ func (c *Client) Reopen(ctx context.Context, sessionID, cwd string) (*ReopenResp
 // ListSessions asks the agent for the conversations it still has under cwd.
 // Only available where Capabilities().CanList() is set.
 //
-// ponytail: one page. The response's NextCursor is passed back in to get the
-// next, and nothing yet asks for it — the picker shows a handful of the most
-// recent. Page when someone wants to scroll past the end.
-func (c *Client) ListSessions(ctx context.Context, cwd, cursor string) (*ListSessionsResponse, error) {
+// ponytail: one page. The wire pages with a cursor and nothing yet asks for
+// the second page — the picker shows a handful of the most recent. Put the
+// cursor back when someone wants to scroll past the end.
+func (c *Client) ListSessions(ctx context.Context, cwd string) (*ListSessionsResponse, error) {
 	var resp ListSessionsResponse
-	req := ListSessionsRequest{Cwd: cwd, Cursor: cursor}
+	req := ListSessionsRequest{Cwd: cwd}
 	if err := c.call(ctx, methodSessionList, req, &resp); err != nil {
 		return nil, err
 	}

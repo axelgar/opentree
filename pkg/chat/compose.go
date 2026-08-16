@@ -24,7 +24,17 @@ const completionWindow = 6
 // decoder; add one if anyone actually hits this.
 const maxImageBytes = 4 << 20
 
-// composePrompt turns typed input into ACP content blocks, promoting the file
+// composer is what turning a typed message into blocks needs to know about
+// the session: where relative paths root, which files git tracks, and whether
+// the agent takes images. The three travel through every step of composing
+// together, which is what makes them one thing rather than three parameters.
+type composer struct {
+	cwd    string
+	known  map[string]bool
+	images bool
+}
+
+// prompt turns typed input into ACP content blocks, promoting the file
 // paths in it into attachments. A file becomes a resource link, which points
 // the agent at it rather than pasting its contents, so the agent reads what it
 // actually needs. An image becomes an inline image block instead: fs is
@@ -37,7 +47,7 @@ const maxImageBytes = 4 << 20
 // not travel the way it looked like it would. Silence there would be the worst
 // outcome: an image that quietly went as a link looks identical to one that did
 // not, right up until the agent says it cannot see your screenshot.
-func composePrompt(text, cwd string, known map[string]bool, images bool, pending []acp.ContentBlock) ([]acp.ContentBlock, []string) {
+func (c composer) prompt(text string, pending []acp.ContentBlock) ([]acp.ContentBlock, []string) {
 	var blocks []acp.ContentBlock
 	var notices []string
 
@@ -46,7 +56,7 @@ func composePrompt(text, cwd string, known map[string]bool, images bool, pending
 			blocks = append(blocks, *s.block)
 			continue
 		}
-		b, n := composeText(s.text, cwd, known, images)
+		b, n := c.text(s.text)
 		blocks = append(blocks, b...)
 		notices = append(notices, n...)
 	}
@@ -102,8 +112,8 @@ func splitPending(text string, pending []acp.ContentBlock) []span {
 	return append(out, span{text: text})
 }
 
-// composeText turns one stretch of literal text into blocks.
-func composeText(text, cwd string, known map[string]bool, images bool) ([]acp.ContentBlock, []string) {
+// text turns one stretch of literal text into blocks.
+func (c composer) text(text string) ([]acp.ContentBlock, []string) {
 	var blocks []acp.ContentBlock
 	var notices []string
 	var buf strings.Builder
@@ -124,7 +134,7 @@ func composeText(text, cwd string, known map[string]bool, images bool) ([]acp.Co
 		}
 		j := wordEnd(runes, i)
 		word := string(runes[i:j])
-		if block, notice, ok := attach(word, cwd, known, images); ok {
+		if block, notice, ok := c.attach(word); ok {
 			flush()
 			blocks = append(blocks, block)
 			if notice != "" {
@@ -162,7 +172,7 @@ func wordEnd(runes []rune, i int) int {
 
 // attach decides what one word of the message becomes. ok=false leaves it as
 // typed, which is the answer for everything that is not a file.
-func attach(word, cwd string, known map[string]bool, images bool) (acp.ContentBlock, string, bool) {
+func (c composer) attach(word string) (acp.ContentBlock, string, bool) {
 	path := strings.TrimPrefix(word, "@")
 	if path == word && !looksLikePath(path) {
 		// A bare word only counts as a path when it is shaped like one. Without
@@ -170,11 +180,11 @@ func attach(word, cwd string, known map[string]bool, images bool) (acp.ContentBl
 		// attachment the moment a file by that name existed.
 		return acp.ContentBlock{}, "", false
 	}
-	abs, name, ok := resolvePath(cwd, path, known)
+	abs, name, ok := c.resolve(path)
 	if !ok {
 		return acp.ContentBlock{}, "", false
 	}
-	block, notice := classify(abs, name, images)
+	block, notice := c.classify(abs, name)
 	return block, notice, true
 }
 
@@ -185,18 +195,18 @@ func looksLikePath(s string) bool {
 	return strings.ContainsRune(s, '/') || strings.HasPrefix(s, "~")
 }
 
-// resolvePath finds the file a word names, and the name to show for it.
+// resolve finds the file a word names, and the name to show for it.
 //
 // A tracked file resolves without touching the disk, exactly as it always has:
 // the completion palette offers what git listed, and a mention of one should
 // travel whether or not it survives to the moment of sending.
-func resolvePath(cwd, path string, known map[string]bool) (abs, name string, ok bool) {
+func (c composer) resolve(path string) (abs, name string, ok bool) {
 	path = unescape(path)
 	if path == "" {
 		return "", "", false
 	}
-	if known[path] {
-		return filepath.Join(cwd, path), path, true
+	if c.known[path] {
+		return filepath.Join(c.cwd, path), path, true
 	}
 
 	abs = path
@@ -208,7 +218,7 @@ func resolvePath(cwd, path string, known map[string]bool) (abs, name string, ok 
 		abs = filepath.Join(home, strings.TrimPrefix(abs, "~"))
 	}
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(cwd, abs)
+		abs = filepath.Join(c.cwd, abs)
 	}
 	// An untracked path has to exist to count. A typo would otherwise be sent
 	// as a link to nothing, which reads to the agent as a file it failed to open.
@@ -226,7 +236,7 @@ func resolvePath(cwd, path string, known map[string]bool) (abs, name string, ok 
 
 // classify turns a resolved file into the block that carries it best. Every
 // failure falls back to a link, which is what the file would have been anyway.
-func classify(abs, name string, images bool) (acp.ContentBlock, string) {
+func (c composer) classify(abs, name string) (acp.ContentBlock, string) {
 	link := acp.ResourceLink(fileURI(abs), name)
 
 	fi, err := os.Stat(abs)
@@ -240,7 +250,7 @@ func classify(abs, name string, images bool) (acp.ContentBlock, string) {
 	if !strings.HasPrefix(mime, "image/") {
 		return link, ""
 	}
-	if !images {
+	if !c.images {
 		return link, name + " went as a link — this agent does not take images"
 	}
 	if fi.Size() > maxImageBytes {

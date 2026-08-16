@@ -14,11 +14,27 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// testAgent is a copy of a registry entry, safe for a test to modify without
+// corrupting the shared registry for the tests that run after it.
+func testAgent(name string) *config.PredefinedAgent {
+	a := *config.FindAgent(name)
+	return &a
+}
+
+// bareAgent is the default agent for tests: opencode's identity with no login
+// command, so a test only sees a remedy it asked for.
+func bareAgent() *config.PredefinedAgent {
+	a := testAgent("opencode")
+	a.ACP.AuthCommand = nil
+	return a
+}
 
 // newTestModel builds a Model with no agent behind it. Tests that only exercise
 // in-process logic should use this instead of Run, which spawns a subprocess.
@@ -28,7 +44,7 @@ func newTestModel() Model {
 	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
 	ta.Focus()
 	m := Model{
-		opts:      Options{Workspace: "fix-auth", Agent: "OpenCode", Cwd: "/repo"},
+		opts:      Options{Workspace: "fix-auth", Agent: bareAgent(), Cwd: "/repo"},
 		toolIdx:   make(map[string]int),
 		input:     ta,
 		help:      help.New(),
@@ -48,7 +64,7 @@ func newUnsizedTestModel() Model {
 	ta.SetHeight(inputHeight)
 	ta.Focus()
 	return Model{
-		opts:    Options{Workspace: "fix-auth", Agent: "OpenCode"},
+		opts:    Options{Workspace: "fix-auth", Agent: bareAgent()},
 		toolIdx: make(map[string]int),
 		input:   ta,
 		help:    help.New(),
@@ -708,7 +724,6 @@ func TestFooterHeight_GrowsWithOptions(t *testing.T) {
 func TestAgentGone_SurfacesError(t *testing.T) {
 	m := newTestModel()
 	m.turn = true
-	m.opts.Command = "opencode"
 	m, _ = applyUpdate(m, agentGoneMsg{})
 	if m.err == nil || !strings.Contains(m.err.Error(), "opencode") {
 		t.Errorf("err = %v, want it to name the agent that exited", m.err)
@@ -1112,16 +1127,6 @@ func TestRenderTool_DiffCallDoesNotAlsoPrintItsReceipt(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if got := truncate("short", 40); got != "short" {
-		t.Errorf("truncate() = %q, want it untouched", got)
-	}
-	got := truncate(strings.Repeat("x", 50), 10)
-	if len([]rune(got)) != 10 || !strings.HasSuffix(got, "…") {
-		t.Errorf("truncate() = %q, want 10 runes ending in an ellipsis", got)
-	}
-}
-
 func TestSplitLines(t *testing.T) {
 	if got := splitLines(""); got != nil {
 		t.Errorf("splitLines(\"\") = %v, want nil", got)
@@ -1328,8 +1333,7 @@ func TestClientReady_ClearsLogBeforeReplay(t *testing.T) {
 
 func TestAuthRequired_OffersLogin(t *testing.T) {
 	m := newTestModel()
-	m.opts.Command = "opencode"
-	m.opts.AuthCommand = []string{"auth", "login"}
+	m.opts.Agent = testAgent("opencode")
 	m.authMethods = []acp.AuthMethod{{ID: "opencode-login", Description: "Run `opencode auth login` in the terminal"}}
 	m, _ = applyUpdate(m, errMsg{err: errString("acp error -32000: Authentication required"), auth: true})
 
@@ -1554,7 +1558,7 @@ func TestEmptyChat_ShowsWhatToDo(t *testing.T) {
 // worktree you attached to without opening should say what it is running.
 func TestEmptyChat_DrawsTheAgent(t *testing.T) {
 	m := newTestModel()
-	m.opts.Agent = "claude" // as a workspace records it, not as it is shown
+	m.opts.Agent = testAgent("claude")
 	m = m.relayout()
 
 	view := m.View()
@@ -1565,11 +1569,11 @@ func TestEmptyChat_DrawsTheAgent(t *testing.T) {
 	}
 }
 
-// An agent outside the registry still gets the layout, just without a drawing
+// An agent without branding still gets the layout, just without a drawing
 // or a colour to call its own.
 func TestEmptyChat_UnknownAgentStillNamed(t *testing.T) {
 	m := newTestModel()
-	m.opts.Agent = "aider"
+	m.opts.Agent = &config.PredefinedAgent{Name: "aider"}
 	m = m.relayout()
 
 	if !strings.Contains(m.View(), "aider") {
@@ -1701,7 +1705,7 @@ func TestStopped_LogInOnlyWhenCredentialsAreTheProblem(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newTestModel()
 			m.dead, m.authNeed = tt.dead, tt.authNeed
-			m.opts.AuthCommand = tt.auth
+			m.opts.Agent.ACP.AuthCommand = tt.auth
 			m.err = errString("agent exited")
 			m = m.relayout()
 

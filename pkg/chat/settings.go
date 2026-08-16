@@ -2,17 +2,12 @@ package chat
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/acp"
 )
-
-// settingsWindow caps how many rows the picker shows at once. Model lists run
-// to thirty entries and the footer cannot grow to meet them.
-const settingsWindow = 8
 
 // settings is the picker over an agent's declared config options. It is written
 // against whatever the agent sends rather than against model-and-mode, so an
@@ -66,45 +61,30 @@ func (m Model) settingsRows() []completionItem {
 
 func (m Model) openSettings() (tea.Model, tea.Cmd) {
 	if len(m.configOptions) == 0 {
-		m.err = fmt.Errorf("%s declares no settings to change", m.opts.Agent)
+		m.err = fmt.Errorf("%s declares no settings to change", m.opts.Agent.Name)
 		return m.relayout(), nil
 	}
 	m.settings = settings{open: true}
 	return m.relayout(), nil
 }
 
-// handleSettingsKey drives the picker. Escape steps back a level rather than
-// closing outright, so a wrong turn into a thirty-item model list costs one key.
+// handleSettingsKey drives the picker with the shared keys. Closing steps
+// back a level rather than closing outright, so a wrong turn into a
+// thirty-item model list costs one key.
 func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := m.settingsRows()
-
-	switch msg.String() {
-	case "esc", "ctrl+c":
+	switch action, i := pickerKey(msg, &m.settings.cursor, len(rows)); action {
+	case pickerClosed:
 		if m.settings.choosingValue() {
 			m.settings = settings{open: true}
-			return m.relayout(), nil
-		}
-		m.settings = settings{}
-		return m.relayout(), nil
-
-	case "up", "ctrl+p":
-		if len(rows) > 0 {
-			m.settings.cursor = (m.settings.cursor - 1 + len(rows)) % len(rows)
+		} else {
+			m.settings = settings{}
 		}
 		return m.relayout(), nil
-
-	case "down", "ctrl+n":
-		if len(rows) > 0 {
-			m.settings.cursor = (m.settings.cursor + 1) % len(rows)
-		}
+	case pickerMoved:
 		return m.relayout(), nil
-
-	case "enter":
-		return m.chooseSetting(m.settings.cursor, rows)
-	}
-
-	if n, err := strconv.Atoi(msg.String()); err == nil && n >= 1 && n <= len(rows) {
-		return m.chooseSetting(n-1, rows)
+	case pickerChose:
+		return m.chooseSetting(i, rows)
 	}
 	return m, nil
 }
@@ -146,7 +126,7 @@ func (m Model) setConfigCmd(configID, value string) tea.Cmd {
 
 // settingsView renders the picker, scrolled to keep the cursor visible.
 func (m Model) settingsView() string {
-	title := m.opts.Agent + " settings"
+	title := m.opts.Agent.Name + " settings"
 	if m.settings.choosingValue() {
 		if opt, ok := configOption(m.configOptions, m.settings.configID); ok {
 			title = opt.Name
@@ -155,50 +135,8 @@ func (m Model) settingsView() string {
 	return pickerView(title, m.settingsRows(), m.settings.cursor, m.width)
 }
 
-// pickerView renders a titled list into the footer, scrolled to keep the
-// cursor visible. Shared with the /resume picker: two lists of rows with a
-// cursor on one of them are the same thing, and the second one drawing itself
-// slightly differently would read as a different app.
-func pickerView(title string, rows []completionItem, cursor, width int) string {
-	start := 0
-	if cursor >= settingsWindow {
-		start = cursor - settingsWindow + 1
-	}
-	end := min(start+settingsWindow, len(rows))
-
-	lines := []string{permLabelStyle.Render(title)}
-	for i := start; i < end; i++ {
-		mark, style := "  ", completionItemStyle
-		if i == cursor {
-			mark, style = "› ", completionSelectedStyle
-		}
-		row := mark + rows[i].value
-		if rows[i].desc != "" {
-			row += "  " + rows[i].desc
-		}
-		lines = append(lines, style.Render(truncate(row, width-6)))
-	}
-	if len(rows) > settingsWindow {
-		lines = append(lines, noticeStyle.Render(fmt.Sprintf("  %d of %d", cursor+1, len(rows))))
-	}
-
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(permBoxStyle.Render(strings.Join(lines, "\n")))
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move • enter select • esc back"))
-	return b.String()
-}
-
 // settingsHeight is the footer space the picker needs.
 func (m Model) settingsHeight() int { return pickerHeight(len(m.settingsRows())) }
-
-func pickerHeight(rows int) int {
-	if rows > settingsWindow {
-		return settingsWindow + 6 // plus the "n of N" counter
-	}
-	return rows + 5
-}
 
 // clientCommand is one of opentree's own slash commands: the name the palette
 // offers, and what pressing enter on it opens.
@@ -386,7 +324,14 @@ func (m Model) cycleMode() (tea.Model, tea.Cmd) {
 // settingsSummary is what the header shows: the model, which is a fact about
 // the session rather than a flag you flip.
 func (m Model) settingsSummary() []string {
-	return m.currentValues(true)
+	var out []string
+	for _, o := range m.configOptions {
+		if o.Category != "model" || o.CurrentValue == "" {
+			continue
+		}
+		out = append(out, valueLabel(o))
+	}
+	return out
 }
 
 // flagCategories are the settings worth permanent space beside the input: how
@@ -420,19 +365,6 @@ func (m Model) flagsSummary() []string {
 		if v != "" {
 			out = append(out, v)
 		}
-	}
-	return out
-}
-
-// settingsSummary is what the header shows: the model, a fact about the session
-// rather than a flag you flip.
-func (m Model) currentValues(model bool) []string {
-	var out []string
-	for _, o := range m.configOptions {
-		if (o.Category == "model") != model || o.CurrentValue == "" {
-			continue
-		}
-		out = append(out, valueLabel(o))
 	}
 	return out
 }

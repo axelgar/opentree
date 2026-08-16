@@ -29,7 +29,7 @@ func testSkill(name, agent string, scope skills.Scope, dir string) skills.Skill 
 func skillsModel(list ...skills.Skill) Model {
 	m := newTestModel()
 	m.tab = tabSkills
-	m.skills = list
+	m.skillsTab.list = list
 	return m
 }
 
@@ -119,14 +119,14 @@ func TestSkillsFilter(t *testing.T) {
 		testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release"),
 		testSkill("research", "Claude Code", skills.ScopeUser, "/home/.claude/skills/research"),
 	)
-	m.skillFilter = "relea"
+	m.skillsTab.filter = "relea"
 	if got := m.visibleSkills(); len(got) != 1 || got[0].Name != "release" {
 		t.Errorf("filter = %+v, want just release", got)
 	}
 
 	// The description is searched too: people remember what a skill does more
 	// often than what it is called.
-	m.skillFilter = "does a thing"
+	m.skillsTab.filter = "does a thing"
 	if got := m.visibleSkills(); len(got) != 2 {
 		t.Errorf("description filter matched %d, want 2", len(got))
 	}
@@ -136,11 +136,11 @@ func TestSkillsFilter(t *testing.T) {
 // need two presses to explain itself.
 func TestSkillsEsc_ClearsFilterBeforeLeaving(t *testing.T) {
 	m := skillsModel(testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release"))
-	m.skillFilter = "rel"
+	m.skillsTab.filter = "rel"
 
 	next, _ := m.Update(keyMsg("esc"))
 	m = next.(Model)
-	if m.skillFilter != "" {
+	if m.skillsTab.filter != "" {
 		t.Error("esc did not clear the filter")
 	}
 	if m.tab != tabSkills {
@@ -163,15 +163,15 @@ func TestSkillsCursor_StaysInRange(t *testing.T) {
 		next, _ := m.Update(keyMsg("j"))
 		m = next.(Model)
 	}
-	if m.skillCursor != 1 {
-		t.Errorf("cursor = %d, want 1 (clamped to the last row)", m.skillCursor)
+	if m.skillsTab.cursor != 1 {
+		t.Errorf("cursor = %d, want 1 (clamped to the last row)", m.skillsTab.cursor)
 	}
 	for range 5 {
 		next, _ := m.Update(keyMsg("k"))
 		m = next.(Model)
 	}
-	if m.skillCursor != 0 {
-		t.Errorf("cursor = %d, want 0", m.skillCursor)
+	if m.skillsTab.cursor != 0 {
+		t.Errorf("cursor = %d, want 0", m.skillsTab.cursor)
 	}
 }
 
@@ -182,9 +182,9 @@ func TestSkillsScanned_ClampsCursor(t *testing.T) {
 		testSkill("a", "Claude Code", skills.ScopeUser, "/a"),
 		testSkill("b", "Claude Code", skills.ScopeUser, "/b"),
 	)
-	m.skillCursor = 1
+	m.skillsTab.cursor = 1
 	next, _ := m.Update(skillsScannedMsg{skills: []skills.Skill{testSkill("a", "Claude Code", skills.ScopeUser, "/a")}})
-	if got := next.(Model).skillCursor; got != 0 {
+	if got := next.(Model).skillsTab.cursor; got != 0 {
 		t.Errorf("cursor = %d, want 0 after the list shrank", got)
 	}
 }
@@ -198,7 +198,7 @@ func TestCopyTargets_ExcludesTreesAlreadyHoldingTheSkill(t *testing.T) {
 	m := skillsModel(testSkill("research", "Claude Code", skills.ScopeUser, filepath.Join(claudeUser, "research")))
 	m.repoRoot = t.TempDir()
 
-	targets := m.copyTargets(m.skills[0])
+	targets := m.copyTargets(m.skillsTab.list[0])
 	for _, target := range targets {
 		if target.Dir == claudeUser {
 			t.Errorf("offered the tree the skill is already in: %+v", targets)
@@ -220,17 +220,17 @@ func TestSkillsCopy_RefusesWhenNowhereLeftToPutIt(t *testing.T) {
 	m := skillsModel(testSkill("research", "Claude Code", skills.ScopeUser, "/only"))
 	m.repoRoot = ""
 	// Pretend every tree holds it by making copyTargets come back empty.
-	m.skills = nil
-	m.skills = append(m.skills, testSkill("research", "Claude Code", skills.ScopeUser, "/only"))
+	m.skillsTab.list = nil
+	m.skillsTab.list = append(m.skillsTab.list, testSkill("research", "Claude Code", skills.ScopeUser, "/only"))
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	if len(m.copyTargets(m.skills[0])) != 0 {
+	if len(m.copyTargets(m.skillsTab.list[0])) != 0 {
 		t.Skip("environment still offers a target; the refusal path is covered by the guard in updateSkills")
 	}
 	next, _ := m.Update(keyMsg("c"))
 	got := next.(Model)
-	if got.skillCopying != nil {
+	if got.skillsTab.copying != nil {
 		t.Error("opened a picker with no targets")
 	}
 	if got.err == nil {
@@ -250,7 +250,7 @@ func TestSkillsDelete_ConfirmsThenRemoves(t *testing.T) {
 	m := skillsModel(testSkill("doomed", "Claude Code", skills.ScopeUser, dir))
 	next, _ := m.Update(keyMsg("x"))
 	m = next.(Model)
-	if m.skillDeleting == nil {
+	if m.skillsTab.deleting == nil {
 		t.Fatal("x did not ask for confirmation")
 	}
 	if !strings.Contains(m.View(), "Delete skill") {
@@ -265,7 +265,7 @@ func TestSkillsDelete_ConfirmsThenRemoves(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Error("confirmed delete did not remove the skill")
 	}
-	if next.(Model).skillDeleting != nil {
+	if next.(Model).skillsTab.deleting != nil {
 		t.Error("confirmation stayed open")
 	}
 }
@@ -278,7 +278,7 @@ func TestSkillsDelete_CancelKeepsTheSkill(t *testing.T) {
 	m := skillsModel(testSkill("spared", "Claude Code", skills.ScopeUser, dir))
 	next, _ := m.Update(keyMsg("x"))
 	next, _ = next.(Model).Update(keyMsg("n"))
-	if next.(Model).skillDeleting != nil {
+	if next.(Model).skillsTab.deleting != nil {
 		t.Error("n did not close the confirmation")
 	}
 	if _, err := os.Stat(dir); err != nil {
@@ -315,14 +315,14 @@ func TestSkillsDelete_PicksAmongTheCopies(t *testing.T) {
 
 	next, _ := m.Update(keyMsg("x"))
 	m = next.(Model)
-	if !m.skillDeleteChoosing {
+	if !m.skillsTab.deleteChoosing {
 		t.Fatal("x did not offer the copies")
 	}
 	// The row x was pressed on opens ticked, so ticking a second one adds to
 	// it rather than replacing it.
-	if m.skillCopyCursor != 0 || !m.skillChosen[a] {
+	if m.skillsTab.pickCursor != 0 || !m.skillsTab.chosen[a] {
 		t.Fatalf("picker opened on row %d with %v, want the cursor's own row ticked",
-			m.skillCopyCursor, m.skillChosen)
+			m.skillsTab.pickCursor, m.skillsTab.chosen)
 	}
 
 	next, _ = m.Update(keyMsg("down")) // onto b
@@ -331,7 +331,7 @@ func TestSkillsDelete_PicksAmongTheCopies(t *testing.T) {
 	next, _ = m.Update(keyMsg("enter"))
 	m = next.(Model)
 
-	if m.skillDeleteChoosing || m.skillDeleting == nil {
+	if m.skillsTab.deleteChoosing || m.skillsTab.deleting == nil {
 		t.Fatal("enter did not move on to the confirmation")
 	}
 	if _, err := os.Stat(b); err != nil {
@@ -347,7 +347,7 @@ func TestSkillsDelete_PicksAmongTheCopies(t *testing.T) {
 	if _, err := os.Stat(c); err != nil {
 		t.Errorf("the unticked copy was removed as well: %v", err)
 	}
-	if next.(Model).skillDeleting != nil {
+	if next.(Model).skillsTab.deleting != nil {
 		t.Error("confirmation stayed open")
 	}
 }
@@ -370,7 +370,7 @@ func TestSkillsDelete_TheOpeningRowCanBeUnticked(t *testing.T) {
 	// Nothing ticked is not "the row under the cursor" here — the picker opened
 	// with one ticked, so unticking them all is a deliberate "none of these".
 	next, _ = m.Update(keyMsg("enter"))
-	if !next.(Model).skillDeleteChoosing {
+	if !next.(Model).skillsTab.deleteChoosing {
 		t.Fatal("enter with nothing ticked left the picker")
 	}
 
@@ -401,7 +401,7 @@ func TestSkillsDelete_EscAbandonsThePicker(t *testing.T) {
 	next, _ = next.(Model).Update(keyMsg("esc"))
 	m = next.(Model)
 
-	if m.skillDeleteChoosing || m.skillDeleting != nil || m.skillChosen != nil {
+	if m.skillsTab.deleteChoosing || m.skillsTab.deleting != nil || m.skillsTab.chosen != nil {
 		t.Error("esc left the delete flow half open")
 	}
 	for _, kept := range []string{a, b} {
@@ -422,7 +422,7 @@ func TestSkillsDelete_SaysWhenOneDirectoryServesSeveralAgents(t *testing.T) {
 	m := skillsModel(s)
 	next, _ := m.Update(keyMsg("x"))
 	m = next.(Model)
-	if m.skillDeleteChoosing {
+	if m.skillsTab.deleteChoosing {
 		t.Fatal("one copy drew a picker for a choice that does not exist")
 	}
 	if !strings.Contains(m.View(), "all of them lose it") {
@@ -645,7 +645,7 @@ func TestToggle_WritesAndClearsTheOverride(t *testing.T) {
 
 	// Toggling back clears the entry rather than writing "on", so a skill that
 	// asked not to be model-invoked is not promoted to automatic.
-	m.skills = []skills.Skill{stateSkill("tdd", map[string]skills.State{"Claude Code": skills.StateOff})}
+	m.skillsTab.list = []skills.Skill{stateSkill("tdd", map[string]skills.State{"Claude Code": skills.StateOff})}
 	m.Update(keyMsg("t"))
 	data, err = os.ReadFile(settings)
 	if err != nil {
@@ -674,7 +674,7 @@ func typeURL(t *testing.T, m Model, url string) Model {
 	t.Helper()
 	next, _ := m.Update(keyMsg("a"))
 	m = next.(Model)
-	if !m.skillAdding {
+	if !m.skillsTab.adding {
 		t.Fatal("a did not open the prompt")
 	}
 	for _, r := range url {
@@ -694,8 +694,8 @@ func TestSkillsAdd_TypesAnAddressThenAsksTheSite(t *testing.T) {
 		next, _ = m.Update(keyMsg(k))
 		m = next.(Model)
 	}
-	if m.skillAddURL != "git:x" {
-		t.Fatalf("typed URL = %q, want %q", m.skillAddURL, "git:x")
+	if m.skillsTab.addURL != "git:x" {
+		t.Fatalf("typed URL = %q, want %q", m.skillsTab.addURL, "git:x")
 	}
 	// Still the prompt, showing what has been typed. A picker drawn as soon as
 	// there is any URL at all replaces the prompt on the first keystroke, and
@@ -706,9 +706,9 @@ func TestSkillsAdd_TypesAnAddressThenAsksTheSite(t *testing.T) {
 
 	next, _ = m.Update(keyMsg("enter"))
 	m = next.(Model)
-	if m.skillAdding || !m.skillDiscovering {
+	if m.skillsTab.adding || !m.skillsTab.discovering {
 		t.Fatalf("enter did not move on to asking the site: adding=%v discovering=%v",
-			m.skillAdding, m.skillDiscovering)
+			m.skillsTab.adding, m.skillsTab.discovering)
 	}
 	if !strings.Contains(m.View(), "what it publishes") {
 		t.Errorf("nothing on screen says the site is being asked:\n%s", m.View())
@@ -722,7 +722,7 @@ func TestSkillsAdd_FallsBackToGit(t *testing.T) {
 	next, _ := m.Update(skillsDiscoveredMsg{site: "git:x", err: errors.New("not a publisher")})
 	m = next.(Model)
 
-	if m.skillDiscovering || m.skillEntry != nil {
+	if m.skillsTab.discovering || m.skillsTab.entry != nil {
 		t.Fatal("a failed lookup left the flow mid-air")
 	}
 	if !strings.Contains(m.View(), "Clone x into") {
@@ -750,8 +750,8 @@ func TestSkillsAdd_PicksAmongPublishedSkills(t *testing.T) {
 	next, _ = m.Update(keyMsg("down"))
 	next, _ = next.(Model).Update(keyMsg("enter"))
 	m = next.(Model)
-	if m.skillEntry == nil || m.skillEntry.Name != "deploy" {
-		t.Fatalf("chosen entry = %+v, want deploy", m.skillEntry)
+	if m.skillsTab.entry == nil || m.skillsTab.entry.Name != "deploy" {
+		t.Fatalf("chosen entry = %+v, want deploy", m.skillsTab.entry)
 	}
 	// And on to where it lands, named for the skill rather than the address.
 	if !strings.Contains(m.View(), "Install deploy into") {
@@ -788,8 +788,8 @@ func TestSkillsAdd_SingleSkillSkipsThePicker(t *testing.T) {
 	}})
 	m = next.(Model)
 
-	if m.skillEntry == nil || m.skillEntry.Name != "review" {
-		t.Fatalf("chosen entry = %+v, want review", m.skillEntry)
+	if m.skillsTab.entry == nil || m.skillsTab.entry.Name != "review" {
+		t.Fatalf("chosen entry = %+v, want review", m.skillsTab.entry)
 	}
 	if !strings.Contains(m.View(), "Install review into") {
 		t.Errorf("the tree picker did not open:\n%s", m.View())
@@ -803,8 +803,8 @@ func TestSkillsAdd_StaleAnswerIsIgnored(t *testing.T) {
 	next, _ = next.(Model).Update(skillsDiscoveredMsg{site: "example.com", entries: []skills.Entry{
 		{Name: "review", Type: "skill-md"},
 	}})
-	if got := next.(Model); got.skillEntries != nil || got.skillEntry != nil || got.skillAddURL != "" {
-		t.Errorf("a stale answer reopened the flow: %+v", got.skillEntries)
+	if got := next.(Model); got.skillsTab.entries != nil || got.skillsTab.entry != nil || got.skillsTab.addURL != "" {
+		t.Errorf("a stale answer reopened the flow: %+v", got.skillsTab.entries)
 	}
 }
 
@@ -812,28 +812,28 @@ func TestSkillsAdd_EscCancelsEveryStep(t *testing.T) {
 	m := skillsModel()
 	next, _ := m.Update(keyMsg("a"))
 	next, _ = next.(Model).Update(keyMsg("esc"))
-	if got := next.(Model); got.skillAdding || got.skillAddURL != "" {
+	if got := next.(Model); got.skillsTab.adding || got.skillsTab.addURL != "" {
 		t.Error("esc did not close the prompt")
 	}
 
 	m = typeURL(t, skillsModel(), "example.com")
 	next, _ = m.Update(keyMsg("esc"))
-	if got := next.(Model); got.skillDiscovering || got.skillAddURL != "" {
+	if got := next.(Model); got.skillsTab.discovering || got.skillsTab.addURL != "" {
 		t.Error("esc did not abandon the lookup")
 	}
 
 	m = skillsModel()
-	m.skillAddURL = "example.com"
-	m.skillEntries = []skills.Entry{{Name: "a"}, {Name: "b"}}
+	m.skillsTab.addURL = "example.com"
+	m.skillsTab.entries = []skills.Entry{{Name: "a"}, {Name: "b"}}
 	next, _ = m.Update(keyMsg("esc"))
-	if got := next.(Model); got.skillEntries != nil || got.skillAddURL != "" {
+	if got := next.(Model); got.skillsTab.entries != nil || got.skillsTab.addURL != "" {
 		t.Error("esc did not close the entry picker")
 	}
 
 	m = skillsModel()
-	m.skillAddURL = "https://example.com/a-skill"
+	m.skillsTab.addURL = "https://example.com/a-skill"
 	next, _ = m.Update(keyMsg("esc"))
-	if next.(Model).skillAddURL != "" {
+	if next.(Model).skillsTab.addURL != "" {
 		t.Error("esc did not close the tree picker")
 	}
 }
@@ -842,8 +842,8 @@ func TestSkillsAdd_EscCancelsEveryStep(t *testing.T) {
 // none ticked it stays the row under the cursor, which is the common pick.
 func TestSkillsPicker_TicksMoreThanOneTree(t *testing.T) {
 	m := skillsModel()
-	m.skillAddURL = "https://example.com/a-skill"
-	m.skillCopyCursor, m.skillChosen = 0, map[string]bool{}
+	m.skillsTab.addURL = "https://example.com/a-skill"
+	m.skillsTab.pickCursor, m.skillsTab.chosen = 0, map[string]bool{}
 	targets := m.addTargets()
 	if len(targets) < 2 {
 		t.Fatalf("the picker offers %d trees, want at least 2", len(targets))
@@ -872,8 +872,8 @@ func TestSkillsPicker_TicksMoreThanOneTree(t *testing.T) {
 // row one column right and set the marks wandering down the list.
 func TestSkillsPicker_ColumnsHoldStillUnderTheCursor(t *testing.T) {
 	m := skillsModel()
-	m.skillAddURL = "https://example.com/a-skill"
-	m.skillChosen = map[string]bool{}
+	m.skillsTab.addURL = "https://example.com/a-skill"
+	m.skillsTab.chosen = map[string]bool{}
 	targets := m.addTargets()
 	if len(targets) < 2 {
 		t.Fatalf("the picker offers %d trees, want at least 2", len(targets))
@@ -882,7 +882,7 @@ func TestSkillsPicker_ColumnsHoldStillUnderTheCursor(t *testing.T) {
 	// Measured on the rendered line, not on what went into it: the styles are
 	// the whole point and the content was never the part that moved.
 	col := func(cursor int) int {
-		m.skillCopyCursor = cursor
+		m.skillsTab.pickCursor = cursor
 		for _, line := range strings.Split(m.View(), "\n") {
 			if i := strings.Index(line, targets[0].Label); i >= 0 {
 				return lipgloss.Width(line[:i])
@@ -901,8 +901,8 @@ func TestSkillsPicker_ColumnsHoldStillUnderTheCursor(t *testing.T) {
 // has to say who reads what: ~/.claude/skills is opencode's as well.
 func TestSkillsPicker_NamesWhoReadsEachTree(t *testing.T) {
 	m := skillsModel()
-	m.skillAddURL = "https://example.com/a-skill"
-	m.skillChosen = map[string]bool{}
+	m.skillsTab.addURL = "https://example.com/a-skill"
+	m.skillsTab.chosen = map[string]bool{}
 
 	var claudeUserTree skillTarget
 	for _, target := range m.addTargets() {
@@ -938,7 +938,7 @@ func TestSkills_UpdateChecksOnceAtATime(t *testing.T) {
 	m := skillsModel(testSkill("wrangler", "Claude Code", skills.ScopeUser, t.TempDir()))
 	next, cmd := m.Update(keyMsg("u"))
 	m = next.(Model)
-	if cmd == nil || !m.skillUpdating {
+	if cmd == nil || !m.skillsTab.updating {
 		t.Fatal("u did not start a check")
 	}
 	if _, again := m.Update(keyMsg("u")); again != nil {
@@ -947,7 +947,7 @@ func TestSkills_UpdateChecksOnceAtATime(t *testing.T) {
 
 	next, _ = m.Update(skillUpdatedMsg{name: "wrangler"})
 	m = next.(Model)
-	if m.skillUpdating {
+	if m.skillsTab.updating {
 		t.Error("the check stayed marked in flight")
 	}
 	if !strings.Contains(m.View(), "up to date") {
@@ -958,9 +958,9 @@ func TestSkills_UpdateChecksOnceAtATime(t *testing.T) {
 // An empty URL is a cancelled prompt, not a clone of nothing.
 func TestSkillsAdd_EmptyUrlDoesNothing(t *testing.T) {
 	m := skillsModel()
-	m.skillAdding = true
+	m.skillsTab.adding = true
 	next, _ := m.Update(keyMsg("enter"))
-	if got := next.(Model); got.skillAdding || got.skillAddURL != "" {
+	if got := next.(Model); got.skillsTab.adding || got.skillsTab.addURL != "" {
 		t.Error("an empty URL opened the picker")
 	}
 }
@@ -988,7 +988,7 @@ func TestProbeMismatch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := skillsModel(tt.skill)
-			m.skillProbe, m.skillProbed = tt.probe, "Claude Code"
+			m.skillsTab.probe, m.skillsTab.probed = tt.probe, "Claude Code"
 			if got := m.probeMismatch(tt.skill); got != tt.want {
 				t.Errorf("probeMismatch() = %q, want %q", got, tt.want)
 			}
@@ -1001,7 +1001,7 @@ func TestProbeMismatch(t *testing.T) {
 func TestProbeMismatch_IgnoresAnotherAgentsSkill(t *testing.T) {
 	s := testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release")
 	m := skillsModel(s)
-	m.skillProbe, m.skillProbed = map[string]bool{}, "Claude Code"
+	m.skillsTab.probe, m.skillsTab.probed = map[string]bool{}, "Claude Code"
 	if got := m.probeMismatch(s); got != "" {
 		t.Errorf("probeMismatch() = %q for a skill the probed agent neither reads nor claims", got)
 	}
@@ -1014,7 +1014,7 @@ func TestProbeMismatch_IgnoresAnotherAgentsSkill(t *testing.T) {
 func TestProbeMismatch_FlagsAnAgentReadingATreeTheListDoesNotCredit(t *testing.T) {
 	s := testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release")
 	m := skillsModel(s)
-	m.skillProbe, m.skillProbed = map[string]bool{"release": true}, "OpenCode"
+	m.skillsTab.probe, m.skillsTab.probed = map[string]bool{"release": true}, "OpenCode"
 
 	got := m.probeMismatch(s)
 	if got == "" {
@@ -1031,7 +1031,7 @@ func TestSkillsStatusBar_CountsWhatTheListDoesNotClaim(t *testing.T) {
 		testSkill("release", "Claude Code", skills.ScopeRepo, "/repo/.claude/skills/release"),
 		testSkill("research", "OpenCode", skills.ScopeUser, "/home/.config/opencode/skills/research"),
 	)
-	m.skillProbe, m.skillProbed = map[string]bool{"release": true, "research": true}, "OpenCode"
+	m.skillsTab.probe, m.skillsTab.probed = map[string]bool{"release": true, "research": true}, "OpenCode"
 
 	bar := m.skillsStatusBar()
 	if !strings.Contains(bar, "confirmed 1/1") {
@@ -1046,7 +1046,7 @@ func TestSkillsStatusBar_CountsWhatTheListDoesNotClaim(t *testing.T) {
 // reads as a finding rather than as nothing to report.
 func TestSkillsStatusBar_QuietWhenNothingIsUnexpected(t *testing.T) {
 	m := skillsModel(testSkill("release", "OpenCode", skills.ScopeRepo, "/repo/.opencode/skills/release"))
-	m.skillProbe, m.skillProbed = map[string]bool{"release": true}, "OpenCode"
+	m.skillsTab.probe, m.skillsTab.probed = map[string]bool{"release": true}, "OpenCode"
 
 	if bar := m.skillsStatusBar(); strings.Contains(bar, "unexpected") {
 		t.Errorf("status bar = %q, want no second number when there is nothing in it", bar)
@@ -1055,7 +1055,7 @@ func TestSkillsStatusBar_QuietWhenNothingIsUnexpected(t *testing.T) {
 
 func TestProbe_OneAtATime(t *testing.T) {
 	m := skillsModel()
-	m.skillProbing = true
+	m.skillsTab.probing = true
 	if _, cmd := m.Update(keyMsg("v")); cmd != nil {
 		t.Error("v started a second probe while one was already running")
 	}
@@ -1070,7 +1070,7 @@ func TestProbe_RefusesAnAgentThatDoesNotNameItsSkills(t *testing.T) {
 
 	next, _ := m.Update(keyMsg("v"))
 	m = next.(Model)
-	if m.skillProbing {
+	if m.skillsTab.probing {
 		t.Error("started a probe against an agent with nothing to say")
 	}
 	if m.err == nil || !strings.Contains(m.err.Error(), "does not name its skills") {

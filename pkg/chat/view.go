@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 const (
@@ -34,27 +35,15 @@ func newViewport(width, height int) viewport.Model {
 // footerHeight is how many lines the footer occupies, which is what the
 // viewport has to give back.
 func (m Model) footerHeight() int {
-	switch m.overlay() {
-	case overlaySettings:
-		return m.settingsHeight()
-	case overlaySessions:
-		return m.sessionsHeight()
-	case overlayLogin:
-		return m.loginHeight()
-	case overlayStopped:
-		return len(m.stoppedLines()) + 4
-	case overlayPermission:
-		return len(m.perm().req.Options) + len(m.permDetail()) + 5
-	case overlayHelp:
-		return lipgloss.Height(m.helpView())
-	default:
-		// lipgloss.Height("") is 1, so the pill is counted by presence.
-		pill := 0
-		if m.scrollPill() != "" {
-			pill = 1
-		}
-		return inputHeight + 2 + m.completionHeight() + pill
+	if def, ok := overlayDefs[m.overlay()]; ok {
+		return def.height(m)
 	}
+	// lipgloss.Height("") is 1, so the pill is counted by presence.
+	pill := 0
+	if m.scrollPill() != "" {
+		pill = 1
+	}
+	return inputHeight + 2 + m.completionHeight() + pill
 }
 
 // scrollPill tells the reader they are not looking at the end of the log, and
@@ -133,19 +122,8 @@ func (m Model) header() string {
 }
 
 func (m Model) footer() string {
-	switch m.overlay() {
-	case overlaySettings:
-		return m.settingsView()
-	case overlaySessions:
-		return m.sessionsView()
-	case overlayLogin:
-		return m.loginView()
-	case overlayStopped:
-		return m.stoppedView()
-	case overlayPermission:
-		return m.permissionView()
-	case overlayHelp:
-		return m.helpView()
+	if def, ok := overlayDefs[m.overlay()]; ok {
+		return def.view(m)
 	}
 
 	var b strings.Builder
@@ -198,14 +176,14 @@ func (m Model) completionView() string {
 		if items[i].desc != "" {
 			row += strings.Repeat(" ", max(col-lipgloss.Width(items[i].value), 0)+4) + items[i].desc
 		}
-		lines = append(lines, style.Render(truncate(row, m.width-2)))
+		lines = append(lines, style.Render(ui.Truncate(row, m.width-2)))
 	}
 	if len(items) > completionWindow {
 		lines = append(lines, helpStyle.Render(fmt.Sprintf("  %d of %d — ↑/↓ to scroll",
 			m.completion.cursor+1, len(items))))
 	}
 	if m.awaitingCommands() {
-		lines = append(lines, helpStyle.Render("  asking "+m.opts.Agent+" for its own commands…"))
+		lines = append(lines, helpStyle.Render("  asking "+m.opts.Agent.Name+" for its own commands…"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -240,7 +218,7 @@ func (m Model) statusLine() string {
 
 	left := m.shortHelp(room)
 	if m.err != nil {
-		left = errorStyle.Render(truncate("✕ "+m.errorText(), room))
+		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText(), room))
 	}
 
 	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
@@ -267,7 +245,7 @@ func (m Model) shortHelp(room int) string {
 func (m Model) stoppedLines() []string {
 	// Trimmed to the box: an exec failure names a path and blows the border
 	// past the terminal edge otherwise.
-	lines := []string{errorStyle.Render(truncate("✕ "+m.errorText(), m.width-6))}
+	lines := []string{errorStyle.Render(ui.Truncate("✕ "+m.errorText(), m.width-6))}
 	if m.authNeed {
 		if hint := m.authHint(); hint != "" {
 			lines = append(lines, noticeStyle.Render(hint))
@@ -275,8 +253,8 @@ func (m Model) stoppedLines() []string {
 	}
 
 	var actions []string
-	if m.opts.InstallHint != "" && m.adapterMissing() {
-		lines = append(lines, noticeStyle.Render(m.opts.InstallHint))
+	if hint := m.installHint(); hint != "" && m.adapterMissing() {
+		lines = append(lines, noticeStyle.Render(hint))
 	}
 	if m.loggingIn {
 		actions = append(actions, noticeStyle.Render("logging in…"))
@@ -305,6 +283,25 @@ func (m Model) stoppedView() string {
 	return b.String()
 }
 
+// stoppedHeight is the footer space the panel needs: its lines, the box
+// around them, and the help line under it.
+func (m Model) stoppedHeight() int { return len(m.stoppedLines()) + 4 }
+
+// installHint says where to get the agent's ACP adapter, empty for an agent
+// that serves the protocol itself. The chat only states the problem:
+// installing belongs with choosing an agent, not inside a conversation that
+// cannot start.
+func (m Model) installHint() string {
+	if len(m.opts.Agent.ACPInstallCommand()) == 0 {
+		return ""
+	}
+	size := ""
+	if m.opts.Agent.ACP.InstallSize != "" {
+		size = " (" + m.opts.Agent.ACP.InstallSize + ")"
+	}
+	return fmt.Sprintf("install it%s from opentree's agent list — press A, then i", size)
+}
+
 // helpView is the whole key list, shown in place of the input. It exists
 // because the status line has room for five bindings and the chat has twelve.
 func (m Model) helpView() string {
@@ -321,6 +318,10 @@ func (m Model) helpView() string {
 	b.WriteString(helpStyle.Render("any key to close"))
 	return b.String()
 }
+
+// helpHeight measures the rendered list rather than predicting it: the key
+// table wraps with the terminal, so its height is whatever it drew.
+func (m Model) helpHeight() int { return lipgloss.Height(m.helpView()) }
 
 func (m Model) errorText() string {
 	if m.err == nil {
@@ -349,7 +350,7 @@ func (m Model) permissionView() string {
 
 	// The dialog is a fixed box, so a long command or path is trimmed rather
 	// than allowed to blow the border out past the terminal edge.
-	lines := []string{permLabelStyle.Render(truncate(toolLabel(req.ToolCall, m.opts.Cwd), m.width-6))}
+	lines := []string{permLabelStyle.Render(ui.Truncate(toolLabel(req.ToolCall, m.opts.Cwd), m.width-6))}
 	lines = append(lines, m.permDetail()...)
 	for i, o := range req.Options {
 		lines = append(lines, fmt.Sprintf("%s %s",
@@ -371,6 +372,12 @@ func (m Model) permissionView() string {
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render(hint))
 	return b.String()
+}
+
+// permissionHeight is the footer space the dialog needs: one row per option,
+// the detail lines, and the box and hint around them.
+func (m Model) permissionHeight() int {
+	return len(m.perm().req.Options) + len(m.permDetail()) + 5
 }
 
 // permDetail is what the call would actually do. A title on its own is not
@@ -417,14 +424,12 @@ func optionHint(options []acp.PermissionOption, i int) string {
 }
 
 // kindKey is the reflex key for a permission kind, empty for a kind with none.
+// Read off the same permKeys table the key handler resolves against.
 func kindKey(kind string) string {
-	switch kind {
-	case acp.PermissionAllowOnce:
-		return "a"
-	case acp.PermissionAllowAlways:
-		return "A"
-	case acp.PermissionRejectOnce:
-		return "d"
+	for _, pk := range permKeys {
+		if pk.kind == kind {
+			return pk.key
+		}
 	}
 	return ""
 }
@@ -447,7 +452,7 @@ func (m Model) renderLog() string {
 		b.WriteString("\n")
 	}
 	if m.turn {
-		b.WriteString(toolRunningStyle.Render(spinnerFrames[m.spinnerFrame] + " thinking…"))
+		b.WriteString(toolRunningStyle.Render(ui.SpinnerFrames[m.spinnerFrame] + " thinking…"))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -551,7 +556,7 @@ func renderPlan(entries []acp.PlanEntry, width int) string {
 		case acp.PlanInProgress:
 			glyph, style = "▸", toolRunningStyle
 		}
-		lines = append(lines, style.Render(truncate("  "+glyph+" "+e.Content, width)))
+		lines = append(lines, style.Render(ui.Truncate("  "+glyph+" "+e.Content, width)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -578,7 +583,7 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 	case acp.StatusFailed:
 		glyph, style = "✗", toolFailedStyle
 	default:
-		glyph, style = spinnerFrames[m.spinnerFrame], toolRunningStyle
+		glyph, style = ui.SpinnerFrames[m.spinnerFrame], toolRunningStyle
 	}
 
 	row := "  " + style.Render(glyph) + " " + toolTitleStyle.Render(toolLabel(call, m.opts.Cwd))
@@ -623,7 +628,7 @@ func renderOutput(call acp.ToolCall, width int, style lipgloss.Style) []string {
 	}
 	out := make([]string, 0, len(shown)+1)
 	for _, line := range shown {
-		out = append(out, style.Render(truncate("    "+line, width)))
+		out = append(out, style.Render(ui.Truncate("    "+line, width)))
 	}
 	if hidden := len(lines) - len(shown); hidden > 0 {
 		out = append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", hidden)))
@@ -676,7 +681,7 @@ func renderDiffs(call acp.ToolCall, width int) []string {
 		if ch.add {
 			style, sign = diffAddStyle, "+"
 		}
-		out = append(out, style.Render(truncate("    "+sign+" "+ch.text, width)))
+		out = append(out, style.Render(ui.Truncate("    "+sign+" "+ch.text, width)))
 	}
 	return out
 }
@@ -786,13 +791,6 @@ func splitLines(s string) []string {
 		return nil
 	}
 	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
-}
-
-func truncate(s string, width int) string {
-	if width < 4 || lipgloss.Width(s) <= width {
-		return s
-	}
-	return string([]rune(s)[:width-1]) + "…"
 }
 
 // toolLabel is the one-line description of a call. Titles are already

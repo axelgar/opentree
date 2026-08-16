@@ -167,43 +167,9 @@ type Model struct {
 	// which top-level place is showing
 	tab int
 
-	// skills tab
-	skills         []skills.Skill
-	skillCursor    int
-	skillFilter    string
-	skillFiltering bool
-	skillDeleting  *skills.Skill
-	// skillDeleteChoosing is the step before the confirmation, drawn only when
-	// the skill is in more than one tree: which copies of it go.
-	skillDeleteChoosing bool
-	skillCopying        *skills.Skill
-	skillCopyCursor     int
-
-	// skillChosen is the tree picker's ticked set, keyed by directory so it
-	// survives the cursor moving. Empty means "the row under the cursor",
-	// which is what one pick stays: ticking is for the second tree onwards.
-	skillChosen map[string]bool
-
-	// adding a skill, in up to four steps: skillAdding while the address is
-	// being typed, skillDiscovering while the site is asked what it publishes,
-	// a picker over skillEntries when it published more than one, and finally
-	// the same tree picker a copy uses. A site that publishes nothing skips
-	// the middle two and the address is cloned as a git URL instead.
-	skillAdding      bool
-	skillAddURL      string
-	skillDiscovering bool
-	skillEntries     []skills.Entry
-	skillEntry       *skills.Entry
-
-	// skillUpdating is one re-check in flight. A second one on the same row
-	// would race the first over the directory it is swapping.
-	skillUpdating bool
-
-	// what the agent itself says it loaded, against which the rest of this tab
-	// is opentree's reading of the documentation. Nil until asked.
-	skillProbe   map[string]bool
-	skillProbed  string // the agent the answer came from
-	skillProbing bool
+	// skillsTab is the Skills tab's own state, defined beside its behaviour
+	// in skills.go.
+	skillsTab skillsTab
 
 	help help.Model
 	keys keyMap

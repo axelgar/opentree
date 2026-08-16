@@ -34,7 +34,7 @@ func geminiMethods() []acp.AuthMethod {
 func TestAuthRemedies_Precedence(t *testing.T) {
 	t.Run("the agent's own command beats the registry's", func(t *testing.T) {
 		m := newTestModel()
-		m.opts.Command, m.opts.AuthCommand = "copilot", []string{"login"}
+		m.opts.Agent = testAgent("copilot")
 		m.authMethods = []acp.AuthMethod{copilotMethod()}
 
 		got := m.authRemedies()
@@ -48,7 +48,7 @@ func TestAuthRemedies_Precedence(t *testing.T) {
 		// terminal". The command opentree recorded is that same login, and it is
 		// the one that has always worked.
 		m := newTestModel()
-		m.opts.Command, m.opts.AuthCommand = "opencode", []string{"auth", "login"}
+		m.opts.Agent = testAgent("opencode")
 		m.authMethods = []acp.AuthMethod{{ID: "opencode-login", Name: "Login with opencode"}}
 
 		got := m.authRemedies()
@@ -94,7 +94,7 @@ func TestAuthRemedies_Precedence(t *testing.T) {
 // used to get no [l] at all, because the registry had no command for it.
 func TestAuthRequired_ProtocolAgentIsOfferedTheKey(t *testing.T) {
 	m := newTestModel()
-	m.opts.Agent, m.opts.Command = "Gemini CLI", "gemini"
+	m.opts.Agent = testAgent("gemini")
 	m.authMethods = geminiMethods()
 	m, _ = applyUpdate(m, errMsg{err: errString("acp error -32000: Gemini API key is missing"), auth: true})
 
@@ -122,7 +122,7 @@ func TestAuthRequired_ProtocolAgentIsOfferedTheKey(t *testing.T) {
 // One remedy is not a choice, so [l] runs it.
 func TestStartLogin_SingleRemedyRunsWithoutAPicker(t *testing.T) {
 	m := newTestModel()
-	m.opts.Command, m.opts.AuthCommand = "opencode", []string{"auth", "login"}
+	m.opts.Agent = testAgent("opencode")
 
 	next, cmd := m.startLogin()
 	m = next.(Model)
@@ -296,7 +296,7 @@ func TestStoppedPanel_WhileLoggingIn(t *testing.T) {
 // A command is shown in full before the key that runs it is pressed.
 func TestStoppedPanel_NamesTheCommandItWillRun(t *testing.T) {
 	m := newTestModel()
-	m.opts.Command, m.opts.AuthCommand = "opencode", []string{"auth", "login"}
+	m.opts.Agent = testAgent("opencode")
 	m.authNeed = true
 	m.err = errString("Authentication required")
 	m = m.relayout()

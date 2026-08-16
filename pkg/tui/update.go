@@ -12,6 +12,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 func spinnerTickCmd() tea.Cmd {
@@ -594,7 +595,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinnerTickMsg:
 		if m.workspaceCreating || m.workspaceDeleting {
-			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+			m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
 			return m, spinnerTickCmd()
 		}
 		return m, nil
@@ -707,7 +708,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.loadWorkspacesCmd,
 			m.checkBranchStatusCmd(msg.wsName, branch, worktreeDir, wasPushed),
-			m.noticeCmd(fmt.Sprintf("PR created: %s — o to open", truncate(msg.prURL, 60))),
+			m.noticeCmd(fmt.Sprintf("PR created: %s — o to open", ui.Truncate(msg.prURL, 60))),
 		)
 
 	case prContentGeneratedMsg:
@@ -886,11 +887,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case skillsScannedMsg:
-		m.skills = msg.skills
+		m.skillsTab.list = msg.skills
 		// The list may have shrunk under the cursor — a deleted skill, or a
 		// filter that no longer matches.
-		if m.skillCursor >= len(m.visibleSkills()) {
-			m.skillCursor = max(len(m.visibleSkills())-1, 0)
+		if m.skillsTab.cursor >= len(m.visibleSkills()) {
+			m.skillsTab.cursor = max(len(m.visibleSkills())-1, 0)
 		}
 
 	case skillEditedMsg:
@@ -931,10 +932,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case skillsDiscoveredMsg:
 		// The flow can be abandoned while the request is still out, and a
 		// stale answer must not reopen it.
-		if !m.skillDiscovering || m.skillAddURL != msg.site {
+		if !m.skillsTab.discovering || m.skillsTab.addURL != msg.site {
 			return m, nil
 		}
-		m.skillDiscovering = false
+		m.skillsTab.discovering = false
 		var cmd tea.Cmd
 		if msg.err != nil || len(msg.entries) == 0 {
 			// Not a publisher, which is the ordinary case: the address was a
@@ -943,18 +944,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m, cmd = m.pickTree()
 			return m, cmd
 		}
-		m.skillEntries, m.skillCopyCursor = msg.entries, 0
+		m.skillsTab.entries, m.skillsTab.pickCursor = msg.entries, 0
 		if len(msg.entries) == 1 {
 			// One skill is not a choice worth drawing a picker for.
 			chosen := msg.entries[0]
-			m.skillEntry = &chosen
+			m.skillsTab.entry = &chosen
 			m, cmd = m.pickTree()
 			return m, cmd
 		}
 		return m, nil
 
 	case skillUpdatedMsg:
-		m.skillUpdating = false
+		m.skillsTab.updating = false
 		if msg.err != nil {
 			return m, m.transientErrCmd(msg.err.Error())
 		}
@@ -966,11 +967,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd("updated "+msg.name))
 
 	case skillProbedMsg:
-		m.skillProbing = false
+		m.skillsTab.probing = false
 		if msg.err != nil {
 			return m, m.transientErrCmd(msg.agent + ": " + msg.err.Error())
 		}
-		m.skillProbe, m.skillProbed = msg.commands, msg.agent
+		m.skillsTab.probe, m.skillsTab.probed = msg.commands, msg.agent
 		return m, m.noticeCmd(fmt.Sprintf("%s advertises %s",
 			msg.agent, plural(len(msg.commands), "command")))
 
@@ -980,7 +981,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case browserOpenedMsg:
-		return m, m.noticeCmd("opened " + truncate(msg.url, 60) + " in browser")
+		return m, m.noticeCmd("opened " + ui.Truncate(msg.url, 60) + " in browser")
 
 	case errLogCopiedMsg:
 		if msg.err != nil {

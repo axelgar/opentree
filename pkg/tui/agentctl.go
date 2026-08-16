@@ -9,6 +9,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // This file is the workspace list's half of the chat control socket: reading
@@ -41,7 +42,7 @@ func renderChatBadge(st *chat.Status) string {
 		if st.Permission != nil && st.Permission.Title != "" {
 			label += " · " + st.Permission.Title
 		}
-		return agentWaitingStyle.Render(truncate(label, badgeWidth))
+		return agentWaitingStyle.Render(ui.Truncate(label, badgeWidth))
 	case chat.StateWorking:
 		label := "working…"
 		if st.Tool != "" {
@@ -50,7 +51,7 @@ func renderChatBadge(st *chat.Status) string {
 		if st.Queued != "" {
 			label += " · 1 queued"
 		}
-		return agentWorkingStyle.Render(truncate(label, badgeWidth))
+		return agentWorkingStyle.Render(ui.Truncate(label, badgeWidth))
 	case chat.StateStopped:
 		return dangerStyle.Render("agent stopped")
 	case chat.StateStarting:

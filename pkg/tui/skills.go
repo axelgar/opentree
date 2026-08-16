@@ -16,6 +16,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/skills"
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // The Skills tab is a place rather than a dialog, which is why it is a tab and
@@ -32,6 +33,53 @@ import (
 // "Which agents can use this" is a separate question from "where does it
 // live", and the badges answer it — a tree is commonly read by every agent at
 // once, so a skill carries a mark per reader rather than one owner.
+
+// skillsTab is everything the Skills tab keeps on the Model, gathered into
+// one field so the shared Model does not grow a loose field every time this
+// tab does — the workspace list and the tab change for different reasons.
+type skillsTab struct {
+	list      []skills.Skill
+	cursor    int
+	filter    string
+	filtering bool
+
+	deleting *skills.Skill
+	// deleteChoosing is the step before the confirmation, drawn only when the
+	// skill is in more than one tree: which copies of it go.
+	deleteChoosing bool
+	copying        *skills.Skill
+
+	// pickCursor is the cursor of whichever picker is up. The tree pickers
+	// and the entry picker are mutually exclusive, so they share one cursor,
+	// and each resets it as it opens.
+	pickCursor int
+
+	// chosen is the tree picker's ticked set, keyed by directory so it
+	// survives the cursor moving. Empty means "the row under the cursor",
+	// which is what one pick stays: ticking is for the second tree onwards.
+	chosen map[string]bool
+
+	// adding a skill, in up to four steps: adding while the address is being
+	// typed, discovering while the site is asked what it publishes, a picker
+	// over entries when it published more than one, and finally the same tree
+	// picker a copy uses. A site that publishes nothing skips the middle two
+	// and the address is cloned as a git URL instead.
+	adding      bool
+	addURL      string
+	discovering bool
+	entries     []skills.Entry
+	entry       *skills.Entry
+
+	// updating is one re-check in flight. A second one on the same row would
+	// race the first over the directory it is swapping.
+	updating bool
+
+	// probe is what the agent itself says it loaded, against which the rest
+	// of this tab is opentree's reading of the documentation. Nil until asked.
+	probe   map[string]bool
+	probed  string // the agent the answer came from
+	probing bool
+}
 
 // skillTarget is a directory a picker acts on: the tree a skill is copied
 // into, or the skill's own directory when the picker is removing it.
@@ -71,12 +119,12 @@ func sharedNames(list []skills.Skill) map[string]bool {
 // both: a user looking for "release" and one looking for "npm" are both
 // looking for the same skill.
 func (m Model) visibleSkills() []skills.Skill {
-	if m.skillFilter == "" {
-		return m.skills
+	if m.skillsTab.filter == "" {
+		return m.skillsTab.list
 	}
-	q := strings.ToLower(m.skillFilter)
+	q := strings.ToLower(m.skillsTab.filter)
 	var out []skills.Skill
-	for _, s := range m.skills {
+	for _, s := range m.skillsTab.list {
 		if strings.Contains(strings.ToLower(s.Name), q) ||
 			strings.Contains(strings.ToLower(s.Description), q) {
 			out = append(out, s)
@@ -88,17 +136,17 @@ func (m Model) visibleSkills() []skills.Skill {
 // currentSkill is the skill under the cursor, or false when the list is empty.
 func (m Model) currentSkill() (skills.Skill, bool) {
 	visible := m.visibleSkills()
-	if m.skillCursor < 0 || m.skillCursor >= len(visible) {
+	if m.skillsTab.cursor < 0 || m.skillsTab.cursor >= len(visible) {
 		return skills.Skill{}, false
 	}
-	return visible[m.skillCursor], true
+	return visible[m.skillsTab.cursor], true
 }
 
 // copyTargets are the trees a skill is not already in. A tree that already
 // holds a skill of that name is left out rather than offered and then refused.
 func (m Model) copyTargets(s skills.Skill) []skillTarget {
 	occupied := make(map[string]bool)
-	for _, existing := range m.skills {
+	for _, existing := range m.skillsTab.list {
 		if existing.Name == s.Name {
 			occupied[filepath.Dir(existing.Dir)] = true
 		}
@@ -147,7 +195,7 @@ func (m Model) copyTargets(s skills.Skill) []skillTarget {
 // the row is the only thing that says so before the confirmation does.
 func (m Model) deleteTargets(s skills.Skill) []skillTarget {
 	var out []skillTarget
-	for _, existing := range m.skills {
+	for _, existing := range m.skillsTab.list {
 		if existing.Name != s.Name {
 			continue
 		}
@@ -163,15 +211,15 @@ func (m Model) deleteTargets(s skills.Skill) []skillTarget {
 // doomedSkills are the skills a delete confirmation will remove: the ticked
 // copies, or the single row the picker was skipped for.
 func (m Model) doomedSkills() []skills.Skill {
-	if m.skillDeleting == nil {
+	if m.skillsTab.deleting == nil {
 		return nil
 	}
-	if len(m.skillChosen) == 0 {
-		return []skills.Skill{*m.skillDeleting}
+	if len(m.skillsTab.chosen) == 0 {
+		return []skills.Skill{*m.skillsTab.deleting}
 	}
 	var out []skills.Skill
-	for _, s := range m.skills {
-		if m.skillChosen[s.Dir] {
+	for _, s := range m.skillsTab.list {
+		if m.skillsTab.chosen[s.Dir] {
 			out = append(out, s)
 		}
 	}
@@ -200,10 +248,10 @@ func (m Model) shortDir(dir string) string {
 // it. Either way it is known before the fetch, which is what lets a tree that
 // already holds one be left out of the picker rather than refused afterwards.
 func (m Model) addName() string {
-	if m.skillEntry != nil {
-		return m.skillEntry.Name
+	if m.skillsTab.entry != nil {
+		return m.skillsTab.entry.Name
 	}
-	return skills.CloneName(m.skillAddURL)
+	return skills.CloneName(m.skillsTab.addURL)
 }
 
 // addTargets are the trees the pending skill could land in.
@@ -215,10 +263,10 @@ func (m Model) addTargets() []skillTarget {
 // spread over two pickers and a request is three too many to unwind by hand at
 // each of the places that can abandon it.
 func (m Model) cancelAdd() Model {
-	m.skillAdding, m.skillAddURL = false, ""
-	m.skillDiscovering = false
-	m.skillEntries, m.skillEntry = nil, nil
-	m.skillChosen = nil
+	m.skillsTab.adding, m.skillsTab.addURL = false, ""
+	m.skillsTab.discovering = false
+	m.skillsTab.entries, m.skillsTab.entry = nil, nil
+	m.skillsTab.chosen = nil
 	return m
 }
 
@@ -228,33 +276,33 @@ func (m Model) cancelAdd() Model {
 func (m Model) chosenTargets(targets []skillTarget) []skillTarget {
 	var out []skillTarget
 	for _, t := range targets {
-		if m.skillChosen[t.Dir] {
+		if m.skillsTab.chosen[t.Dir] {
 			out = append(out, t)
 		}
 	}
 	if len(out) > 0 {
 		return out
 	}
-	if m.skillCopyCursor < len(targets) {
-		return targets[m.skillCopyCursor : m.skillCopyCursor+1]
+	if m.skillsTab.pickCursor < len(targets) {
+		return targets[m.skillsTab.pickCursor : m.skillsTab.pickCursor+1]
 	}
 	return nil
 }
 
 // toggleTarget ticks or unticks the tree under the cursor.
 func (m Model) toggleTarget(targets []skillTarget) Model {
-	if m.skillCopyCursor >= len(targets) {
+	if m.skillsTab.pickCursor >= len(targets) {
 		return m
 	}
-	if m.skillChosen == nil {
-		m.skillChosen = map[string]bool{}
+	if m.skillsTab.chosen == nil {
+		m.skillsTab.chosen = map[string]bool{}
 	}
-	dir := targets[m.skillCopyCursor].Dir
-	if m.skillChosen[dir] {
-		delete(m.skillChosen, dir)
+	dir := targets[m.skillsTab.pickCursor].Dir
+	if m.skillsTab.chosen[dir] {
+		delete(m.skillsTab.chosen, dir)
 		return m
 	}
-	m.skillChosen[dir] = true
+	m.skillsTab.chosen[dir] = true
 	return m
 }
 
@@ -281,7 +329,7 @@ func targetsLabel(targets []skillTarget) string {
 // when every tree already holds a skill by that name.
 func (m Model) pickTree() (Model, tea.Cmd) {
 	if len(m.addTargets()) > 0 {
-		m.skillCopyCursor, m.skillChosen = 0, map[string]bool{}
+		m.skillsTab.pickCursor, m.skillsTab.chosen = 0, map[string]bool{}
 		return m, nil
 	}
 	name := m.addName()
@@ -513,12 +561,12 @@ func probeRefusal(agent *config.PredefinedAgent) string {
 // just called a skill invisible to opencode while opencode was answering to it:
 // the list was never asked about the claim it had not made.
 func (m Model) probeMismatch(s skills.Skill) string {
-	if m.skillProbe == nil {
+	if m.skillsTab.probe == nil {
 		return ""
 	}
-	loaded := m.skillProbe[s.Name]
+	loaded := m.skillsTab.probe[s.Name]
 
-	if !slices.Contains(s.Agents, m.skillProbed) {
+	if !slices.Contains(s.Agents, m.skillsTab.probed) {
 		if !loaded {
 			return ""
 		}
@@ -526,11 +574,11 @@ func (m Model) probeMismatch(s skills.Skill) string {
 		// registry entry, a tree opentree does not know, or a skill sharing a
 		// name with one of the agent's own commands — and guessing between
 		// those is what produced the wrong answer in the first place.
-		mark, _, _ := config.Brand(m.skillProbed)
+		mark, _, _ := config.Brand(m.skillsTab.probed)
 		return "⚠ " + mark + " reads it anyway"
 	}
 
-	switch expected := s.State(m.skillProbed) != skills.StateOff; {
+	switch expected := s.State(m.skillsTab.probed) != skills.StateOff; {
 	case expected && !loaded:
 		return "⚠ not loaded"
 	case !expected && loaded:
@@ -578,6 +626,26 @@ func (m Model) inStandardRepoTree(s skills.Skill) bool {
 	return false
 }
 
+// pickerMove steps a clamped cursor for the tab's shared movement keys,
+// reporting whether the key was one of them. Five lists move this way — the
+// tab itself, three tree pickers and the entry picker — and this is the one
+// copy of the arithmetic; the fourth hand copy had already drifted once.
+func pickerMove(key string, cursor *int, rows int) bool {
+	switch key {
+	case "up", "k":
+		if *cursor > 0 {
+			*cursor--
+		}
+	case "down", "j":
+		if *cursor < rows-1 {
+			*cursor++
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 // updateSkills handles keys while the Skills tab has focus.
 //
 // It consumes every key, including the ones it does nothing with. Falling
@@ -587,17 +655,12 @@ func (m Model) inStandardRepoTree(s skills.Skill) bool {
 func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// Choosing which copies of a skill go, before the confirmation asks about
 	// them. Only reached when there is more than one.
-	if m.skillDeleteChoosing {
-		targets := m.deleteTargets(*m.skillDeleting)
+	if m.skillsTab.deleteChoosing {
+		targets := m.deleteTargets(*m.skillsTab.deleting)
+		if pickerMove(msg.String(), &m.skillsTab.pickCursor, len(targets)) {
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.skillCopyCursor > 0 {
-				m.skillCopyCursor--
-			}
-		case "down", "j":
-			if m.skillCopyCursor < len(targets)-1 {
-				m.skillCopyCursor++
-			}
 		case " ":
 			m = m.toggleTarget(targets)
 		case "enter":
@@ -605,23 +668,23 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			// row under the cursor: this picker opens with one already ticked,
 			// so unticking every row is a deliberate "none of these" rather
 			// than an empty selection meaning the cursor's own.
-			if len(m.skillChosen) == 0 {
+			if len(m.skillsTab.chosen) == 0 {
 				return m, nil
 			}
-			m.skillDeleteChoosing = false
+			m.skillsTab.deleteChoosing = false
 		case "esc", "q":
-			m.skillDeleting, m.skillDeleteChoosing, m.skillChosen = nil, false, nil
+			m.skillsTab.deleting, m.skillsTab.deleteChoosing, m.skillsTab.chosen = nil, false, nil
 		}
 		return m, nil
 	}
 
 	// Delete confirmation. Removing a skill deletes a directory no git history
 	// is necessarily holding, so it is confirmed rather than undone.
-	if m.skillDeleting != nil {
+	if m.skillsTab.deleting != nil {
 		switch msg.String() {
 		case "y", "Y":
-			name, doomed := m.skillDeleting.Name, m.doomedSkills()
-			m.skillDeleting, m.skillChosen = nil, nil
+			name, doomed := m.skillsTab.deleting.Name, m.doomedSkills()
+			m.skillsTab.deleting, m.skillsTab.chosen = nil, nil
 			if err := skills.Delete(doomed...); err != nil {
 				// Rescanned even so: one directory refusing does not mean none
 				// of them went.
@@ -633,38 +696,38 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			return m, tea.Batch(m.scanSkillsCmd, m.noticeCmd(removed))
 		case "n", "esc", "q":
-			m.skillDeleting, m.skillChosen = nil, nil
+			m.skillsTab.deleting, m.skillsTab.chosen = nil, nil
 		}
 		return m, nil
 	}
 
 	// Typing the git URL of a skill to add.
-	if m.skillAdding {
+	if m.skillsTab.adding {
 		switch msg.String() {
 		case "enter":
-			url := strings.TrimSpace(m.skillAddURL)
-			m.skillAdding = false
+			url := strings.TrimSpace(m.skillsTab.addURL)
+			m.skillsTab.adding = false
 			if url == "" {
-				m.skillAddURL = ""
+				m.skillsTab.addURL = ""
 				return m, nil
 			}
 			// Ask the site before git does. An address that publishes an index
 			// names its skills and their hashes; one that does not answers in
 			// well under the time a clone would have taken anyway.
-			m.skillAddURL, m.skillDiscovering = url, true
+			m.skillsTab.addURL, m.skillsTab.discovering = url, true
 			return m, discoverSkillsCmd(url)
 		case "esc":
 			m = m.cancelAdd()
 		case "backspace":
-			if m.skillAddURL != "" {
-				m.skillAddURL = m.skillAddURL[:len(m.skillAddURL)-1]
+			if m.skillsTab.addURL != "" {
+				m.skillsTab.addURL = m.skillsTab.addURL[:len(m.skillsTab.addURL)-1]
 			}
 		default:
 			// Every rune of the key, not one: a pasted URL arrives as a single
 			// message carrying all of it, and a URL is far more often pasted
 			// than typed.
 			if msg.Type == tea.KeyRunes {
-				m.skillAddURL += string(msg.Runes)
+				m.skillsTab.addURL += string(msg.Runes)
 			}
 		}
 		return m, nil
@@ -672,7 +735,7 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	// Waiting on the site. Only escape means anything here — the answer is one
 	// request away and every other key would act on a step not reached yet.
-	if m.skillDiscovering {
+	if m.skillsTab.discovering {
 		if msg.String() == "esc" {
 			m = m.cancelAdd()
 		}
@@ -680,24 +743,19 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	// Picking which of a site's skills to take.
-	if m.skillEntries != nil && m.skillEntry == nil {
+	if m.skillsTab.entries != nil && m.skillsTab.entry == nil {
+		if pickerMove(msg.String(), &m.skillsTab.pickCursor, len(m.skillsTab.entries)) {
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.skillCopyCursor > 0 {
-				m.skillCopyCursor--
-			}
-		case "down", "j":
-			if m.skillCopyCursor < len(m.skillEntries)-1 {
-				m.skillCopyCursor++
-			}
 		case "enter":
-			if m.skillCopyCursor >= len(m.skillEntries) {
+			if m.skillsTab.pickCursor >= len(m.skillsTab.entries) {
 				return m, nil
 			}
 			// A copy, not a pointer into the slice: the entry outlives the
 			// list it was chosen from.
-			chosen := m.skillEntries[m.skillCopyCursor]
-			m.skillEntry = &chosen
+			chosen := m.skillsTab.entries[m.skillsTab.pickCursor]
+			m.skillsTab.entry = &chosen
 			return m.pickTree()
 		case "esc", "q":
 			m = m.cancelAdd()
@@ -706,17 +764,12 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	// Picking the tree the skill lands in.
-	if m.skillAddURL != "" {
+	if m.skillsTab.addURL != "" {
 		targets := m.addTargets()
+		if pickerMove(msg.String(), &m.skillsTab.pickCursor, len(targets)) {
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.skillCopyCursor > 0 {
-				m.skillCopyCursor--
-			}
-		case "down", "j":
-			if m.skillCopyCursor < len(targets)-1 {
-				m.skillCopyCursor++
-			}
 		case " ":
 			m = m.toggleTarget(targets)
 		case "enter":
@@ -725,7 +778,7 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 				return m, nil
 			}
 			dirs := targetDirs(chosen)
-			url, entry := m.skillAddURL, m.skillEntry
+			url, entry := m.skillsTab.addURL, m.skillsTab.entry
 			m = m.cancelAdd()
 			if entry != nil {
 				return m, tea.Batch(
@@ -733,7 +786,7 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 					installSkillCmd(*entry, dirs))
 			}
 			return m, tea.Batch(
-				m.noticeCmd("cloning "+truncate(url, 60)+"…"),
+				m.noticeCmd("cloning "+ui.Truncate(url, 60)+"…"),
 				cloneSkillCmd(url, dirs))
 		case "esc", "q":
 			m = m.cancelAdd()
@@ -742,17 +795,12 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	// Copy destination picker.
-	if m.skillCopying != nil {
-		targets := m.copyTargets(*m.skillCopying)
+	if m.skillsTab.copying != nil {
+		targets := m.copyTargets(*m.skillsTab.copying)
+		if pickerMove(msg.String(), &m.skillsTab.pickCursor, len(targets)) {
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.skillCopyCursor > 0 {
-				m.skillCopyCursor--
-			}
-		case "down", "j":
-			if m.skillCopyCursor < len(targets)-1 {
-				m.skillCopyCursor++
-			}
 		case " ":
 			m = m.toggleTarget(targets)
 		case "enter":
@@ -760,8 +808,8 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if len(chosen) == 0 {
 				return m, nil
 			}
-			source := *m.skillCopying
-			m.skillCopying, m.skillChosen = nil, nil
+			source := *m.skillsTab.copying
+			m.skillsTab.copying, m.skillsTab.chosen = nil, nil
 			if err := skills.CopyTo(source, targetDirs(chosen)...); err != nil {
 				// Rescanned even so: one tree refusing does not mean none of
 				// them took the copy.
@@ -770,53 +818,47 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, tea.Batch(m.scanSkillsCmd,
 				m.noticeCmd(fmt.Sprintf("copied %s to %s", source.Name, targetsLabel(chosen))))
 		case "esc", "q":
-			m.skillCopying, m.skillChosen = nil, nil
+			m.skillsTab.copying, m.skillsTab.chosen = nil, nil
 		}
 		return m, nil
 	}
 
-	if m.skillFiltering {
+	if m.skillsTab.filtering {
 		switch msg.String() {
 		case "enter", "esc":
-			m.skillFiltering = false
+			m.skillsTab.filtering = false
 		case "backspace":
-			if m.skillFilter != "" {
-				m.skillFilter = m.skillFilter[:len(m.skillFilter)-1]
+			if m.skillsTab.filter != "" {
+				m.skillsTab.filter = m.skillsTab.filter[:len(m.skillsTab.filter)-1]
 			}
 		default:
 			if msg.Type == tea.KeyRunes {
-				m.skillFilter += string(msg.Runes)
+				m.skillsTab.filter += string(msg.Runes)
 			}
 		}
-		m.skillCursor = 0
+		m.skillsTab.cursor = 0
 		return m, nil
 	}
 
-	visible := m.visibleSkills()
+	if pickerMove(msg.String(), &m.skillsTab.cursor, len(m.visibleSkills())) {
+		return m, nil
+	}
 	switch msg.String() {
 	case "tab", "shift+tab", "left", "right", "esc":
-		if msg.String() == "esc" && m.skillFilter != "" {
-			m.skillFilter = ""
-			m.skillCursor = 0
+		if msg.String() == "esc" && m.skillsTab.filter != "" {
+			m.skillsTab.filter = ""
+			m.skillsTab.cursor = 0
 			return m, nil
 		}
 		m.tab = tabWorkspaces
-	case "up", "k":
-		if m.skillCursor > 0 {
-			m.skillCursor--
-		}
-	case "down", "j":
-		if m.skillCursor < len(visible)-1 {
-			m.skillCursor++
-		}
 	case "/":
-		m.skillFiltering = true
+		m.skillsTab.filtering = true
 	case "r":
 		return m, m.scanSkillsCmd
 	case "a":
-		m.skillAdding, m.skillAddURL = true, ""
+		m.skillsTab.adding, m.skillsTab.addURL = true, ""
 	case "v":
-		if m.skillProbing {
+		if m.skillsTab.probing {
 			return m, nil
 		}
 		// Refused here rather than inside the command, so the model that carries
@@ -825,7 +867,7 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if why := probeRefusal(agent); why != "" {
 			return m, m.transientErrCmd(why)
 		}
-		m.skillProbing = true
+		m.skillsTab.probing = true
 		return m, tea.Batch(
 			m.noticeCmd("asking "+m.cfg.Agent.Command+" what it loaded…"),
 			m.probeSkillsCmd(*agent))
@@ -835,10 +877,10 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 	case "u":
 		s, ok := m.currentSkill()
-		if !ok || m.skillUpdating {
+		if !ok || m.skillsTab.updating {
 			return m, nil
 		}
-		m.skillUpdating = true
+		m.skillsTab.updating = true
 		return m, tea.Batch(
 			m.noticeCmd("checking "+s.Name+" with its publisher…"),
 			updateSkillCmd(s))
@@ -847,20 +889,20 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.skillDeleting, m.skillChosen = &s, nil
+		m.skillsTab.deleting, m.skillsTab.chosen = &s, nil
 		// One copy is not a choice worth drawing a picker for — the same rule
 		// the add flow follows when a site publishes a single skill.
 		targets := m.deleteTargets(s)
 		if len(targets) > 1 {
-			m.skillDeleteChoosing = true
+			m.skillsTab.deleteChoosing = true
 			// The row x was pressed on opens ticked, not merely under the
 			// cursor. x is already a statement about that copy, and dropping it
 			// the moment a second one is ticked is the wrong surprise to spring
 			// on a key that deletes directories. Space can untick it.
-			m.skillChosen, m.skillCopyCursor = map[string]bool{s.Dir: true}, 0
+			m.skillsTab.chosen, m.skillsTab.pickCursor = map[string]bool{s.Dir: true}, 0
 			for i, t := range targets {
 				if t.Dir == s.Dir {
-					m.skillCopyCursor = i
+					m.skillsTab.pickCursor = i
 				}
 			}
 		}
@@ -872,8 +914,8 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if len(m.copyTargets(s)) == 0 {
 			return m, m.transientErrCmd(s.Name + " is already in every tree")
 		}
-		m.skillCopying = &s
-		m.skillCopyCursor, m.skillChosen = 0, map[string]bool{}
+		m.skillsTab.copying = &s
+		m.skillsTab.pickCursor, m.skillsTab.chosen = 0, map[string]bool{}
 	case "t":
 		if s, ok := m.currentSkill(); ok {
 			return m.toggleSkill(s)
@@ -901,49 +943,49 @@ func (m Model) skillsView() string {
 	s.WriteString(m.tabBar())
 	s.WriteString("\n\n")
 
-	if m.skillDeleteChoosing {
-		return m.pickTreeView("Delete "+m.skillDeleting.Name+" from…",
-			m.deleteTargets(*m.skillDeleting), dialogDanger)
+	if m.skillsTab.deleteChoosing {
+		return m.pickTreeView("Delete "+m.skillsTab.deleting.Name+" from…",
+			m.deleteTargets(*m.skillsTab.deleting), dialogDanger)
 	}
-	if m.skillDeleting != nil {
+	if m.skillsTab.deleting != nil {
 		return m.skillDeleteView()
 	}
-	if m.skillCopying != nil {
-		return m.pickTreeView("Copy "+m.skillCopying.Name+" to…",
-			m.copyTargets(*m.skillCopying), dialogAccent)
+	if m.skillsTab.copying != nil {
+		return m.pickTreeView("Copy "+m.skillsTab.copying.Name+" to…",
+			m.copyTargets(*m.skillsTab.copying), dialogAccent)
 	}
 	// Typing first: the URL fills in a character at a time, so a picker drawn on
 	// "is there a URL yet" appears on the first keystroke and hides the prompt
 	// still collecting the rest of it.
-	if m.skillAdding {
+	if m.skillsTab.adding {
 		return appStyle.Render(s.String() + m.skillAddView())
 	}
-	if m.skillDiscovering {
+	if m.skillsTab.discovering {
 		return appStyle.Render(s.String() + filterPromptStyle.Render("asking") + " " +
-			truncate(m.skillAddURL, 60) + " what it publishes…\n\n" +
+			ui.Truncate(m.skillsTab.addURL, 60) + " what it publishes…\n\n" +
 			diffStyle.Render("  Esc cancels."))
 	}
-	if m.skillEntries != nil && m.skillEntry == nil {
+	if m.skillsTab.entries != nil && m.skillsTab.entry == nil {
 		return m.pickEntryView()
 	}
-	if m.skillAddURL != "" {
+	if m.skillsTab.addURL != "" {
 		verb := "Clone "
-		if m.skillEntry != nil {
+		if m.skillsTab.entry != nil {
 			verb = "Install "
 		}
 		return m.pickTreeView(verb+m.addName()+" into…", m.addTargets(), dialogAccent)
 	}
 
-	if m.skillFiltering {
-		s.WriteString(filterPromptStyle.Render("/") + " " + m.skillFilter + "█\n\n")
-	} else if m.skillFilter != "" {
+	if m.skillsTab.filtering {
+		s.WriteString(filterPromptStyle.Render("/") + " " + m.skillsTab.filter + "█\n\n")
+	} else if m.skillsTab.filter != "" {
 		s.WriteString(filterPromptStyle.Render(
-			fmt.Sprintf("filter: %q  (/ to change, esc to clear)", m.skillFilter)) + "\n\n")
+			fmt.Sprintf("filter: %q  (/ to change, esc to clear)", m.skillsTab.filter)) + "\n\n")
 	}
 
 	visible := m.visibleSkills()
 	if len(visible) == 0 {
-		if m.skillFilter != "" {
+		if m.skillsTab.filter != "" {
 			s.WriteString(itemStyle.Render("No skills match the filter.") + "\n")
 		} else {
 			s.WriteString(itemStyle.Render("No skills installed.") + "\n")
@@ -953,12 +995,12 @@ func (m Model) skillsView() string {
 	} else {
 		shared := sharedNames(visible)
 		budget := m.height - lipgloss.Height(s.String()) - skillsChromeLines
-		start, end := skillWindow(len(visible), m.skillCursor, budget)
+		start, end := skillWindow(len(visible), m.skillsTab.cursor, budget)
 		if start > 0 {
 			s.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
 		}
 		for i := start; i < end; i++ {
-			s.WriteString(m.renderSkillRow(visible[i], i == m.skillCursor, shared[visible[i].Name]))
+			s.WriteString(m.renderSkillRow(visible[i], i == m.skillsTab.cursor, shared[visible[i].Name]))
 		}
 		if end < len(visible) {
 			s.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↓ %d more", len(visible)-end)) + "\n")
@@ -988,7 +1030,7 @@ func (m Model) renderSkillRow(s skills.Skill, selected, isShared bool) string {
 	// SKILL.md is genuinely usable from both and a single badge would say the
 	// opposite.
 	title := fmt.Sprintf("%-*s %s %s",
-		skillNameWidth, truncate(s.Name, skillNameWidth),
+		skillNameWidth, ui.Truncate(s.Name, skillNameWidth),
 		pad(agentMarks(s), skillAgentWidth),
 		skillScopeStyle.Render(s.Scope.String()))
 
@@ -1029,11 +1071,11 @@ func (m Model) renderSkillRow(s skills.Skill, selected, isShared bool) string {
 	if desc == "" {
 		desc = "no description"
 	}
-	return style.Render(title+"\n"+diffStyle.Render("  "+truncate(desc, m.panelWidth()-4))) + "\n"
+	return style.Render(title+"\n"+diffStyle.Render("  "+ui.Truncate(desc, m.panelWidth()-4))) + "\n"
 }
 
 func (m Model) skillDeleteView() string {
-	s, doomed := *m.skillDeleting, m.doomedSkills()
+	s, doomed := *m.skillsTab.deleting, m.doomedSkills()
 
 	title := fmt.Sprintf("Delete skill %q?", s.Name)
 	body := confirmLabelStyle.Render(doomed[0].Dir + " and everything in it will be removed.")
@@ -1068,11 +1110,11 @@ func (m Model) pickTreeView(title string, targets []skillTarget, colour lipgloss
 	var b strings.Builder
 	for i, t := range targets {
 		cursor, style := "  ", itemStyle
-		if i == m.skillCopyCursor {
+		if i == m.skillsTab.pickCursor {
 			cursor, style = "▶ ", selectedItemStyle
 		}
 		tick := "  "
-		if m.skillChosen[t.Dir] {
+		if m.skillsTab.chosen[t.Dir] {
 			tick = "✓ "
 		}
 		// selectedItemStyle draws a left border where itemStyle has only
@@ -1080,7 +1122,7 @@ func (m Model) pickTreeView(title string, targets []skillTarget, colour lipgloss
 		// space puts them back in line: without it the marks column shifts
 		// sideways as the cursor moves down the list.
 		lead := " "
-		if i == m.skillCopyCursor {
+		if i == m.skillsTab.pickCursor {
 			lead = ""
 		}
 		// The readers, in the same glyphs the list rows use. A tree is rarely
@@ -1108,39 +1150,39 @@ func (m Model) pickEntryView() string {
 	// A publisher with more skills than the terminal has rows still has to be
 	// choosable. skillWindow counts in rows two lines tall, which is what
 	// these are: the same name-then-purpose shape as the tab's own list.
-	start, end := skillWindow(len(m.skillEntries), m.skillCopyCursor,
+	start, end := skillWindow(len(m.skillsTab.entries), m.skillsTab.pickCursor,
 		max(m.height-16, skillRowLines))
 	if start > 0 {
 		b.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
 	}
 	for i := start; i < end; i++ {
-		e := m.skillEntries[i]
+		e := m.skillsTab.entries[i]
 		cursor, style := "  ", itemStyle
-		if i == m.skillCopyCursor {
+		if i == m.skillsTab.pickCursor {
 			cursor, style = "▶ ", selectedItemStyle
 		}
-		row := truncate(cursor+e.Name, width)
+		row := ui.Truncate(cursor+e.Name, width)
 		if e.Description != "" {
-			row += "\n" + diffStyle.Render("  "+truncate(e.Description, width-4))
+			row += "\n" + diffStyle.Render("  "+ui.Truncate(e.Description, width-4))
 		}
 		if i > start {
 			b.WriteString("\n")
 		}
 		b.WriteString(style.Render(row))
 	}
-	if end < len(m.skillEntries) {
+	if end < len(m.skillsTab.entries) {
 		b.WriteString("\n" + scrollHintStyle.Render(
-			fmt.Sprintf("  ↓ %d more", len(m.skillEntries)-end)))
+			fmt.Sprintf("  ↓ %d more", len(m.skillsTab.entries)-end)))
 	}
 	return m.dialogCard(
-		fmt.Sprintf("%s publishes %d skills", truncate(m.skillAddURL, 40), len(m.skillEntries)),
+		fmt.Sprintf("%s publishes %d skills", ui.Truncate(m.skillsTab.addURL, 40), len(m.skillsTab.entries)),
 		b.String(),
 		dialogHintStyle.Render("↑/↓ navigate • Enter confirm • Esc cancel"), dialogAccent)
 }
 
 // skillAddView prompts for the address to add a skill from.
 func (m Model) skillAddView() string {
-	return filterPromptStyle.Render("add skill from") + " " + m.skillAddURL + "█\n\n" +
+	return filterPromptStyle.Render("add skill from") + " " + m.skillsTab.addURL + "█\n\n" +
 		diffStyle.Render("  A site that publishes skills, or a git repository whose\n"+
 			"  root holds a SKILL.md. Esc cancels.")
 }
@@ -1158,7 +1200,7 @@ func (m Model) knownTrees() string {
 }
 
 func (m Model) skillsStatusBar() string {
-	parts := []string{stat(len(m.skills), pluralLabel(len(m.skills), "skill"))}
+	parts := []string{stat(len(m.skillsTab.list), pluralLabel(len(m.skillsTab.list), "skill"))}
 	for _, agent := range config.PredefinedAgents {
 		// An agent with no skills mechanism at all is left out rather than
 		// tallied at zero: "GitHub Copilot 0" says it has somewhere to put
@@ -1170,7 +1212,7 @@ func (m Model) skillsStatusBar() string {
 		// Counts what the agent will actually load, not what is installed for
 		// it — the whole point of reading the overrides.
 		n := 0
-		for _, s := range m.skills {
+		for _, s := range m.skillsTab.list {
 			if slices.Contains(s.Agents, agent.Name) && s.State(agent.Name) != skills.StateOff {
 				n++
 			}
@@ -1186,29 +1228,29 @@ func (m Model) skillsStatusBar() string {
 	// What the agent itself confirmed, kept on screen rather than announced and
 	// forgotten: the counts to its left are opentree's reading of the
 	// documentation, and this is the one number that was checked.
-	if m.skillProbe != nil {
+	if m.skillsTab.probe != nil {
 		confirmed, expected, unexpected := 0, 0, 0
-		for _, s := range m.skills {
+		for _, s := range m.skillsTab.list {
 			// Read by an agent this row does not name. Counted separately
 			// because it answers a different question: the ratio says whether
 			// what the list claims is true, and this says whether it is
 			// complete. Only the first was ever checked, and a row can be
 			// wrong without making any claim to check.
-			if !slices.Contains(s.Agents, m.skillProbed) {
-				if m.skillProbe[s.Name] {
+			if !slices.Contains(s.Agents, m.skillsTab.probed) {
+				if m.skillsTab.probe[s.Name] {
 					unexpected++
 				}
 				continue
 			}
-			if s.State(m.skillProbed) == skills.StateOff {
+			if s.State(m.skillsTab.probed) == skills.StateOff {
 				continue
 			}
 			expected++
-			if m.skillProbe[s.Name] {
+			if m.skillsTab.probe[s.Name] {
 				confirmed++
 			}
 		}
-		label := fmt.Sprintf("%s confirmed %d/%d", m.skillProbed, confirmed, expected)
+		label := fmt.Sprintf("%s confirmed %d/%d", m.skillsTab.probed, confirmed, expected)
 		if unexpected > 0 {
 			label += fmt.Sprintf(" · %d unexpected", unexpected)
 		}

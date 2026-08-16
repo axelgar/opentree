@@ -3,7 +3,6 @@ package chat
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -63,7 +62,7 @@ func (m Model) listSessionsCmd() tea.Cmd {
 	}
 	client, cwd := m.client, m.opts.Cwd
 	return func() tea.Msg {
-		resp, err := client.ListSessions(m.ctx, cwd, "")
+		resp, err := client.ListSessions(m.ctx, cwd)
 		if err != nil {
 			return sessionsListedMsg{err: err}
 		}
@@ -139,7 +138,7 @@ func (m Model) sessionsView() string {
 	case m.sessions.err != "":
 		title = "resume a conversation — " + m.sessions.err
 	case m.sessions.loading:
-		title = "resume a conversation — asking " + m.opts.Agent + "…"
+		title = "resume a conversation — asking " + m.opts.Agent.Name + "…"
 	case len(rows) == 0:
 		title = "no earlier conversations here"
 	}
@@ -148,34 +147,16 @@ func (m Model) sessionsView() string {
 
 func (m Model) sessionsHeight() int { return pickerHeight(len(m.sessionRows())) }
 
-// handleSessionsKey drives the picker. It mirrors the settings one: same keys,
-// same digits, esc closes.
+// handleSessionsKey drives the picker with the shared keys.
 func (m Model) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	rows := m.sessions.rows
-
-	switch msg.String() {
-	case "esc", "ctrl+c":
+	switch action, i := pickerKey(msg, &m.sessions.cursor, len(m.sessions.rows)); action {
+	case pickerClosed:
 		m.sessions = sessions{}
 		return m.relayout(), nil
-
-	case "up", "ctrl+p":
-		if len(rows) > 0 {
-			m.sessions.cursor = (m.sessions.cursor - 1 + len(rows)) % len(rows)
-		}
+	case pickerMoved:
 		return m.relayout(), nil
-
-	case "down", "ctrl+n":
-		if len(rows) > 0 {
-			m.sessions.cursor = (m.sessions.cursor + 1) % len(rows)
-		}
-		return m.relayout(), nil
-
-	case "enter":
-		return m.chooseSession(m.sessions.cursor)
-	}
-
-	if n, err := strconv.Atoi(msg.String()); err == nil && n >= 1 && n <= len(rows) {
-		return m.chooseSession(n - 1)
+	case pickerChose:
+		return m.chooseSession(i)
 	}
 	return m, nil
 }

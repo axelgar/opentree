@@ -61,7 +61,7 @@ var skillsListCmd = &cobra.Command{
 		// The marks column is glyphs, so the legend has to be printed with it.
 		var legend []string
 		for _, agent := range config.PredefinedAgents {
-			legend = append(legend, agent.Mark+" "+agent.Name)
+			legend = append(legend, agent.Brand.Mark+" "+agent.Name)
 		}
 		fmt.Printf("\n%s\n", strings.Join(legend, "  ·  "))
 		return nil

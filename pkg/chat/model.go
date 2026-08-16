@@ -28,27 +28,16 @@ import (
 
 // Options configure one chat session.
 type Options struct {
-	Workspace string   // display name of the worktree
-	Cwd       string   // worktree directory the session is rooted in
-	Agent     string   // agent display name, e.g. "OpenCode"
-	Command   string   // the agent's own binary — what to log in with, and what to name
-	Args      []string // ACP args, including the cwd flag and its value
-	Version   string   // opentree version, sent as clientInfo
+	Workspace string // display name of the worktree
+	Cwd       string // worktree directory the session is rooted in
+	Version   string // opentree version, sent as clientInfo
 
-	// Binary returns the program that serves ACP, which is not always the
-	// agent's own: Claude Code is reached through an adapter. Resolved per
-	// launch rather than once, because installing the adapter moves it — a
-	// path resolved before the install is stale immediately after it.
-	Binary func() string
-
-	// AuthCommand logs the agent in interactively, run in this terminal when
-	// the agent reports it needs credentials.
-	AuthCommand []string
-
-	// InstallHint says where to get the agent's ACP adapter. The chat states
-	// the problem; installing belongs with choosing an agent, not inside a
-	// conversation that cannot start.
-	InstallHint string
+	// Agent is the registry entry this chat drives — never nil, because the
+	// caller refuses to open a chat for an agent outside the registry.
+	// Everything the chat needs about the agent — its binary, its ACP args,
+	// its login command, its branding — is read from here, rather than
+	// travelling as six separate fields that were all projections of it.
+	Agent *config.PredefinedAgent
 
 	// SocketPath is the control socket the workspace list connects to. Empty
 	// disables it.
@@ -72,15 +61,15 @@ type Options struct {
 	ForgetSession func(id string) error
 }
 
-// acpBinary is the program to spawn: the resolver when one is set, otherwise
-// the agent's own binary.
+// acpBinary is the program that serves ACP, which is not always the agent's
+// own: Claude Code is reached through an adapter. Resolved per launch rather
+// than once, because installing the adapter moves it — a path resolved before
+// the install is stale immediately after it.
 func (o Options) acpBinary() string {
-	if o.Binary != nil {
-		if b := o.Binary(); b != "" {
-			return b
-		}
+	if b := o.Agent.ResolveACPCommand(); b != "" {
+		return b
 	}
-	return o.Command
+	return o.Agent.Command
 }
 
 // launcher starts a fresh agent process and completes its handshake. Restart
@@ -123,7 +112,7 @@ func Run(ctx context.Context, opts Options) error {
 	var generation atomic.Int64
 	launch := func() (*acp.Client, *acp.InitializeResponse, int, error) {
 		gen := int(generation.Add(1))
-		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Args, opts.Cwd, handlers)
+		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Agent.ACPArgs(opts.Cwd), opts.Cwd, handlers)
 		if err != nil {
 			// Spawn already names the command; wrapping again produced
 			// "failed to start X: start X: exec: ...".
@@ -480,13 +469,15 @@ type brand struct {
 }
 
 // brand resolves the agent's identity on demand rather than caching it on the
-// Model. The lookup is a six-entry scan, and a cached copy would be one more
-// field every path that builds a Model has to remember to fill.
+// Model — a cached copy would be one more field every path that builds a
+// Model has to remember to fill.
 func (m Model) brand() brand {
-	var b brand
-	b.mark, b.colour, b.name = config.Brand(m.opts.Agent)
-	if a := config.FindAgent(m.opts.Agent); a != nil {
-		b.logo = a.Logo
+	a := m.opts.Agent
+	b := brand{mark: a.Brand.Mark, colour: a.Brand.Colour, name: a.Name, logo: a.Brand.Logo}
+	if b.mark == "" {
+		// An agent with no branding is still named, in grey — inventing a
+		// colour for one would make the colours stop meaning anything.
+		b.mark = "·"
 	}
 	if len(b.logo) == 0 {
 		// An agent with no drawing falls back to its one glyph, so the opening
@@ -563,6 +554,33 @@ func (m Model) overlay() overlay {
 		return overlayHelp
 	}
 	return overlayNone
+}
+
+// overlayDef is everything an overlay owes the frame: the key handler it
+// takes over, the footer height it needs, and the footer it draws. One row
+// per overlay, because these used to be three separate switches that each had
+// to be extended in step — a panel added to the keyboard but not the layout
+// drew at the wrong height, and the compiler had nothing to say about it.
+type overlayDef struct {
+	keys   func(Model, tea.KeyMsg) (tea.Model, tea.Cmd)
+	height func(Model) int
+	view   func(Model) string
+}
+
+// Filled in init rather than declared: the handlers reach relayout, relayout
+// reaches footerHeight, and footerHeight reads this map — a package-level
+// literal would be an initialization cycle.
+var overlayDefs map[overlay]overlayDef
+
+func init() {
+	overlayDefs = map[overlay]overlayDef{
+		overlayPermission: {Model.handlePermissionKey, Model.permissionHeight, Model.permissionView},
+		overlayLogin:      {Model.handleLoginKey, Model.loginHeight, Model.loginView},
+		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
+		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
+		overlaySessions:   {Model.handleSessionsKey, Model.sessionsHeight, Model.sessionsView},
+		overlayHelp:       {Model.handleHelpKey, Model.helpHeight, Model.helpView},
+	}
 }
 
 func (m Model) withAgentInfo(info *acp.InitializeResponse) Model {

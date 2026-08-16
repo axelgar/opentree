@@ -244,5 +244,3 @@ var (
 				Foreground(lipgloss.Color("#888")).
 				Italic(true)
 )
-
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

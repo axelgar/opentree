@@ -314,7 +314,7 @@ func TestSessionPicker_FooterStaysBounded(t *testing.T) {
 	}
 	m.sessions = sessions{open: true, rows: rows}
 
-	if h := m.footerHeight(); h > settingsWindow+8 {
+	if h := m.footerHeight(); h > pickerWindow+8 {
 		t.Errorf("footerHeight = %d, want it capped near the window size", h)
 	}
 	if !strings.Contains(m.sessionsView(), "30") {

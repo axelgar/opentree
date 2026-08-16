@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -17,7 +18,13 @@ type PredefinedAgent struct {
 	Description string // short description for list display
 	ACP         ACPSpec
 	Skills      SkillsSpec
+	Brand       BrandSpec
+}
 
+// BrandSpec is the agent's identity on screen, grouped the way ACPSpec and
+// SkillsSpec are: an entry's wire, its skills and its look each change for
+// their own reasons.
+type BrandSpec struct {
 	// Colour and Mark are the agent's identity in a crowded line. A worktree
 	// row has no space for a drawing, but it has space for one glyph, and a
 	// colour tells the eye which agent it is before the name is read.
@@ -139,13 +146,13 @@ var PredefinedAgents = []PredefinedAgent{
 	{Name: "OpenCode", Command: "opencode", Description: "AI coding agent with TUI",
 		// opencode's own wordmark and its brand grey, transcribed from its
 		// splash screen. The stray ▄ is the ascender on the d.
-		Colour: "#CFCECD", Mark: "◆",
-		Logo: []string{
-			"                                 ▄",
-			"█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█",
-			"█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀",
-			"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
-		},
+		Brand: BrandSpec{Colour: "#CFCECD", Mark: "◆",
+			Logo: []string{
+				"                                 ▄",
+				"█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█",
+				"█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀",
+				"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
+			}},
 		ACP: ACPSpec{Args: []string{"acp"}, CwdFlag: "--cwd", AuthCommand: []string{"auth", "login"}},
 		// opencode spells its own trees "skill(s)" — both singular and plural are
 		// read — and auto-loads two it does not own.
@@ -176,12 +183,12 @@ var PredefinedAgents = []PredefinedAgent{
 	{Name: "Claude Code", Command: "claude", Description: "Anthropic's CLI coding agent",
 		// Claude Code's own mark, transcribed from its welcome banner, in
 		// Anthropic's clay.
-		Colour: "#D97757", Mark: "✻",
-		Logo: []string{
-			" ▐▛███▜▌",
-			"▝▜█████▛▘",
-			"  ▘▘ ▝▝",
-		},
+		Brand: BrandSpec{Colour: "#D97757", Mark: "✻",
+			Logo: []string{
+				" ▐▛███▜▌",
+				"▝▜█████▛▘",
+				"  ▘▘ ▝▝",
+			}},
 		// Claude Code has no ACP mode of its own; claude-agent-acp bridges it,
 		// reusing the same login. Install with
 		// `npm i -g @agentclientprotocol/claude-agent-acp`.
@@ -207,13 +214,13 @@ var PredefinedAgents = []PredefinedAgent{
 	{Name: "GitHub Copilot", Command: "copilot", Description: "GitHub Copilot in the CLI",
 		// Copilot's own face, transcribed from its welcome banner, in GitHub's
 		// purple.
-		Colour: "#A371F7", Mark: "◉",
-		Logo: []string{
-			"╭─╮╭─╮",
-			"╰─╯╰─╯",
-			"█ ▘▝ █",
-			" ▔▔▔▔",
-		},
+		Brand: BrandSpec{Colour: "#A371F7", Mark: "◉",
+			Logo: []string{
+				"╭─╮╭─╮",
+				"╰─╯╰─╯",
+				"█ ▘▝ █",
+				" ▔▔▔▔",
+			}},
 		// Copilot serves ACP itself, and its login is a verb on the same binary
 		// rather than the `auth login` pair the other two use.
 		ACP: ACPSpec{Args: []string{"--acp"}, AuthCommand: []string{"login"}},
@@ -238,13 +245,13 @@ var PredefinedAgents = []PredefinedAgent{
 	{Name: "Gemini CLI", Command: "gemini", Description: "Google Gemini CLI agent",
 		// Gemini CLI's sparkle and wordmark, transcribed from its splash screen,
 		// in Google's blue.
-		Colour: "#4285F4", Mark: "✦",
-		Logo: []string{
-			" ▝▜▄      ▗█▀▀▜▙▝█▛▀▀▌▜██▖▟██▘▜█▘▜██▖▝█▛▝█▛",
-			"   ▝▜▄    █▌     █▙▟  ▐█▝█▛▐█ ▐█ ▐█▝█▖█▌ █▌",
-			"  ▗▟▀     ▜▙ ▝█▛ █▌▝ ▖▐█   ▐█ ▐█ ▐█ ▝██▌ █▌",
-			" ▝▀        ▀▀▀▀▘▝▀▀▀▀▘▀▀▘  ▀▀▘▀▀▘▀▀▘ ▝▀▀▝▀▀",
-		},
+		Brand: BrandSpec{Colour: "#4285F4", Mark: "✦",
+			Logo: []string{
+				" ▝▜▄      ▗█▀▀▜▙▝█▛▀▀▌▜██▖▟██▘▜█▘▜██▖▝█▛▝█▛",
+				"   ▝▜▄    █▌     █▙▟  ▐█▝█▛▐█ ▐█ ▐█▝█▖█▌ █▌",
+				"  ▗▟▀     ▜▙ ▝█▛ █▌▝ ▖▐█   ▐█ ▐█ ▐█ ▝██▌ █▌",
+				" ▝▀        ▀▀▀▀▘▝▀▀▀▀▘▀▀▘  ▀▀▘▀▀▘▀▀▘ ▝▀▀▝▀▀",
+			}},
 		// `--acp` since 0.55; `--experimental-acp` is the deprecated spelling.
 		//
 		// No AuthCommand: Gemini has no login subcommand — it authenticates from
@@ -285,7 +292,7 @@ var PredefinedAgents = []PredefinedAgent{
 // than absent: an unknown agent should still be named in the list.
 func Brand(name string) (mark, colour, display string) {
 	if a := FindAgent(name); a != nil {
-		return a.Mark, a.Colour, a.Name
+		return a.Brand.Mark, a.Brand.Colour, a.Name
 	}
 	return "·", "", name
 }
@@ -355,6 +362,14 @@ func AgentCommands() []string {
 // messages.
 func knownAgentCommands() string {
 	return strings.Join(AgentCommands(), ", ")
+}
+
+// UnknownAgentError is the refusal for a name outside the registry. Every
+// place that refuses says this one sentence — config validation, workspace
+// launch, `opentree chat` — so it is built here and rewording it is one edit.
+func UnknownAgentError(command string) error {
+	return fmt.Errorf("opentree cannot drive %q — it speaks the Agent Client Protocol, and only these agents do: %s",
+		command, knownAgentCommands())
 }
 
 // AgentNames returns display names of all predefined agents.
