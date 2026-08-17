@@ -441,6 +441,10 @@ type Model struct {
 	// enough that rebuilding the map for each frame would be felt.
 	known map[string]bool
 
+	// history is the messages this box has already sent, for the arrows to
+	// walk back through.
+	history history
+
 	// pending holds images pasted but not yet sent. They cannot go into the
 	// textarea — there is no path to type, the bytes came off the clipboard —
 	// so they wait beside it and lead the next prompt.

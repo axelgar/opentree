@@ -188,6 +188,7 @@ agent's own logo, in its own colours:
 | --- | --- |
 | `enter` | send |
 | `ctrl+j` | newline |
+| `↑` / `↓` | walk back through the messages already sent, and forward again |
 | `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
@@ -205,6 +206,12 @@ that is `ctrl+v` and not `cmd+v`: `cmd+v` is the terminal's own paste, and a
 terminal asked to paste a picture sends nothing at all. An agent that does not
 take images gets the path as a link instead, and the chat says so rather than
 letting the difference go unnoticed.
+
+**Messages you already sent.** `↑` puts the last one back in the box, `↓` walks
+forward again, and coming back past the newest returns whatever was half typed
+when you started looking — so a prompt worth repeating, or repeating with one
+word changed, is a keypress away rather than a retype. Inside a message the
+arrows still move the cursor: they only recall from its first and last row.
 
 **Earlier conversations.** `/resume` lists what this worktree has already
 talked about — newest first, by what each conversation was about — and picking

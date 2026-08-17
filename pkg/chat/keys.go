@@ -15,9 +15,17 @@ type keyMap struct {
 	Thoughts  key.Binding
 	Paste     key.Binding
 	Help      key.Binding
-	Restart   key.Binding
-	Login     key.Binding
-	Back      key.Binding
+
+	// HistoryPrev and HistoryNext walk the messages already sent. They are two
+	// bindings and one help entry: they are one gesture to learn, and a status
+	// line with room for five keys should not spend two of them saying ↑ and
+	// then ↓.
+	HistoryPrev key.Binding
+	HistoryNext key.Binding
+
+	Restart key.Binding
+	Login   key.Binding
+	Back    key.Binding
 
 	// The setup phase's own three. Approve and Decline are the permission
 	// dialog's letters, deliberately: this is the same question — may opentree
@@ -44,7 +52,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 // FullHelp is every key, grouped by what it is for.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste},
+		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts},
 		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
 	}
@@ -117,6 +125,16 @@ var keys = keyMap{
 	Paste: key.NewBinding(
 		key.WithKeys("ctrl+v"),
 		key.WithHelp("ctrl+v", "paste"),
+	),
+	// The arrows, which the message box also wants: they only recall from the
+	// edges of what is written, so moving the cursor inside a message still
+	// works. Only the first carries help text — one entry describes both.
+	HistoryPrev: key.NewBinding(
+		key.WithKeys("up"),
+		key.WithHelp("↑/↓", "earlier messages"),
+	),
+	HistoryNext: key.NewBinding(
+		key.WithKeys("down"),
 	),
 	// A printable character, so it only opens the key list when the message is
 	// empty — typing "?" into a question must reach the textarea.
