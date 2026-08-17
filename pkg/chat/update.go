@@ -131,7 +131,9 @@ func (m Model) currentTool() string {
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+	// namedKey first, so a key the terminal spelled out in full arrives at
+	// the switch under a name the bindings can be written against.
+	switch msg := namedKey(msg).(type) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height

@@ -79,10 +79,11 @@ func (c *Controller) newWindow(name, workdir string, env []string, trailing ...s
 			return "", fmt.Errorf("failed to create tmux session: %w", err)
 		}
 	} else {
-		// Sessions predating this option, or made by hand, get it too — setting
-		// it is idempotent and cheaper than explaining why one repo's windows
-		// scroll and another's do not.
+		// Sessions predating these options, or made by hand, get them too —
+		// setting them is idempotent and cheaper than explaining why one repo's
+		// windows scroll and another's do not.
 		c.enableMouse(sessionName)
+		c.enableExtendedKeys()
 	}
 
 	args := []string{"new-window", "-t", exactSession(sessionName) + ":",
@@ -525,6 +526,7 @@ func (c *Controller) createSession(name string) error {
 		return fmt.Errorf("failed to create session: %w\nOutput: %s", err, output)
 	}
 	c.enableMouse(name)
+	c.enableExtendedKeys()
 	return nil
 }
 
@@ -546,6 +548,24 @@ func (c *Controller) createSession(name string) error {
 // accepted, which is why it is what new-window uses too.
 func (c *Controller) enableMouse(session string) {
 	_ = exec.Command("tmux", "set-option", "-t", exactSession(session)+":", "mouse", "on").Run()
+}
+
+// enableExtendedKeys lets a program in a pane be told which modifier was held.
+// Without it tmux reports shift+enter as a bare carriage return — the same
+// thing enter sends — and the chat cannot offer the key everything else in a
+// terminal offers for a second line.
+//
+// "on" rather than "always": on means tmux passes modified keys only to the
+// programs that ask for them, which is every program that can read them and no
+// program that cannot. The agents' own TUIs ask; a shell in a neighbouring
+// window does not, and sees exactly what it saw before.
+//
+// Unlike mouse this is a server option, which tmux offers no way to scope
+// narrower — so this is the one setting opentree changes beyond its own
+// session. Best-effort, like the mouse: a tmux too old to know the option is
+// not a reason to fail creating a window.
+func (c *Controller) enableExtendedKeys() {
+	_ = exec.Command("tmux", "set-option", "-s", "extended-keys", "on").Run()
 }
 
 // RunSuffix marks a workspace's second window, the one holding its dev server:

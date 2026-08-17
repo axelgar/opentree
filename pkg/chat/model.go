@@ -190,7 +190,12 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
+	// Asked for around the program rather than inside it: bubbletea v1 has no
+	// name for these keys, so it has no opinion about requesting them either,
+	// and the restore has to happen after it has put the terminal back.
+	restore := extendedKeys()
 	final, err := p(m).Run()
+	restore()
 	close(quit)
 	if fm, ok := final.(Model); ok && fm.client != nil {
 		fm.endSession()
