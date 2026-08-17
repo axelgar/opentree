@@ -190,7 +190,12 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
+	// Asked for around the program rather than inside it: bubbletea v1 has no
+	// name for these keys, so it has no opinion about requesting them either,
+	// and the restore has to happen after it has put the terminal back.
+	restore := extendedKeys()
 	final, err := p(m).Run()
+	restore()
 	close(quit)
 	if fm, ok := final.(Model); ok && fm.client != nil {
 		fm.endSession()
@@ -440,6 +445,10 @@ type Model struct {
 	// on screen to decide what to colour, and a worktree's file list is long
 	// enough that rebuilding the map for each frame would be felt.
 	known map[string]bool
+
+	// history is the messages this box has already sent, for the arrows to
+	// walk back through.
+	history history
 
 	// pending holds images pasted but not yet sent. They cannot go into the
 	// textarea — there is no path to type, the bytes came off the clipboard —

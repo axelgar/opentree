@@ -26,7 +26,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 ## Requirements
 
 - **Git** (2.5+) - for worktree support
-- **tmux** (3.0+) - for session orchestration
+- **tmux** (3.0+) - for session orchestration (3.2+ to type `shift+enter` in the chat)
 - **A coding agent** (optional) - OpenCode (the default), Claude Code, GitHub Copilot CLI or Gemini CLI
 - **GitHub CLI** (`gh`) (optional) - for PR creation and issue fetching ([install](https://cli.github.com/))
 - **Node** (optional) - only to run Claude Code through its ACP adapter
@@ -187,7 +187,8 @@ agent's own logo, in its own colours:
 | Key | |
 | --- | --- |
 | `enter` | send |
-| `ctrl+j` | newline |
+| `shift+enter` | newline — `ctrl+j` where the terminal cannot report modifiers |
+| `↑` / `↓` | walk back through the messages already sent, and forward again |
 | `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
@@ -197,6 +198,20 @@ agent's own logo, in its own colours:
 | `ctrl+o` | show or hide the agent's reasoning |
 | `?` | every key |
 
+**Newlines.** `shift+enter` breaks the line instead of sending it, with nothing
+to configure. A terminal left to itself sends a bare carriage return for
+`shift+enter` — the same byte `enter` sends, and nothing downstream can tell the
+two apart — so the chat asks it for modified keys on the way in (xterm's
+`modifyOtherKeys`, level 1, put back on the way out), and sets `extended-keys`
+on its own tmux session so tmux passes them through. That is the whole reason
+the key works here and not in every terminal program.
+
+Level 1 is the conservative request: only keys that had no encoding of their own
+gain one, so `esc`, `ctrl+j` and the arrows are the bytes they always were, and a
+window running something else is untouched — tmux only forwards modified keys to
+programs that ask for them. In a terminal that cannot report modifiers at all
+(Terminal.app), `ctrl+j` and `alt+enter` still do it.
+
 **Images.** Press `ctrl+v` to attach a screenshot from the clipboard, or drag one
 onto the terminal. Either way the path collapses into `[image · shot.png · 412 KB]`
 in the message you are writing — backspace over it and the attachment goes with
@@ -205,6 +220,12 @@ that is `ctrl+v` and not `cmd+v`: `cmd+v` is the terminal's own paste, and a
 terminal asked to paste a picture sends nothing at all. An agent that does not
 take images gets the path as a link instead, and the chat says so rather than
 letting the difference go unnoticed.
+
+**Messages you already sent.** `↑` puts the last one back in the box, `↓` walks
+forward again, and coming back past the newest returns whatever was half typed
+when you started looking — so a prompt worth repeating, or repeating with one
+word changed, is a keypress away rather than a retype. Inside a message the
+arrows still move the cursor: they only recall from its first and last row.
 
 **Earlier conversations.** `/resume` lists what this worktree has already
 talked about — newest first, by what each conversation was about — and picking

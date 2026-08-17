@@ -1,6 +1,12 @@
 package chat
 
-import "github.com/charmbracelet/bubbles/key"
+import (
+	"fmt"
+	"os"
+
+	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 type keyMap struct {
 	Send      key.Binding
@@ -15,9 +21,17 @@ type keyMap struct {
 	Thoughts  key.Binding
 	Paste     key.Binding
 	Help      key.Binding
-	Restart   key.Binding
-	Login     key.Binding
-	Back      key.Binding
+
+	// HistoryPrev and HistoryNext walk the messages already sent. They are two
+	// bindings and one help entry: they are one gesture to learn, and a status
+	// line with room for five keys should not spend two of them saying ↑ and
+	// then ↓.
+	HistoryPrev key.Binding
+	HistoryNext key.Binding
+
+	Restart key.Binding
+	Login   key.Binding
+	Back    key.Binding
 
 	// The setup phase's own three. Approve and Decline are the permission
 	// dialog's letters, deliberately: this is the same question — may opentree
@@ -44,7 +58,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 // FullHelp is every key, grouped by what it is for.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste},
+		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts},
 		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
 	}
@@ -66,9 +80,16 @@ var keys = keyMap{
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "send"),
 	),
+	// Three keys for one gesture, because a terminal has three ways of
+	// saying shift+enter: "shift+enter" for a runtime that names the key,
+	// alt+enter for the ESC CR a terminal sends for enter held with a
+	// modifier it cannot report, and ctrl+j for a terminal that reports no
+	// modifiers at all — the last one being what the help pointed at for as
+	// long as it was the only one that always arrived. The extended-key
+	// request below is what turns the first into the common case.
 	Newline: key.NewBinding(
-		key.WithKeys("ctrl+j"),
-		key.WithHelp("ctrl+j", "newline"),
+		key.WithKeys("shift+enter", "alt+enter", "ctrl+j"),
+		key.WithHelp("shift+enter", "newline"),
 	),
 	Cancel: key.NewBinding(
 		key.WithKeys("esc"),
@@ -118,6 +139,16 @@ var keys = keyMap{
 		key.WithKeys("ctrl+v"),
 		key.WithHelp("ctrl+v", "paste"),
 	),
+	// The arrows, which the message box also wants: they only recall from the
+	// edges of what is written, so moving the cursor inside a message still
+	// works. Only the first carries help text — one entry describes both.
+	HistoryPrev: key.NewBinding(
+		key.WithKeys("up"),
+		key.WithHelp("↑/↓", "earlier messages"),
+	),
+	HistoryNext: key.NewBinding(
+		key.WithKeys("down"),
+	),
 	// A printable character, so it only opens the key list when the message is
 	// empty — typing "?" into a question must reach the textarea.
 	Help: key.NewBinding(
@@ -153,4 +184,95 @@ var keys = keyMap{
 	// with no keys from the help entirely.
 	Commands: key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "commands")),
 	Mentions: key.NewBinding(key.WithKeys("@"), key.WithHelp("@", "attach a file")),
+}
+
+// ---------------------------------------------------------------------------
+// Keys the runtime has no name for
+// ---------------------------------------------------------------------------
+
+// modifyOtherKeys is xterm's request for the terminal to report the keys that
+// have no encoding of their own — shift+enter being the one the message box
+// wants, since a terminal left to itself sends a bare CR for it, the same byte
+// enter sends and indistinguishable from it.
+//
+// Level 1 is the conservative one: every key that already has a well-known
+// encoding keeps it, so esc stays esc and ctrl+j stays ctrl+j. Level 2 would
+// re-encode those too, and nothing here can read them.
+const (
+	modifyOtherKeysOn  = "\x1b[>4;1m"
+	modifyOtherKeysOff = "\x1b[>4;0m"
+)
+
+// extendedKeys asks the terminal for modified keys and returns the undo, which
+// the caller owes it: the mode outlives the program, and a terminal left in it
+// reports keys to a shell that never asked.
+//
+// This is what makes shift+enter work with nothing for the reader to configure.
+// Inside tmux it takes tmux's cooperation as well: tmux answers this request
+// only when its own extended-keys option is on, which is why opentree sets that
+// when it makes a window.
+func extendedKeys() func() {
+	f := os.Stdout
+	if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		// Not a terminal: there is nobody to ask, and the sequence would land
+		// in whatever the output was redirected into.
+		return func() {}
+	}
+	_, _ = f.WriteString(modifyOtherKeysOn)
+	return func() { _, _ = f.WriteString(modifyOtherKeysOff) }
+}
+
+// enterKeys is every way a terminal that reports modified keys can say enter,
+// as bubbletea prints it, and what each one means to the message box. Both
+// formats are here because terminals differ and tmux picks between them with
+// its extended-keys-format option: xterm's CSI 27;mod;13~, and the CSI 13;mod u
+// of the newer protocols.
+//
+// mod is a bitmask plus one — shift 1, alt 2, ctrl 4, super 8 — so counting to
+// 16 covers every combination of the four, and each of them breaks the line.
+// Which modifier was held is not a distinction worth making the reader
+// remember: enter alone sends, enter with anything else does not.
+//
+// The sequences are kept as what bubbletea prints for them rather than as the
+// bytes: a CSI sequence it cannot name reaches Update as a type it keeps to
+// itself, so what it prints is the only handle on it there is.
+var enterKeys = func() map[string]tea.KeyMsg {
+	m := make(map[string]tea.KeyMsg, 32)
+	for mod := 1; mod <= 16; mod++ {
+		// alt+enter rather than a shift+enter of its own: every modified enter
+		// means the same thing here, and alt+enter is the one bubbletea already
+		// produces by itself — from the ESC CR a terminal sends for it whether
+		// or not it reports modifiers.
+		key := tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+		if mod == 1 {
+			// No modifier held at all. A terminal asked for level 1 keeps
+			// sending a bare CR for this, so it should never arrive — but one
+			// that did and was dropped would read as a chat that cannot send,
+			// which is too poor a failure to leave to a should.
+			key = tea.KeyMsg{Type: tea.KeyEnter}
+		}
+		m[unknownCSI(fmt.Sprintf("27;%d;13~", mod))] = key
+		m[unknownCSI(fmt.Sprintf("13;%du", mod))] = key
+	}
+	return m
+}()
+
+// unknownCSI is how bubbletea prints a CSI sequence it has no name for: the
+// bytes after the introducer, which is exactly what tells one from another.
+func unknownCSI(seq string) string {
+	return fmt.Sprintf("?CSI%+v?", []byte(seq))
+}
+
+// namedKey gives an enter the terminal spelled out in full the name bubbletea
+// would have given it if it knew the sequence, so the message box can bind it
+// like any other key. Everything else passes through untouched.
+func namedKey(msg tea.Msg) tea.Msg {
+	s, ok := msg.(fmt.Stringer)
+	if !ok {
+		return msg
+	}
+	if key, ok := enterKeys[s.String()]; ok {
+		return key
+	}
+	return msg
 }

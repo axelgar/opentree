@@ -131,7 +131,9 @@ func (m Model) currentTool() string {
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+	// namedKey first, so a key the terminal spelled out in full arrives at
+	// the switch under a name the bindings can be written against.
+	switch msg := namedKey(msg).(type) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -465,6 +467,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.HalfPageDown()
 		return m.relayout(), nil
 
+	// The message box keeps the arrows while there is somewhere to go inside
+	// it, and only lends them out from its edges: up recalls from the first
+	// row, down moves on from the last. A one-line message — which is most of
+	// them — is on both edges at once, so the arrows recall on every press,
+	// while a recalled paragraph can still be walked through and edited.
+	case key.Matches(msg, m.keys.HistoryPrev) && m.atFirstRow():
+		return m.recall(-1)
+
+	case key.Matches(msg, m.keys.HistoryNext) && m.history.walking() && m.atLastRow():
+		return m.recall(+1)
+
 	case key.Matches(msg, m.keys.Send):
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
@@ -472,16 +485,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// opentree's own commands never reach the agent.
 		if run, ok := m.clientCommandFor(text); ok {
-			m.input.Reset()
-			m.completion = completionState{}
-			return run(m)
+			return run(m.sent(text))
 		}
 		if m.turn || m.sessionID == "" {
 			return m, nil
 		}
-		m.input.Reset()
-		m.completion = completionState{}
-		return m.startTurn(text)
+		return m.sent(text).startTurn(text)
 	}
 
 	before := m.input.Value()
@@ -496,6 +505,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m = m.refreshCompletion()
 	return m, cmd
+}
+
+// sent empties the message box now that its contents have gone, and files them
+// for the arrows to find again.
+func (m Model) sent(text string) Model {
+	m.history = m.history.record(text)
+	m.input.Reset()
+	m.completion = completionState{}
+	return m
+}
+
+// recall puts a message sent earlier back in the box.
+//
+// The palette closes rather than reopening on whatever the remembered message
+// ends with: recalling is not typing, and a message that ended in "@main.go"
+// should come back as it was sent, not with six files offered under it.
+//
+// ponytail: the text, which is all a message box can hold. A remembered message
+// that carried a pasted image comes back with the label the image left behind,
+// and the label is what would be sent — the bytes went with the message that
+// carried them. Attaching it again is one ctrl+v.
+func (m Model) recall(delta int) (tea.Model, tea.Cmd) {
+	next, text, ok := m.history.walk(delta, m.input.Value())
+	if !ok {
+		return m, nil
+	}
+	m.history = next
+	// SetValue leaves the cursor at the end of what it inserted, which is where
+	// someone who pressed up to change the last word wants it.
+	m.input.SetValue(text)
+	m.completion = completionState{}
+	return m.relayout(), nil
+}
+
+// atFirstRow and atLastRow report where the cursor sits in the message box,
+// counting the rows the box wrapped a long line onto rather than only the lines
+// that were typed — a paragraph folded onto three rows is three presses tall
+// whether or not anybody pressed ctrl+j.
+func (m Model) atFirstRow() bool {
+	return m.input.Line() == 0 && m.input.LineInfo().RowOffset == 0
+}
+
+func (m Model) atLastRow() bool {
+	li := m.input.LineInfo()
+	return m.input.Line() == m.input.LineCount()-1 && li.RowOffset == li.Height-1
 }
 
 // attachDropped turns an image path that just landed in the message into an

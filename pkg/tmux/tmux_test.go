@@ -299,6 +299,90 @@ func TestCreateSession(t *testing.T) {
 	}
 }
 
+// A window opentree made passes modified keys through to the program in it, so
+// the chat can offer shift+enter to someone who configured nothing. tmux
+// answers a program's request for those keys only when its own extended-keys
+// option is on, and that option is off by default — so both halves are checked:
+// that opentree turned it on, and that a program asking in a window opentree
+// made is actually answered.
+func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
+	if !isTmuxAvailable() {
+		t.Skip("tmux not available, skipping integration test")
+	}
+	if _, err := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output(); err != nil {
+		t.Skip("tmux predates the extended-keys option, skipping")
+	}
+
+	// The developer's own tmux server is the one under test, since that is the
+	// one opentree talks to. Whatever it was set to is put back.
+	before, err := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output()
+	if err != nil {
+		t.Fatalf("reading extended-keys failed: %v", err)
+	}
+	defer exec.Command("tmux", "set-option", "-s", "extended-keys", strings.TrimSpace(string(before))).Run() //nolint:errcheck // best-effort cleanup
+	exec.Command("tmux", "set-option", "-s", "extended-keys", "off").Run()                                   //nolint:errcheck // the state a new machine is in
+
+	ctrl := New("test-opentree-extkeys")
+	sessionName := ctrl.getSessionName()
+	exec.Command("tmux", "kill-session", "-t", sessionName).Run() //nolint:errcheck // may not exist yet
+	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	// A program that asks for modified keys the way the chat does, and stays
+	// alive long enough to be asked about.
+	const asks = `printf '\033[>4;1m'; sleep 30`
+	if err := ctrl.CreateAppWindow("extkeys", "/tmp", "sh", nil, "-c", asks); err != nil {
+		t.Fatalf("CreateAppWindow() failed: %v", err)
+	}
+
+	got, err := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output()
+	if err != nil {
+		t.Fatalf("reading extended-keys back failed: %v", err)
+	}
+	if s := strings.TrimSpace(string(got)); s != "on" {
+		t.Errorf("extended-keys = %q after creating a window, want %q", s, "on")
+	}
+
+	// And again for a session that already exists, which is what everyone who
+	// installed opentree before this has: the option is set per window created,
+	// not once when the session is made.
+	exec.Command("tmux", "set-option", "-s", "extended-keys", "off").Run() //nolint:errcheck // best-effort
+	if err := ctrl.CreateAppWindow("extkeys-again", "/tmp", "sleep", nil, "30"); err != nil {
+		t.Fatalf("second CreateAppWindow() failed: %v", err)
+	}
+	got, err = exec.Command("tmux", "show-options", "-sv", "extended-keys").Output()
+	if err != nil {
+		t.Fatalf("reading extended-keys back failed: %v", err)
+	}
+	if s := strings.TrimSpace(string(got)); s != "on" {
+		t.Errorf("extended-keys = %q after a window in an existing session, want %q", s, "on")
+	}
+
+	windowID, err := ctrl.findWindowID("extkeys")
+	if err != nil {
+		t.Fatalf("findWindowID() failed: %v", err)
+	}
+	// pane_key_mode reads "Ext 1" once tmux has taken the program's request.
+	// It arrives with the program rather than with the window, so it is worth
+	// a moment's wait before giving up on it.
+	var mode string
+	for range 20 {
+		out, err := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_key_mode}").Output()
+		if err != nil {
+			t.Fatalf("reading pane_key_mode failed: %v", err)
+		}
+		if mode = strings.TrimSpace(string(out)); mode == "" {
+			t.Skip("tmux does not report pane_key_mode, skipping the delivery half")
+		}
+		if mode != "VT10x" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if mode != "Ext 1" {
+		t.Errorf("pane key mode = %q, want %q — the program asked for modified keys and tmux did not take it", mode, "Ext 1")
+	}
+}
+
 // CreateAppWindow runs the program as the window's own process. A long-lived
 // one is used so the window is still there to be listed.
 func TestCreateAppWindow(t *testing.T) {
