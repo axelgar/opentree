@@ -6,33 +6,162 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+# Two tags pushed together must not race for the same npm version.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  goreleaser:
+  # A tag used to publish straight to GitHub, Homebrew and npm without a single
+  # test having run. npm versions are immutable and Homebrew installs are
+  # instant, so a bad tag was permanent. Now the tag has to pass everything main
+  # passes, first.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  preflight:
+    name: Preflight
     runs-on: ubuntu-latest
+    needs: ci
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - name: Tag is a release version
+        id: tag
+        run: |
+          tag=${GITHUB_REF_NAME}
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$tag' is not vMAJOR.MINOR.PATCH — goreleaser and npm both derive versions from it"
+            exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not reachable from main — releases ship reviewed code"
+            exit 1
+          fi
+
+      - name: Version is not already published
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # npm rejects a re-publish anyway, but it does so *after* the platform
+          # packages are live, which is the worst possible moment to find out.
+          if npm view "@axelgar/opentree@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@axelgar/opentree@$VERSION is already on npm — versions are immutable, bump the tag"
+            exit 1
+          fi
+
+      - name: npm packaging is publishable
+        run: ./scripts/check-npm-packages.sh
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # Both credentials get used *after* goreleaser has already created the
+      # GitHub release and pushed the tag's archives. An expired npm token would
+      # therefore leave a published GitHub release with no npm package, and an
+      # expired tap PAT a release nobody can `brew upgrade` to — both needing a
+      # new version to fix, because the tag is spent. Check them while nothing
+      # has been published yet.
+      - name: Publishing credentials are valid
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          fail=0
+
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN is not set"
+            fail=1
+          elif ! who=$(npm whoami 2>&1); then
+            echo "::error::NPM_TOKEN is rejected by the registry: ${who}"
+            fail=1
+          else
+            echo "  npm: authenticated as ${who}"
+          fi
+
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set"
+            fail=1
+          elif ! GH_TOKEN="${TAP_TOKEN}" gh api repos/axelgar/homebrew-tap --jq .full_name; then
+            echo "::error::HOMEBREW_TAP_GITHUB_TOKEN cannot reach axelgar/homebrew-tap (expired, or missing the contents scope)"
+            fail=1
+          fi
+
+          exit $fail
+
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    needs: preflight
+    permissions:
+      # goreleaser creates the GitHub release and uploads the archives.
+      contents: write
+      # npm provenance: the registry signs an attestation tying each tarball to
+      # this workflow run and this commit, so anyone installing can verify the
+      # binary came from this repo rather than from a leaked publish token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Toolchain matches the go.mod pin
+        # go.mod pins the toolchain because of standard-library advisories. The
+        # released binary is the one where that actually matters.
+        run: ./scripts/check-toolchain.sh
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish to npm
-        run: ./scripts/npm-publish.sh ${{ github.ref_name }}
+        run: ./scripts/npm-publish.sh "${GITHUB_REF_NAME}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+
+      - name: Verify the published install works
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          # The npm registry is read-through-cached; give it a moment to serve
+          # what we just wrote before declaring the release good.
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "@axelgar/opentree@$VERSION" version >/dev/null 2>&1; then break; fi
+            echo "waiting for the registry to serve $VERSION (attempt $attempt)"
+            sleep 10
+          done
+          tmp=$(mktemp -d)
+          npm install --prefix "$tmp" "@axelgar/opentree@$VERSION"
+          got=$("$tmp/node_modules/.bin/opentree" --version)
+          echo "installed: $got"
+          case "$got" in
+            *"$VERSION"*) echo "npm install of $VERSION works end to end" ;;
+            *) echo "::error::installed binary reports '$got', expected $VERSION"; exit 1 ;;
+          esac

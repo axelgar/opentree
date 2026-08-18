@@ -12,6 +12,9 @@
 # Output of the go coverage tool
 *.out
 
+# `go test -json` transcripts, written by `make check-all` and by CI
+test-output.json
+
 # Go workspace file
 go.work
 go.work.sum

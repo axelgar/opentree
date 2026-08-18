@@ -1,14 +1,94 @@
+# The pinned golangci-lint version lives in .golangci-version, so CI, the
+# Makefile and CONTRIBUTING.md cannot drift apart. A v1 binary misreads this
+# file and reports issues CI does not.
 version: "2"
 linters:
   enable:
     - gosec
     - misspell
     - revive
+
+    # ── Bugs the default set does not catch ──────────────────────────────────
+    # opentree wraps a lot of errors on their way up to the TUI. errorlint
+    # catches the %v that silently severs an errors.Is chain, so a
+    # "does this worktree exist" check stops recognising its own sentinel.
+    - errorlint
+    # An unchecked x.(T) panics. In a bubbletea Update loop that takes the whole
+    # TUI down mid-session, and the user loses their place.
+    - forcetypeassert
+    # `if err != nil { return nil }` — the shape that turns a failed git command
+    # into a silently empty worktree list.
+    - nilerr
+    # HTTP bodies left open leak a connection per skills-registry fetch.
+    - bodyclose
+    # A context stored back into a struct field inside a loop grows a chain of
+    # cancels that never unwinds.
+    - fatcontext
+    # make([]T, n) then append — the classic way to ship n zero values ahead of
+    # the real ones.
+    - makezero
+    - durationcheck
+    # Shadowing `len`, `cap` or `new` reads fine and means something else.
+    - predeclared
+    - errname
+    - unconvert
+    - wastedassign
+    - usestdlibvars
+    - intrange
+    - copyloopvar
+    - nakedret
+    - gocritic
+
+    # ── Test quality ─────────────────────────────────────────────────────────
+    # A helper without t.Helper() reports failures against its own line, which
+    # is the wrong line in every one of this repo's table-driven tests.
+    - thelper
+    - tparallel
+
+    # Deliberately NOT enabled: noctx. It flags net.Listen on a unix socket and
+    # net.DialTimeout — both of which already bound themselves — and it flags
+    # pkg/bootstrap/setup.go, which watches ctx by hand precisely so it can kill
+    # the whole process group rather than only the direct child the way
+    # CommandContext would. Seven suppressions for one real finding teaches
+    # people to reach for //nolint, which costs more than the linter is worth.
+
   settings:
     revive:
       rules:
         - name: exported
           disabled: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        # Flags the guard-clause style this codebase uses deliberately.
+        - ifElseChain
+        # Would rewrite readable switch statements into maps.
+        - singleCaseSwitch
+        # Too eager about passing large structs by pointer; the TUI models are
+        # value types on purpose (bubbletea copies them anyway).
+        - hugeParam
+        - rangeValCopy
+        # 0o755 over 0755 — a Go 1.13 spelling this codebase has no reason to
+        # adopt across every os.MkdirAll it has.
+        - octalLiteral
+        # Wants a call hoisted out of `return m, m.errCmd(...)`. The evaluation
+        # order it warns about is only observable if the call mutates m, and in
+        # a bubbletea Update that returns a copy, it cannot.
+        - evalOrder
+        # Style-only, and each disagrees with a convention already used
+        # consistently here.
+        - unnamedResult
+        - typeDefFirst
+        - importShadow
+        - initClause
+        - emptyStringTest
+    nakedret:
+      # A naked return is fine in a five-line function and unreadable in a fifty.
+      max-func-lines: 20
+
   exclusions:
     generated: lax
     presets:
@@ -20,9 +100,12 @@ linters:
       - linters:
           - errcheck
           - gosec
+          - forcetypeassert
         path: _test\.go
       # G204: every exec.Command passes args as argv (never through a shell), so
       # dynamic-arg subprocess calls cannot inject shell metacharacters here.
+      # CodeQL's security-extended taint queries cover this ground instead
+      # (.github/workflows/codeql.yml).
       - linters:
           - gosec
         text: G204
@@ -36,6 +119,10 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      # Worktrees created while dogfooding opentree in its own repo are full
+      # checkouts of this project. Linting them lints the same code twice, and
+      # at whatever revision the worktree happens to sit on.
+      - \.opentree/
 formatters:
   enable:
     - gofmt
@@ -50,3 +137,4 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - \.opentree/

@@ -16,7 +16,12 @@ archives:
   - formats: [tar.gz]
 
 brews:
-  - repository:
+  # A tap formula has no notion of a prerelease channel: whatever is in it is
+  # what `brew install opentree` gets. "auto" leaves the tap alone when the tag
+  # carries a prerelease suffix, so a v1.2.0-rc.1 does not become everyone's
+  # opentree. npm-publish.sh makes the same distinction with its dist-tag.
+  - skip_upload: "auto"
+    repository:
       owner: axelgar
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
