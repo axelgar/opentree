@@ -352,8 +352,7 @@ func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, 
 	if issueNumber > 0 {
 		fmt.Fprintf(&sb, "Closes #%d\n", issueNumber)
 	}
-	body = sb.String()
-	return
+	return title, sb.String()
 }
 
 func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {

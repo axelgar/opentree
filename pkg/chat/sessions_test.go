@@ -113,7 +113,7 @@ func TestResumePicker_ShowsRecordedOnesWhileLoading(t *testing.T) {
 func TestResumePicker_SurvivesAFailedList(t *testing.T) {
 	m := newResumeModel()
 	next, _ := m.openSessions()
-	m, _ = applyUpdate(next.(Model), sessionsListedMsg{err: errString("method not found")})
+	m, _ = applyUpdate(next.(Model), sessionsListedMsg{err: stringError("method not found")})
 
 	if !m.sessions.open {
 		t.Fatal("the picker closed on an error it could work around")

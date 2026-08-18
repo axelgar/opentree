@@ -174,7 +174,7 @@ func TestConfigChanged_UpdatesTheFlagsAndLeavesTheLogAlone(t *testing.T) {
 
 func TestConfigChanged_ErrorIsSurfaced(t *testing.T) {
 	m := newSettingsModel()
-	m, _ = applyUpdate(m, configChangedMsg{configID: "model", err: errString("Invalid params")})
+	m, _ = applyUpdate(m, configChangedMsg{configID: "model", err: stringError("Invalid params")})
 	if m.err == nil || !strings.Contains(m.err.Error(), "model") {
 		t.Errorf("err = %v, want it to name the setting that failed", m.err)
 	}
@@ -234,7 +234,7 @@ func TestStatusLine_NoFlagsWithoutSettings(t *testing.T) {
 
 func TestStatusLine_ErrorKeepsTheFlags(t *testing.T) {
 	m := newSettingsModel()
-	m.err = errString("prompt failed")
+	m.err = stringError("prompt failed")
 	line := m.statusLine()
 	if !strings.Contains(line, "prompt failed") {
 		t.Errorf("statusLine = %q, want the error", line)
@@ -500,7 +500,7 @@ func newUnlaunchedModel() Model {
 	m := newTestModel()
 	m.client = nil
 	m.dead = true
-	m.err = errString("failed to start claude-agent-acp: executable file not found in $PATH")
+	m.err = stringError("failed to start claude-agent-acp: executable file not found in $PATH")
 	// The one registry agent behind an adapter, so the panel has an install
 	// hint to derive.
 	m.opts.Agent = testAgent("claude")

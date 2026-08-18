@@ -124,7 +124,7 @@ func TestConfigTrees_ReadsEachAgentsOwnKey(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 
 	spec := agentSpec(t, "copilot")
-	writeFile(t, filepath.Join(home, ".copilot/settings.json"),
+	writeFile(t, filepath.Join(home, ".copilot", "settings.json"),
 		`{"skillDirectories": ["/team/tree"], "skills": ["/not/this/one"]}`)
 
 	if got := configTrees(spec, ""); !slices.Equal(got, []string{"/team/tree"}) {
@@ -138,7 +138,7 @@ func TestConfigTrees_ReadsGlobalAndRepo(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	repo := t.TempDir()
 
-	writeFile(t, filepath.Join(home, ".config/opencode/opencode.json"), `{"skills": ["/global/tree"]}`)
+	writeFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"skills": ["/global/tree"]}`)
 	writeFile(t, filepath.Join(repo, "opencode.json"), `{"skills": ["./project-skills"]}`)
 
 	got := configTrees(opencodeSpec(t), repo)
@@ -202,9 +202,9 @@ func TestScan_DoesNotWalkTheStandardTrees(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	writeSkill(t, filepath.Join(home, ".claude/skills"), "outer",
+	writeSkill(t, filepath.Join(home, ".claude", "skills"), "outer",
 		"---\nname: outer\ndescription: The real skill.\n---\n")
-	writeSkill(t, filepath.Join(home, ".claude/skills/outer", "examples"), "inner",
+	writeSkill(t, filepath.Join(home, ".claude", "skills", "outer", "examples"), "inner",
 		"---\nname: inner\ndescription: An example, not a skill.\n---\n")
 
 	for _, s := range Scan("") {

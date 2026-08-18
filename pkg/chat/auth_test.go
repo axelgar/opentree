@@ -96,7 +96,7 @@ func TestAuthRequired_ProtocolAgentIsOfferedTheKey(t *testing.T) {
 	m := newTestModel()
 	m.opts.Agent = testAgent("gemini")
 	m.authMethods = geminiMethods()
-	m, _ = applyUpdate(m, errMsg{err: errString("acp error -32000: Gemini API key is missing"), auth: true})
+	m, _ = applyUpdate(m, errMsg{err: stringError("acp error -32000: Gemini API key is missing"), auth: true})
 
 	if !m.canLogIn() {
 		t.Fatal("an agent offering four logins should be offered the login key")
@@ -156,7 +156,7 @@ func TestAuthenticated_StartsTheSessionWithoutARestart(t *testing.T) {
 	m := newTestModel()
 	m.authMethods = geminiMethods()
 	m.dead, m.authNeed, m.loggingIn = true, true, true
-	m.err = errString("Gemini API key is missing")
+	m.err = stringError("Gemini API key is missing")
 
 	m, cmd := applyUpdate(m, authenticatedMsg{})
 	if m.authNeed || m.dead || m.err != nil {
@@ -257,7 +257,7 @@ func TestAuthenticated_FailureKeepsTheAgentsMessage(t *testing.T) {
 	m.authMethods = geminiMethods()
 	m.authNeed, m.loggingIn = true, true
 
-	m, _ = applyUpdate(m, authenticatedMsg{err: errString("Gemini API key is missing or not configured")})
+	m, _ = applyUpdate(m, authenticatedMsg{err: stringError("Gemini API key is missing or not configured")})
 	if m.loggingIn {
 		t.Error("a failed login is over too")
 	}
@@ -275,7 +275,7 @@ func TestStoppedPanel_WhileLoggingIn(t *testing.T) {
 	m := newTestModel()
 	m.authMethods = geminiMethods()
 	m.authNeed, m.loggingIn = true, true
-	m.err = errString("Authentication required")
+	m.err = stringError("Authentication required")
 	m = m.relayout()
 
 	view := m.footer()
@@ -298,7 +298,7 @@ func TestStoppedPanel_NamesTheCommandItWillRun(t *testing.T) {
 	m := newTestModel()
 	m.opts.Agent = testAgent("opencode")
 	m.authNeed = true
-	m.err = errString("Authentication required")
+	m.err = stringError("Authentication required")
 	m = m.relayout()
 
 	if !strings.Contains(m.footer(), "opencode auth login") {

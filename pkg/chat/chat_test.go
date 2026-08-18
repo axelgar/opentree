@@ -281,7 +281,7 @@ func TestPromptDone_EndsTurnAndSummarizes(t *testing.T) {
 func TestPromptError_Surfaces(t *testing.T) {
 	m := newTestModel()
 	m.turn = true
-	m, _ = applyUpdate(m, promptDoneMsg{err: errString("boom")})
+	m, _ = applyUpdate(m, promptDoneMsg{err: stringError("boom")})
 	if m.err == nil {
 		t.Fatal("expected the error to be surfaced")
 	}
@@ -290,9 +290,9 @@ func TestPromptError_Surfaces(t *testing.T) {
 	}
 }
 
-type errString string
+type stringError string
 
-func (e errString) Error() string { return string(e) }
+func (e stringError) Error() string { return string(e) }
 
 // The four chunks below are a real session/load, captured from opencode 1.18.16
 // replaying one prompt that mentioned a file: what was typed, the input the
@@ -390,7 +390,7 @@ func TestResume_NotAttemptedWithoutTheCapability(t *testing.T) {
 func TestSessionFailure_OffersARestart(t *testing.T) {
 	m := newTestModel()
 	m.sessionID = ""
-	m, _ = applyUpdate(m, errMsg{err: errString("session/new: refused"), fatal: true})
+	m, _ = applyUpdate(m, errMsg{err: stringError("session/new: refused"), fatal: true})
 
 	if !m.stopped() {
 		t.Error("a chat that never got a session has to offer a way out")
@@ -1263,7 +1263,7 @@ func TestOverlay_ScreenAndKeyboardAgree(t *testing.T) {
 		if !strings.Contains(m.footer(), "Allow once") {
 			t.Errorf("the footer must show the dialog its keys answer\ngot:\n%s", m.footer())
 		}
-		m, _ = applyUpdate(m, keyMsg("1"))
+		applyUpdate(m, keyMsg("1"))
 		select {
 		case got := <-perm.reply:
 			if got != "once" {
@@ -1327,7 +1327,7 @@ func TestAuthRequired_OffersLogin(t *testing.T) {
 	m := newTestModel()
 	m.opts.Agent = testAgent("opencode")
 	m.authMethods = []acp.AuthMethod{{ID: "opencode-login", Description: "Run `opencode auth login` in the terminal"}}
-	m, _ = applyUpdate(m, errMsg{err: errString("acp error -32000: Authentication required"), auth: true})
+	m, _ = applyUpdate(m, errMsg{err: stringError("acp error -32000: Authentication required"), auth: true})
 
 	if !m.stopped() {
 		t.Fatal("an auth failure should stop the view")
@@ -1403,7 +1403,7 @@ func TestAuthDone_RestoresMouseCapture(t *testing.T) {
 		msg  authDoneMsg
 	}{
 		{"success", authDoneMsg{}},
-		{"failure", authDoneMsg{err: errString("login cancelled")}},
+		{"failure", authDoneMsg{err: stringError("login cancelled")}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newTestModel()
@@ -1420,7 +1420,7 @@ func TestAuthDone_RestoresMouseCapture(t *testing.T) {
 
 func TestAuthDone_FailureIsSurfaced(t *testing.T) {
 	m := newTestModel()
-	m, _ = applyUpdate(m, authDoneMsg{err: errString("login cancelled")})
+	m, _ = applyUpdate(m, authDoneMsg{err: stringError("login cancelled")})
 	if m.err == nil || !strings.Contains(m.err.Error(), "login cancelled") {
 		t.Errorf("err = %v, want the login failure", m.err)
 	}
@@ -1428,7 +1428,7 @@ func TestAuthDone_FailureIsSurfaced(t *testing.T) {
 
 func TestErrorText_FirstLineOnly(t *testing.T) {
 	m := newTestModel()
-	m.err = errString("agent closed the connection\nstderr line 1\nstderr line 2")
+	m.err = stringError("agent closed the connection\nstderr line 1\nstderr line 2")
 	if got := m.errorText(); got != "agent closed the connection" {
 		t.Errorf("errorText() = %q, want just the cause", got)
 	}
@@ -1698,7 +1698,7 @@ func TestStopped_LogInOnlyWhenCredentialsAreTheProblem(t *testing.T) {
 			m := newTestModel()
 			m.dead, m.authNeed = tt.dead, tt.authNeed
 			m.opts.Agent.ACP.AuthCommand = tt.auth
-			m.err = errString("agent exited")
+			m.err = stringError("agent exited")
 			m = m.relayout()
 
 			got := strings.Contains(m.View(), "log in")
@@ -1755,7 +1755,7 @@ func wheel(button tea.MouseButton) tea.MouseMsg {
 // conversation, or scrolling looks broken instead of contained.
 func TestWheel_ScrollsTheConversation(t *testing.T) {
 	m := newTestModel()
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, fmt.Sprintf("line %d", i)))
 		m, _ = applyUpdate(m, textUpdate(acp.UpdateUserMessage, "next"))
 	}
@@ -1784,7 +1784,7 @@ func TestWheel_ScrollsTheConversation(t *testing.T) {
 func scrolledModel(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel()
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		m, _ = applyUpdate(m, textUpdate(acp.UpdateAgentMessage, fmt.Sprintf("line %d", i)))
 		m, _ = applyUpdate(m, textUpdate(acp.UpdateUserMessage, "next"))
 	}

@@ -509,7 +509,7 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 	}
 	status.PRURL = raw.URL
 	status.PRState = strings.ToLower(raw.State)
-	status.MergeConflicts = strings.ToUpper(raw.Mergeable) == "CONFLICTING"
+	status.MergeConflicts = strings.EqualFold(raw.Mergeable, "CONFLICTING")
 	status.CIStatus = deriveCIStatus(raw.StatusCheckRollup)
 
 	return status, nil

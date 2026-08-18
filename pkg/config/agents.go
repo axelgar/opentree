@@ -322,8 +322,8 @@ func (a PredefinedAgent) ACPArgs(worktree string) []string {
 func FindAgent(name string) *PredefinedAgent {
 	lower := strings.ToLower(name)
 	for i := range PredefinedAgents {
-		if strings.ToLower(PredefinedAgents[i].Name) == lower ||
-			strings.ToLower(PredefinedAgents[i].Command) == lower {
+		if strings.EqualFold(PredefinedAgents[i].Name, lower) ||
+			strings.EqualFold(PredefinedAgents[i].Command, lower) {
 			return &PredefinedAgents[i]
 		}
 	}

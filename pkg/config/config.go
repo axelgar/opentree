@@ -189,8 +189,8 @@ func FindConfigFile() string {
 	}
 	// Resolve symlinks so the walk can recognize the repo root (RepoRoot
 	// returns a symlink-resolved path).
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = real
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
 	}
 	for {
 		candidate := filepath.Join(dir, "opentree.toml")

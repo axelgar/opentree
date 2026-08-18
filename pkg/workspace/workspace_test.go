@@ -715,6 +715,7 @@ func TestSanitizeBranchNameInPath(t *testing.T) {
 
 	// Verify that SanitizeBranchName is applied correctly
 	path := svc.WorktreePath("feature/auth:v2")
+	//nolint:gocritic // the separator here is a leading "/", not a path to split
 	expected := filepath.Join("/repo", ".opentree", gitutil.SanitizeBranchName("feature/auth:v2"))
 	if path != expected {
 		t.Errorf("WorktreePath = %q, want %q", path, expected)

@@ -200,10 +200,10 @@ func TestExpandUserDir(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	t.Setenv("XDG_CONFIG_HOME", "")
-	if got, want := ExpandUserDir("~/.claude/skills"), filepath.Join(home, ".claude/skills"); got != want {
+	if got, want := ExpandUserDir("~/.claude/skills"), filepath.Join(home, ".claude", "skills"); got != want {
 		t.Errorf("ExpandUserDir = %q, want %q", got, want)
 	}
-	if got, want := ExpandUserDir("~/.config/opencode/skills"), filepath.Join(home, ".config/opencode/skills"); got != want {
+	if got, want := ExpandUserDir("~/.config/opencode/skills"), filepath.Join(home, ".config", "opencode", "skills"); got != want {
 		t.Errorf("without XDG = %q, want %q", got, want)
 	}
 
@@ -211,11 +211,11 @@ func TestExpandUserDir(t *testing.T) {
 	// be told they have no skills.
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	if got, want := ExpandUserDir("~/.config/opencode/skills"), filepath.Join(xdg, "opencode/skills"); got != want {
+	if got, want := ExpandUserDir("~/.config/opencode/skills"), filepath.Join(xdg, "opencode", "skills"); got != want {
 		t.Errorf("with XDG = %q, want %q", got, want)
 	}
 	// ~/.claude is not under ~/.config and must not follow it.
-	if got, want := ExpandUserDir("~/.claude/skills"), filepath.Join(home, ".claude/skills"); got != want {
+	if got, want := ExpandUserDir("~/.claude/skills"), filepath.Join(home, ".claude", "skills"); got != want {
 		t.Errorf("claude with XDG set = %q, want %q", got, want)
 	}
 
@@ -391,14 +391,14 @@ func TestScan_CollapsesTreesLinkedToTheSameSkill(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	real := writeSkill(t, filepath.Join(home, ".agents", "skills"), "ask-matt",
+	agentsTree := writeSkill(t, filepath.Join(home, ".agents", "skills"), "ask-matt",
 		"---\nname: ask-matt\ndescription: A router over the skills.\n---\n")
 
 	claudeTree := filepath.Join(home, ".claude", "skills")
 	if err := os.MkdirAll(claudeTree, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(real, filepath.Join(claudeTree, "ask-matt")); err != nil {
+	if err := os.Symlink(agentsTree, filepath.Join(claudeTree, "ask-matt")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -406,8 +406,8 @@ func TestScan_CollapsesTreesLinkedToTheSameSkill(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("Scan = %+v, want the linked skill listed once", got)
 	}
-	if got[0].Dir != resolve(real) {
-		t.Errorf("Dir = %q, want the real directory %q", got[0].Dir, real)
+	if got[0].Dir != resolve(agentsTree) {
+		t.Errorf("Dir = %q, want the real directory %q", got[0].Dir, agentsTree)
 	}
 	for _, want := range []string{"Claude Code", "OpenCode"} {
 		if !slices.Contains(got[0].Agents, want) {

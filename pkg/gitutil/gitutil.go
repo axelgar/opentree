@@ -57,8 +57,8 @@ func RepoRoot() (string, error) {
 		root := filepath.Dir(commonDir)
 		// Resolve symlinks (e.g. /var → /private/var on macOS) so the root
 		// compares equal no matter where it was computed from.
-		if real, rerr := filepath.EvalSymlinks(root); rerr == nil {
-			root = real
+		if resolved, rerr := filepath.EvalSymlinks(root); rerr == nil {
+			root = resolved
 		}
 		return root, nil
 	}

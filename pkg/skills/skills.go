@@ -217,8 +217,8 @@ func applyStates(skill *Skill, overrides map[string]map[string]State) {
 // resolve follows symlinks to the directory actually holding the skill,
 // falling back to the path as given when it cannot be resolved.
 func resolve(dir string) string {
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		return real
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
 	}
 	return dir
 }
@@ -277,7 +277,7 @@ func walk(tree Tree) []Skill {
 		// Errors are skipped rather than returned: an unreadable subdirectory
 		// should cost its own skills, not the whole tree's.
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
-			return nil
+			return nil //nolint:nilerr // one unreadable dir must not abort the walk
 		}
 		dir := filepath.Dir(path)
 		// Depth is not the same as nesting. Copilot listed a SKILL.md two

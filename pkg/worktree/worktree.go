@@ -23,8 +23,8 @@ func New(repoRoot, baseDir string) *Manager {
 	// correctly on macOS, where os.TempDir() / t.TempDir() may return a
 	// symlinked path (e.g. /var/folders/...) while git resolves to the real path
 	// (e.g. /private/var/folders/...).
-	if real, err := filepath.EvalSymlinks(repoRoot); err == nil {
-		repoRoot = real
+	if resolved, err := filepath.EvalSymlinks(repoRoot); err == nil {
+		repoRoot = resolved
 	}
 	return &Manager{
 		repoRoot: repoRoot,
@@ -377,7 +377,7 @@ type FileChange struct {
 // DiffStats returns both the diffstat string and per-file change stats in a
 // single call, computing git merge-base only once.
 // If baseBranch is empty, it defaults to "main".
-func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat string, files []FileChange, err error) {
+func (m *Manager) DiffStats(branchName string, baseBranch ...string) (string, []FileChange, error) {
 	base := defaultBase(baseBranch...)
 
 	dirName := gitutil.SanitizeBranchName(branchName)
@@ -389,35 +389,31 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (stat strin
 	// --stat output
 	statCmd := exec.Command("git", "diff", "--stat", baseCommit)
 	statCmd.Dir = worktreePath
-	statOut, statErr := statCmd.CombinedOutput()
-	if statErr != nil {
-		err = fmt.Errorf("failed to get diff stat: %w\nOutput: %s", statErr, statOut)
-		return
+	statOut, err := statCmd.CombinedOutput()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get diff stat: %w\nOutput: %s", err, statOut)
 	}
-	stat = string(statOut)
 
 	// --numstat output
 	numCmd := exec.Command("git", "diff", "--numstat", baseCommit)
 	numCmd.Dir = worktreePath
-	numOut, numErr := numCmd.CombinedOutput()
-	if numErr != nil {
-		err = fmt.Errorf("failed to get diff numstat: %w\nOutput: %s", numErr, numOut)
-		return
+	numOut, err := numCmd.CombinedOutput()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get diff numstat: %w\nOutput: %s", err, numOut)
 	}
-	files = parseNumstat(string(numOut))
+	files := parseNumstat(string(numOut))
 
 	// Mark uncommitted files.
-	uncommitted, uncommittedErr := uncommittedFiles(worktreePath)
-	if uncommittedErr != nil {
-		err = uncommittedErr
-		return
+	uncommitted, err := uncommittedFiles(worktreePath)
+	if err != nil {
+		return "", nil, err
 	}
 	for i := range files {
 		if uncommitted[files[i].FileName] {
 			files[i].Uncommitted = true
 		}
 	}
-	return
+	return string(statOut), files, nil
 }
 
 // resolveBase finds the merge-base commit between branchName and the given base.

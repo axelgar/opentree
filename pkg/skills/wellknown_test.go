@@ -313,7 +313,7 @@ func TestUntar_NotAnArchive(t *testing.T) {
 func TestUntar_DecompressionBomb(t *testing.T) {
 	var entries []*tar.Header
 	entries = append(entries, regular("SKILL.md", "---\nname: bomb\n---\n"))
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		entries = append(entries, regular(fmt.Sprintf("f%d", i), strings.Repeat("0", 64<<10)))
 	}
 	if err := untar(tarball(t, entries...), t.TempDir()); err == nil {

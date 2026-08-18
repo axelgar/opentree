@@ -575,7 +575,7 @@ func TestAdapterInstall_FailureIsReported(t *testing.T) {
 	// error synchronously and returns a tea.Tick that only clears it later —
 	// executing that blocks the test for the whole timer.
 	m := newTestModel()
-	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: errStr("npm ERR!")})
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: stringError("npm ERR!")})
 
 	if m.err == nil {
 		t.Fatal("expected the install failure to surface")
@@ -587,9 +587,9 @@ func TestAdapterInstall_FailureIsReported(t *testing.T) {
 	}
 }
 
-type errStr string
+type stringError string
 
-func (e errStr) Error() string { return string(e) }
+func (e stringError) Error() string { return string(e) }
 
 // ---------------------------------------------------------------------------
 // Enter means "use this agent"
@@ -717,7 +717,7 @@ func TestInstallFailed_DoesNotSwitchAgent(t *testing.T) {
 	m, _ = applyUpdate(m, keyMsg("y"))
 	before := m.cfg.Agent.Command
 
-	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: errStr("npm ERR!")})
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: stringError("npm ERR!")})
 
 	if m.cfg.Agent.Command != before {
 		t.Errorf("agent = %q, want it unchanged when the adapter never arrived", m.cfg.Agent.Command)
@@ -758,7 +758,7 @@ func TestWheel_StopsAtTheEnds(t *testing.T) {
 	if m.cursor != 0 {
 		t.Errorf("cursor = %d, want it clamped at 0", m.cursor)
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
 	}
 	if m.cursor != 1 {
@@ -790,7 +790,7 @@ func TestWheel_DiffStopsAtTheLastLine(t *testing.T) {
 	m.diffViewing = true
 	m.diffContent = strings.Repeat("a line\n", 300)
 
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
 	}
 	if got, want := m.diffScrollOffset, m.maxDiffScroll(); got != want {
@@ -988,7 +988,7 @@ func TestRemoteBranchDialog_StaysInsideTheTerminal(t *testing.T) {
 	m := newTestModel()
 	m.height, m.width = 24, 100
 	m.creating, m.remoteBranchMode = true, true
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		m.remoteBranches = append(m.remoteBranches, fmt.Sprintf("origin/feature-%03d", i))
 	}
 	m.filteredBranches = m.remoteBranches

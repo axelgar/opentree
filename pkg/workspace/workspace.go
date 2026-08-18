@@ -416,7 +416,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 // A missing state entry does not skip the check — the worktree itself is inspected.
 func (s *Service) HasChanges(name string) (string, error) {
 	if _, err := os.Stat(s.WorktreePath(name)); err != nil {
-		return "", nil // no worktree on disk — nothing to lose
+		return "", nil //nolint:nilerr // no worktree on disk — nothing to lose
 	}
 
 	baseBranch := s.cfg.Worktree.DefaultBase

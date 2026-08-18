@@ -260,7 +260,7 @@ func TestConcurrentWriters(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, numWriters)
 
-	for i := 0; i < numWriters; i++ {
+	for i := range numWriters {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -388,7 +388,7 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			s, err := New(dir)
 			if err != nil {
 				errs <- fmt.Errorf("writer iteration %d: New() failed: %w", i, err)
@@ -406,7 +406,7 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			s, err := New(dir)
 			if err != nil {
 				errs <- fmt.Errorf("reader iteration %d: New() failed (partial/corrupt JSON?): %w", i, err)

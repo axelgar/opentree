@@ -912,7 +912,7 @@ func TestDiffScrolling_JScrollsDown(t *testing.T) {
 	m := newTestModel()
 	// Build diff content with more lines than availHeight (height=40, availHeight=32)
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	m.diffViewing = true
@@ -928,7 +928,7 @@ func TestDiffScrolling_JScrollsDown(t *testing.T) {
 func TestDiffScrolling_KScrollsUp(t *testing.T) {
 	m := newTestModel()
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	m.diffViewing = true
@@ -944,7 +944,7 @@ func TestDiffScrolling_KScrollsUp(t *testing.T) {
 func TestDiffScrolling_JClampsAtMaxScroll(t *testing.T) {
 	m := newTestModel() // height=40, availHeight=32
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	m.diffViewing = true
@@ -1771,7 +1771,7 @@ func TestToastSlot_ListDoesNotReflow(t *testing.T) {
 // makes bubbletea drop lines off the top.
 func TestView_HintAndToastFitShortTerminal(t *testing.T) {
 	var list []WorkspaceItem
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		list = append(list, testWSWithPR(fmt.Sprintf("ws-%d", i), "https://x/pr/1"))
 	}
 	m := newTestModel(list...)
@@ -1827,7 +1827,7 @@ func TestRemoteBranchDialog_FitsAShortTerminal(t *testing.T) {
 			m := newTestModel()
 			m.height, m.width = height, 100
 			m.creating, m.remoteBranchMode = true, true
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				m.remoteBranches = append(m.remoteBranches, fmt.Sprintf("origin/feature-%03d", i))
 			}
 			m.filteredBranches = m.remoteBranches

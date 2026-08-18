@@ -242,7 +242,7 @@ func TestUpdate_PublishesOnEveryChange(t *testing.T) {
 		published = append(published, st)
 	}
 
-	m, _ = applyUpdate(m, permission(allowOnce))
+	applyUpdate(m, permission(allowOnce))
 	mu.Lock()
 	defer mu.Unlock()
 	if len(published) == 0 {
@@ -481,7 +481,7 @@ func TestQueuedPrompt_DroppedWhenTheTurnFails(t *testing.T) {
 	m.turn = true
 	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "never runs"})
 
-	m, _ = applyUpdate(m, promptDoneMsg{err: errString("connection lost")})
+	m, _ = applyUpdate(m, promptDoneMsg{err: stringError("connection lost")})
 	if m.queued != "" {
 		t.Errorf("queued = %q, want it dropped after a failed turn", m.queued)
 	}

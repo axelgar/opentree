@@ -228,8 +228,8 @@ func resolve(root, entry string) (seedPath, error) {
 	// passes every check above and still hands a worktree something that was
 	// never the project's to share. Only a file that exists can be resolved,
 	// and one that does not cannot be linked either way.
-	if real, err := filepath.EvalSymlinks(src); err == nil && !staysUnder(relTo(root, real)) {
-		return seedPath{}, fmt.Errorf("seed %q: resolves to %s, outside the repository", entry, real)
+	if resolved, err := filepath.EvalSymlinks(src); err == nil && !staysUnder(relTo(root, resolved)) {
+		return seedPath{}, fmt.Errorf("seed %q: resolves to %s, outside the repository", entry, resolved)
 	}
 
 	// Config gets seeded; state gets built. node_modules is not a file you
@@ -247,7 +247,7 @@ func (p seedPath) linkInto(worktreePath string) (bool, error) {
 		// The project names a file this checkout does not have — an .env nobody
 		// has created yet. Nothing to link, and nothing wrong: the list is what
 		// a worktree should carry when it is there, not a claim that it is.
-		return false, nil
+		return false, nil //nolint:nilerr // an absent seed source is not an error
 	}
 
 	dst := filepath.Join(worktreePath, p.rel)
@@ -287,8 +287,8 @@ func relTo(root, path string) string {
 // macOS a temporary directory under /var is reached through one, and every
 // seed entry would otherwise look like it escapes.
 func realpath(dir string) string {
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		return real
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
 	}
 	return dir
 }

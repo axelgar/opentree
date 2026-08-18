@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -255,7 +256,7 @@ func TestOverrideFile_PrefersWhereTheOverrideAlreadyIs(t *testing.T) {
 func TestSettingsPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if got, want := settingsPath("~/.claude/settings.json", "/repo"), filepath.Join(home, ".claude/settings.json"); got != want {
+	if got, want := settingsPath("~/.claude/settings.json", "/repo"), filepath.Join(home, ".claude", "settings.json"); got != want {
 		t.Errorf("settingsPath = %q, want %q", got, want)
 	}
 	if got, want := settingsPath(".claude/settings.json", "/repo"), "/repo/.claude/settings.json"; got != want {
@@ -393,7 +394,7 @@ func TestSetDisabled_RefusesWhatAListCannotSay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(before) != string(after) {
+	if !bytes.Equal(before, after) {
 		t.Error("the refused write changed the file anyway")
 	}
 }

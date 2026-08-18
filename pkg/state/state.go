@@ -198,7 +198,9 @@ func (s *Store) loadFromDisk() error {
 	// map would merge keys and resurrect workspaces deleted by other processes.
 	fresh := &State{}
 	if err := json.Unmarshal(data, fresh); err != nil {
-		return fmt.Errorf("state file %s is corrupted (%v) — fix it or delete it to reset workspace tracking (worktrees and branches are not affected)", s.filePath, err)
+		// %w, not %v: callers that want to tell a syntax error from a type
+		// mismatch need errors.As to reach the *json.SyntaxError underneath.
+		return fmt.Errorf("state file %s is corrupted (%w) — fix it or delete it to reset workspace tracking (worktrees and branches are not affected)", s.filePath, err)
 	}
 	if fresh.Workspaces == nil { // e.g. `{}` or `"workspaces": null` on disk
 		fresh.Workspaces = make(map[string]*Workspace)

@@ -344,7 +344,7 @@ func indexURL(site string) (*url.URL, error) {
 // fetch GETs a URL, refusing a body past limit. Redirects are followed, which
 // the spec requires and http.DefaultClient does.
 func fetch(ctx context.Context, u *url.URL, limit int64) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
 	if err != nil {
 		return nil, err
 	}
