@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -232,6 +233,16 @@ var configListCmd = &cobra.Command{
 		for _, k := range configKeys {
 			fmt.Printf("%s = %s  (%s)\n", k.name, k.get(cfg), k.source(sources))
 		}
+		// A value the repository asked for and did not get is worth a sentence.
+		// Every line above it says where its value came from; this is the one
+		// that came from nowhere on purpose, and without saying so the reader
+		// is looking at "(default)" beside a file that plainly sets it.
+		if rejected := sources.RejectedRepoBaseDir; rejected != "" {
+			fmt.Printf("\nnote: this repository's opentree.toml asks for base_dir = %q, which is outside\n"+
+				"      the repository, so it is ignored — a cloned repository does not get to point\n"+
+				"      opentree at the rest of your filesystem. It is yours to set for yourself:\n"+
+				"        opentree config set --global worktree.base_dir %s\n", rejected, rejected)
+		}
 		return nil
 	},
 }
@@ -291,6 +302,13 @@ var configSetCmd = &cobra.Command{
 		}
 		if k.globalOnly && !configSetGlobal {
 			return fmt.Errorf("%s is global only — run with --global (a cloned repository does not get to decide how you are interrupted)", key)
+		}
+		// Refused rather than written, for the same reason globalOnly exists: a
+		// value that saves, prints back and does nothing is the worst of the
+		// three outcomes. Only for the repository's file — the point is that
+		// this is a setting you may have, in a place a clone cannot reach.
+		if key == "worktree.base_dir" && !configSetGlobal && !filepath.IsLocal(value) {
+			return fmt.Errorf("%s must stay inside the repository — a cloned repository does not get to point opentree at the rest of your filesystem\n\nIt is yours to set for yourself:\n  opentree config set --global %s %s", key, key, value)
 		}
 
 		parsed, err := parseConfigValue(key, value)

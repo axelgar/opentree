@@ -171,9 +171,14 @@ func TestRunSetup_SurvivingGrandchildDoesNotWedgeTheDrain(t *testing.T) {
 			t.Fatal("neither setsid nor perl is available to detach a grandchild")
 		}
 	}
+	// POSIX::setsid() and not a bare `setsid`, which perl parses as a constant
+	// in void context and cheerfully ignores — the process stays in the group,
+	// the kill reaches it, and the test passes without ever exercising the
+	// thing it is named for. macOS ships no setsid(1), so that is every macOS
+	// CI run.
 	detach := "setsid sh -c 'sleep 30' &"
 	if _, err := exec.LookPath("setsid"); err != nil {
-		detach = "perl -e 'setsid; exec q{sleep 30}' &"
+		detach = "perl -e 'use POSIX; POSIX::setsid(); exec q{sleep 30}' &"
 	}
 
 	dir := t.TempDir()
@@ -196,12 +201,17 @@ func TestRunSetup_SurvivingGrandchildDoesNotWedgeTheDrain(t *testing.T) {
 // And cancelling must not have to wait for the drain either: the same orphan
 // would otherwise hold a cancelled setup open just as long.
 func TestRunSetup_CancelIsNotDelayedByASurvivingGrandchild(t *testing.T) {
+	// POSIX::setsid() and not a bare `setsid`, which perl parses as a constant
+	// in void context and cheerfully ignores — the process stays in the group,
+	// the kill reaches it, and the test passes without ever exercising the
+	// thing it is named for. macOS ships no setsid(1), so that is every macOS
+	// CI run.
 	detach := "setsid sh -c 'sleep 30' &"
 	if _, err := exec.LookPath("setsid"); err != nil {
 		if _, err := exec.LookPath("perl"); err != nil {
 			t.Fatal("neither setsid nor perl is available to detach a grandchild")
 		}
-		detach = "perl -e 'setsid; exec q{sleep 30}' &"
+		detach = "perl -e 'use POSIX; POSIX::setsid(); exec q{sleep 30}' &"
 	}
 
 	dir := t.TempDir()

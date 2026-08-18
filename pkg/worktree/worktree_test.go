@@ -1115,3 +1115,67 @@ func TestExcludeBaseDir_OutsideARepositoryWritesNothing(t *testing.T) {
 		t.Errorf("a .git directory was created outside a repository (err = %v)", err)
 	}
 }
+
+// Regression: base_dir says where a worktree goes, not where it is. A workspace
+// created under one setting and deleted under another — the config edited, or a
+// repository-supplied value that is no longer honoured — computed a path with
+// nothing at it. The delete removed nothing, then failed on a branch git still
+// considered checked out, leaving a row that could not be deleted at all.
+func TestDelete_FindsAWorktreeThatMovedOutFromUnderTheConfig(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	// Created under one base dir...
+	made := New(repoDir, ".opentree")
+	if err := made.Create("feat/moved", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	worktreePath := filepath.Join(repoDir, ".opentree", "feat-moved")
+
+	// ...and deleted under another, which is what an upgrade that stops
+	// honouring a repository's base_dir looks like from here.
+	if err := New(repoDir, ".elsewhere").Delete("feat/moved", true); err != nil {
+		t.Fatalf("Delete() after the base dir changed: %v", err)
+	}
+
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Error("the worktree survived a delete that should have found it")
+	}
+	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "feat/moved").Output()
+	if strings.Contains(string(out), "feat/moved") {
+		t.Error("the branch survived, so the row would still be undeletable")
+	}
+}
+
+// The fallback asks git, so it is still the branch that decides. A name with no
+// worktree anywhere must not be answered with somebody else's.
+func TestDelete_TheFallbackOnlyMatchesTheBranchAsked(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	if err := m.Create("feat/kept", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	// A workspace whose worktree never existed. It has nothing to remove, and
+	// must not adopt the one that does.
+	if out, err := exec.Command("git", "-C", repoDir, "branch", "feat/absent", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("git branch: %v\n%s", err, out)
+	}
+	if err := m.Delete("feat/absent", true); err != nil {
+		t.Fatalf("Delete() of a workspace with no worktree: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoDir, ".opentree", "feat-kept")); err != nil {
+		t.Errorf("deleting one workspace removed another's worktree: %v", err)
+	}
+	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "feat/kept").Output()
+	if !strings.Contains(string(out), "feat/kept") {
+		t.Error("deleting one workspace removed another's branch")
+	}
+}

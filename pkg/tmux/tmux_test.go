@@ -323,6 +323,14 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 		t.Skip("tmux not available, skipping integration test")
 	}
 	privateServer(t)
+	// The server has to exist before it can be asked about a server option:
+	// show-options does not start one, and privateServer has just handed this
+	// test an empty socket directory. Without this the probe failed with
+	// "error connecting to <socket>" and the test skipped itself on every
+	// machine and both CI runners, reporting it as an old tmux.
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "probe").CombinedOutput(); err != nil {
+		t.Fatalf("could not start a tmux server on this test's own socket: %v\n%s", err, out)
+	}
 	if _, err := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output(); err != nil {
 		t.Skip("tmux predates the extended-keys option, skipping")
 	}

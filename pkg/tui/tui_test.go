@@ -19,6 +19,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
@@ -1572,16 +1573,24 @@ func fanOut(msg tea.Msg) []tea.Msg {
 // failed came back as a bare errMsg, which is the one path that does not reload
 // the list — so the workspaces that really had gone stayed on screen, still
 // spinning, until the ten-second refresh tick swept them away.
+//
+// Built from the error DeleteMultiple actually returns. An earlier version of
+// this test used an errors.Join stand-in, which is why it passed while the
+// production path did not: the real error names the successes as well, in its
+// "(deleted …)" tail, so reading names back out of the text blamed every one of
+// them and the list never refreshed at all.
 func TestBatchDeleteResult_PartialFailureStillRefreshes(t *testing.T) {
-	err := errors.Join(
-		errors.New("delete feat-b: worktree is locked"),
-		errors.New("delete state feat-c: state.json is read-only"),
-	)
+	err := &workspace.DeleteBatchError{
+		Deleted: []string{"feat-a"},
+		Failed: []workspace.DeleteFailure{
+			{Name: "feat-b", Err: errors.New("worktree is locked")},
+			{Name: "feat-c", Err: errors.New("state.json is read-only")},
+		},
+	}
 
 	var deleted deletedWorkspaceMsg
 	var failed errMsg
-	msgs := fanOut(batchDeleteResult([]string{"feat-a", "feat-b", "feat-c"}, err))
-	for _, msg := range msgs {
+	for _, msg := range fanOut(batchDeleteResult([]string{"feat-a", "feat-b", "feat-c"}, err)) {
 		switch m := msg.(type) {
 		case deletedWorkspaceMsg:
 			deleted = m
@@ -1591,7 +1600,7 @@ func TestBatchDeleteResult_PartialFailureStillRefreshes(t *testing.T) {
 	}
 
 	if len(deleted.names) != 1 || deleted.names[0] != "feat-a" {
-		t.Errorf("deleted = %v, want only the workspace the error does not blame", deleted.names)
+		t.Errorf("deleted = %v, want the one workspace that went", deleted.names)
 	}
 	if failed.err == nil {
 		t.Fatal("the failures went unreported")
@@ -1606,14 +1615,17 @@ func TestBatchDeleteResult_PartialFailureStillRefreshes(t *testing.T) {
 	}
 }
 
-// TestBatchDeleteResult_NoNameIsBlamedForALongerOne: reading names back out of
-// a joined error must not match "a" inside "feat-a", or a workspace that failed
-// would be announced as deleted.
+// A name that is a prefix of another must not be confused with it. This was a
+// real hazard while the outcome was read out of the message text; it is a
+// property of the typed error now, and the test stays as the guard on that.
 func TestBatchDeleteResult_NoNameIsBlamedForALongerOne(t *testing.T) {
-	msgs := fanOut(batchDeleteResult([]string{"a", "feat-a"}, errors.New("delete feat-a: worktree is locked")))
+	err := &workspace.DeleteBatchError{
+		Deleted: []string{"a"},
+		Failed:  []workspace.DeleteFailure{{Name: "feat-a", Err: errors.New("worktree is locked")}},
+	}
 
 	var deleted deletedWorkspaceMsg
-	for _, msg := range msgs {
+	for _, msg := range fanOut(batchDeleteResult([]string{"a", "feat-a"}, err)) {
 		if m, ok := msg.(deletedWorkspaceMsg); ok {
 			deleted = m
 		}
@@ -1626,15 +1638,31 @@ func TestBatchDeleteResult_NoNameIsBlamedForALongerOne(t *testing.T) {
 // TestBatchDeleteResult_WholeBatchFailedIsJustTheError: nothing left the list,
 // so there is nothing to reload and no success to announce.
 func TestBatchDeleteResult_WholeBatchFailedIsJustTheError(t *testing.T) {
-	err := errors.Join(
-		errors.New("delete feat-a: worktree is locked"),
-		errors.New("delete feat-b: worktree is locked"),
-	)
+	err := &workspace.DeleteBatchError{
+		Failed: []workspace.DeleteFailure{
+			{Name: "feat-a", Err: errors.New("worktree is locked")},
+			{Name: "feat-b", Err: errors.New("worktree is locked")},
+		},
+	}
 
-	msg := batchDeleteResult([]string{"feat-a", "feat-b"}, err)
-	if _, ok := msg.(errMsg); !ok {
+	if msg := batchDeleteResult([]string{"feat-a", "feat-b"}, err); !isErrMsg(msg) {
 		t.Fatalf("msg = %T, want a plain errMsg when nothing was deleted", msg)
 	}
+}
+
+// An error that is not the batch's own says nothing about individual
+// workspaces, so none of them may be assumed gone — announcing a deletion that
+// did not happen removes a row the user still has work in.
+func TestBatchDeleteResult_AnUntypedErrorClaimsNothing(t *testing.T) {
+	msg := batchDeleteResult([]string{"feat-a", "feat-b"}, errors.New("tmux is not installed"))
+	if !isErrMsg(msg) {
+		t.Fatalf("msg = %T, want a plain errMsg for an error that names no outcomes", msg)
+	}
+}
+
+func isErrMsg(msg tea.Msg) bool {
+	_, ok := msg.(errMsg)
+	return ok
 }
 
 // TestBatchDeleteResult_CleanBatchAnnouncesEveryName guards the common path

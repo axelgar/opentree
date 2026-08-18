@@ -309,7 +309,8 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 	// to remove actually holds the requested branch's worktree. The same pass
 	// records whether git still registers this path as a worktree at all.
 	registered := false
-	if wts, err := m.List(); err == nil {
+	wts, listErr := m.List()
+	if listErr == nil {
 		for _, wt := range wts {
 			if wt.Path != worktreePath {
 				continue
@@ -318,6 +319,23 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 			if wt.Branch != "" && wt.Branch != branchName {
 				return fmt.Errorf("worktree at %s has branch %q checked out, not %q — refusing to delete", worktreePath, wt.Branch, branchName)
 			}
+		}
+	}
+
+	// base_dir is where a worktree goes, not where it is. A workspace made
+	// under one setting and deleted under another — the config edited, or a
+	// repository-supplied value that is no longer honoured — computes a path
+	// with nothing at it, and the delete would remove nothing, fail on a branch
+	// git still considers checked out, and leave a row that cannot be deleted
+	// at all.
+	//
+	// So ask git where the branch actually is. Its answer is not something a
+	// config file can steer: the path comes from this repository's own worktree
+	// registrations, matched on the exact branch, which is the same guarantee
+	// the check above provides in the ordinary case.
+	if !registered {
+		if found, ok := m.worktreeForBranch(branchName); ok {
+			worktreePath, registered = found, true
 		}
 	}
 
@@ -374,6 +392,36 @@ func (m *Manager) branchExists(branchName string) bool {
 	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branchName)
 	cmd.Dir = m.repoRoot
 	return cmd.Run() == nil
+}
+
+// worktreeForBranch is where git says a branch is checked out, across every
+// worktree of this repository rather than only the ones under the current base
+// dir — which is the point of it: the caller is asking precisely because the
+// base dir no longer describes where the worktree went.
+//
+// Matched on the exact branch, so the path is one this repository's own git
+// registered for the name that was asked for. A config file has no say in it.
+func (m *Manager) worktreeForBranch(branchName string) (string, bool) {
+	if branchName == "" {
+		return "", false
+	}
+	out, err := gitutil.Output(m.repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false
+	}
+	path := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch "):
+			if strings.TrimPrefix(line, "branch refs/heads/") == branchName && path != "" {
+				return path, true
+			}
+		}
+	}
+	return "", false
 }
 
 // Push pushes a worktree's branch to origin, setting the upstream.

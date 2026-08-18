@@ -116,6 +116,13 @@ type ConfigSource struct {
 	// that layer before the merge.
 	NotifyOn      string
 	NotifyDesktop string
+
+	// RejectedRepoBaseDir is a base_dir the repository asked for and did not
+	// get, or "". Reported rather than merely dropped: a setting that is
+	// ignored in silence is indistinguishable from one that was never written,
+	// and this is the one value whose disappearance moves every worktree path
+	// opentree computes.
+	RejectedRepoBaseDir string
 }
 
 const (
@@ -403,10 +410,19 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 	//
 	// Only the repository layer, and only for a path that leaves the
 	// repository: "../worktrees" is a documented layout, and the user's own
-	// config is entitled to ask for it. IsLocal is the same question phrased
-	// as the standard library asks it — does joining this to a directory stay
-	// inside that directory. Dropped rather than refused, as above.
+	// config is entitled to ask for it — with --global, which is where a
+	// preference about your own filesystem belongs anyway. IsLocal is the same
+	// question phrased as the standard library asks it: does joining this to a
+	// directory stay inside that directory.
+	//
+	// Dropped rather than refused, as above — an opentree.toml written for
+	// somebody else's machine should still load. But recorded on the way past,
+	// because unlike [notify] this one silently relocates every worktree path
+	// opentree computes, and somebody upgrading into it deserves to be told
+	// which line to move.
+	rejectedBaseDir := ""
 	if repoCfg != nil && repoCfg.Worktree.BaseDir != "" && !filepath.IsLocal(repoCfg.Worktree.BaseDir) {
+		rejectedBaseDir = repoCfg.Worktree.BaseDir
 		repoCfg.Worktree.BaseDir = ""
 	}
 
@@ -415,6 +431,7 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 	mergeInto(resolved, repoCfg)
 
 	sources := computeSources(resolved, globalCfg, repoCfg)
+	sources.RejectedRepoBaseDir = rejectedBaseDir
 
 	// No config file named an agent: use the first installed one so the first
 	// run works with whatever the user already has. The hardcoded default

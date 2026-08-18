@@ -83,7 +83,14 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 		section("config")
 		line("repo file", describeFile(config.FindConfigFile()))
 		line("global file", describeFile(config.GlobalConfigPath()))
-		cfg, cfgErr := config.Load("")
+		cfg, sources, cfgErr := config.LoadWithSources("")
+		if rejected := sources.RejectedRepoBaseDir; rejected != "" {
+			// Above the resolved values, because it explains one of them: the
+			// base_dir printed below is the default, and the file the reader
+			// is looking at plainly says otherwise.
+			line("base_dir asked", rejected+" — IGNORED, it is outside this repository")
+			line("", "yours to set: opentree config set --global worktree.base_dir "+rejected)
+		}
 		if cfgErr != nil {
 			line("status", "WILL NOT PARSE — "+cfgErr.Error())
 			line("effect", "every command is running on defaults")
@@ -104,7 +111,7 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 				line("command", describeTool(agent.Command))
 				if spec := agent.ACPPackageSpec(); spec != "" {
 					line("adapter", spec)
-					line("adapter binary", describeTool(agent.ACPCommand()))
+					line("adapter binary", describeAdapter(*agent))
 				}
 			}
 
@@ -198,6 +205,33 @@ func ghStatus() string {
 		return v + "  NOT AUTHENTICATED — run `gh auth login`"
 	}
 	return v + "  authenticated"
+}
+
+// describeAdapter locates the ACP adapter the way opentree locates it, which is
+// not the way PATH does: it installs into a prefix of its own so uninstalling
+// opentree does not leave a stray package behind, and the shim there is found
+// by an absolute path rather than by a lookup. Asking PATH reported a perfectly
+// good adapter as missing, which is the opposite of what a doctor is for.
+//
+// The installed version is worth printing beside it. The pinned spec above says
+// what opentree would install; this says what is actually there, and the two
+// disagreeing is exactly the state somebody would be writing in to ask about.
+func describeAdapter(agent config.PredefinedAgent) string {
+	resolved := agent.ResolveACPCommand()
+	if resolved == "" {
+		return "(none)"
+	}
+	if !filepath.IsAbs(resolved) {
+		path, err := exec.LookPath(resolved)
+		if err != nil {
+			return resolved + " — not installed (press i in the agent picker, or `opentree agents setup`)"
+		}
+		return path + "  (found on PATH, not installed by opentree)"
+	}
+	if v := agent.ACPInstalledVersion(); v != "" {
+		return resolved + "  (" + v + ")"
+	}
+	return resolved
 }
 
 // describeTool is a command's resolved path, or that there is none.

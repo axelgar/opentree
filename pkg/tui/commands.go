@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -300,7 +299,7 @@ func batchDeleteResult(names []string, err error) tea.Msg {
 	if err == nil {
 		return deletedWorkspaceMsg{names: names}
 	}
-	gone := deletedDespite(names, err)
+	gone := deletedDespite(err)
 	failed := func() tea.Msg { return errMsg{oneLine(err)} }
 	if len(gone) == 0 {
 		return failed()
@@ -308,38 +307,24 @@ func batchDeleteResult(names []string, err error) tea.Msg {
 	return tea.Batch(func() tea.Msg { return deletedWorkspaceMsg{names: gone} }, failed)()
 }
 
-// deletedDespite picks out the workspaces a failed batch delete still finished.
+// deletedDespite is the workspaces a failed batch delete still finished, so the
+// list can drop them instead of showing rows for worktrees that have gone.
 //
-// DeleteMultiple joins one error per workspace it could not remove and names
-// each of them, so the names the error does not mention are the ones that went.
-// Reading names back out of an error is unlovely, and it is deliberately not
-// coupled to the wording: a name is looked up as a whole identifier, so nothing
-// here breaks if the joined error is phrased differently tomorrow. A name the
-// error does not mention is assumed gone, which is the direction that
-// self-corrects — deletedWorkspaceMsg reloads the list, and a workspace that is
-// still there simply reappears.
-func deletedDespite(names []string, err error) []string {
-	blamed := identifiers(err.Error())
-	gone := make([]string, 0, len(names))
-	for _, name := range names {
-		if !blamed[name] {
-			gone = append(gone, name)
-		}
+// Asked of the error rather than read out of it. DeleteMultiple returns a typed
+// error carrying the two lists, which is the only reliable way to know: the
+// first attempt at this parsed names out of the message text and treated
+// anything unmentioned as deleted — and the message names the successes too, in
+// its "(deleted a, b)" tail, so every one of them looked blamed and the list
+// never refreshed at all.
+//
+// Any other error means the batch did not report per-workspace outcomes, and
+// nothing is assumed to have gone.
+func deletedDespite(err error) []string {
+	var batch *workspace.DeleteBatchError
+	if errors.As(err, &batch) {
+		return batch.Deleted
 	}
-	return gone
-}
-
-// identifiers splits text into the runs that could be a workspace name, which
-// is what keeps "delete feat/a: ..." from reading as a complaint about "a". The
-// characters held together are the ones a branch name may contain.
-func identifiers(text string) map[string]bool {
-	set := make(map[string]bool)
-	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-_./", r)
-	}) {
-		set[field] = true
-	}
-	return set
+	return nil
 }
 
 // oneLine folds a joined error onto a single line. errors.Join separates its
