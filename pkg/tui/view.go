@@ -125,7 +125,7 @@ func (m Model) View() string {
 			}
 
 			status, ready := m.readiness(agent)
-			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
+			statusSt := lipgloss.NewStyle().Foreground(ui.Faint)
 			switch {
 			case ready:
 				statusSt = successStyle

@@ -1112,7 +1112,7 @@ func (m Model) skillDeleteView() string {
 // twice in two layouts would be two things to keep in step.
 // colour is the card's, so a picker that is about to remove directories does
 // not wear the same trim as one that is about to add them.
-func (m Model) pickTreeView(title string, targets []skillTarget, colour lipgloss.Color) string {
+func (m Model) pickTreeView(title string, targets []skillTarget, colour lipgloss.TerminalColor) string {
 	var b strings.Builder
 	for i, t := range targets {
 		cursor, style := "  ", itemStyle
