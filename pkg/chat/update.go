@@ -259,6 +259,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.generation = msg.generation
 		m = m.withAgentInfo(msg.info)
 		m.dead, m.authNeed, m.err, m.restarting = false, false, nil, false
+		m.launching = false
 		m.setup.stage = setupNone
 		// The replay rebuilds the log from scratch, so drop what is on screen
 		// rather than rendering the conversation twice.
@@ -365,6 +366,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = false
 		// A restart that failed is over; r has to work again.
 		m.restarting = false
+		// A first launch that failed is over too. Left set, its panel would sit
+		// above the stopped one — which is the panel that says what went wrong
+		// and offers the restart.
+		m.launching = false
 		// An agent that would not start after the setup phase is a stopped
 		// agent, not a phase still in progress.
 		m.setup.stage = setupNone
@@ -1135,4 +1140,14 @@ func stopReasonText(reason string) string {
 		return "the agent declined to continue"
 	}
 	return reason
+}
+
+// handleLaunchingKey holds the keyboard while the first agent starts. There is
+// nothing to answer yet and nothing to cancel that leaving would not also
+// cancel, so only the way out is bound.
+func (m Model) handleLaunchingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.Back) {
+		return m, leave
+	}
+	return m, nil
 }

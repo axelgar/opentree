@@ -11,9 +11,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -130,7 +133,15 @@ func Run(ctx context.Context, opts Options) error {
 			// "failed to start X: start X: exec: ...".
 			return nil, nil, gen, err
 		}
-		info, err := client.Initialize(ctx, "opentree", opts.Version)
+		// The handshake gets a deadline of its own, and not ctx's — ctx is what
+		// the agent process itself is watching, so a timeout on it would kill
+		// a healthy agent the moment the clock ran out. An adapter that
+		// accepts stdio and then never answers initialize is otherwise
+		// indistinguishable from a slow one, and the chat would wait on it for
+		// as long as the window stayed open.
+		hctx, cancelHandshake := context.WithTimeout(ctx, handshakeTimeout)
+		info, err := client.Initialize(hctx, "opentree", opts.Version)
+		cancelHandshake()
 		if err != nil {
 			_ = client.Close()
 			return nil, nil, gen, fmt.Errorf("ACP handshake failed: %w", err)
@@ -146,28 +157,22 @@ func Run(ctx context.Context, opts Options) error {
 	// here: an agent started against a worktree that has not installed yet
 	// spends its first turn on a problem that has nothing to do with the task.
 	//
-	// Otherwise it starts now. A failed first launch is not fatal: the view
-	// opens in its stopped state, where restarting or installing the adapter is
-	// one key away. Returning an error here would print it to a tmux window
-	// that then closes.
-	var (
-		client *acp.Client
-		info   *acp.InitializeResponse
-		gen    int
-		err    error
-	)
-	if !opts.Setup.wanted() {
-		client, info, gen, err = launch()
-	}
-
-	m := newModel(ctx, client, info, opts, msgs)
-	m.generation = gen
+	// Otherwise it starts as the program's first command, not here. Launching
+	// synchronously meant nothing was on screen until the agent had finished
+	// its handshake — a bare tmux pane for however long that took, and forever
+	// for an adapter that accepts stdio and never answers. Worse, ctrl+c during
+	// that window reached the process as a signal rather than as a keystroke,
+	// cancelling the context the agent is started against, and [r] restart then
+	// failed with "context canceled" for the rest of the session.
+	//
+	// A failed launch is not fatal either way: the view opens in its stopped
+	// state, where restarting or installing the adapter is one key away.
+	// Returning an error here would print it to a tmux window that then closes.
+	m := newModel(ctx, nil, nil, opts, msgs)
 	m.launch = launch
 	m.send = send
 	m.setup.spec = opts.Setup
-	if err != nil {
-		m.dead, m.err = true, err
-	}
+	m.launching = !opts.Setup.wanted()
 
 	// Best-effort: a chat with no control socket still works, it is just
 	// invisible to the workspace list.
@@ -190,11 +195,37 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
+	prog := p(m)
+
+	// tmux sends SIGHUP when it kills a window, which is what deleting a
+	// workspace, pruning one and closing the window by hand all come down to.
+	// Go's default action for it is to terminate the process without running
+	// anything, so the teardown below never happened — and with it the agent's
+	// whole process group survived, MCP servers and tool shells and all,
+	// pointed at a worktree that had just been removed. bubbletea covers
+	// SIGINT and SIGTERM; SIGHUP is the one nobody had.
+	//
+	// signal.Notify rather than NotifyContext, and Quit rather than a cancel:
+	// ctx is what exec.CommandContext watches for the agent process, and
+	// cancelling it kills the direct child only. That orphans exactly the
+	// grandchildren the process group exists to catch, while racing the clean
+	// teardown that would have killed them.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		select {
+		case <-hup:
+			prog.Quit()
+		case <-quit:
+		}
+	}()
+
 	// Asked for around the program rather than inside it: bubbletea v1 has no
 	// name for these keys, so it has no opinion about requesting them either,
 	// and the restore has to happen after it has put the terminal back.
 	restore := extendedKeys()
-	final, err := p(m).Run()
+	final, err := prog.Run()
 	restore()
 	close(quit)
 	if fm, ok := final.(Model); ok && fm.client != nil {
@@ -207,6 +238,15 @@ func Run(ctx context.Context, opts Options) error {
 // closeTimeout bounds the goodbye. The process is killed immediately after, so
 // an agent that will not answer costs nothing worth waiting on.
 const closeTimeout = 2 * time.Second
+
+// handshakeTimeout bounds initialize, the one exchange that must complete
+// before there is a conversation at all.
+//
+// Generous, because the first run of an adapter can be a cold npm start on a
+// laptop that has been asleep. Finite, because the alternative is a window
+// that says "starting…" until somebody closes it, with nothing to distinguish
+// a slow agent from one that will never answer.
+const handshakeTimeout = 90 * time.Second
 
 // endSession tells the agent the conversation is over, for the agents that take
 // being told. Everything opentree holds is on disk by now; this is the agent's
@@ -488,6 +528,13 @@ type Model struct {
 	// otherwise change between pressing it and the browser opening.
 	loggingIn bool
 
+	// launching is set while the first agent is being started, before there is
+	// a client to talk to. Without it the window would show an ordinary
+	// composer with no agent behind it: overlay() has no case for a chat that
+	// has not started yet, so enter would silently discard whatever was typed
+	// (update.go's Send is inert with no session) and nothing would say why.
+	launching bool
+
 	// restarting is set between asking for a new agent and getting one. Bubble
 	// Tea runs every command on its own goroutine, so without it a second press
 	// of r launches a second agent into this same chat — both replaying history
@@ -599,6 +646,7 @@ const (
 	overlayNone overlay = iota
 	overlayPermission
 	overlaySetup
+	overlayLaunching
 	overlayLogin
 	overlayStopped
 	overlaySettings
@@ -623,6 +671,11 @@ func (m Model) overlay() overlay {
 	// the phase that is holding it back.
 	case m.setup.active():
 		return overlaySetup
+	// Same reasoning one step later: the agent is being started and there is
+	// nothing to say to it yet, so say that rather than show a composer whose
+	// enter key does nothing.
+	case m.launching:
+		return overlayLaunching
 	// Above the stopped panel it was opened from, which is still true underneath
 	// it — an agent wanting credentials is exactly when this picker is up.
 	case m.login.open:
@@ -659,6 +712,7 @@ func init() {
 	overlayDefs = map[overlay]overlayDef{
 		overlayPermission: {Model.handlePermissionKey, Model.permissionHeight, Model.permissionView},
 		overlaySetup:      {Model.handleSetupKey, Model.setupHeight, Model.setupView},
+		overlayLaunching:  {Model.handleLaunchingKey, Model.launchingHeight, Model.launchingView},
 		overlayLogin:      {Model.handleLoginKey, Model.loginHeight, Model.loginView},
 		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
 		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
@@ -687,8 +741,13 @@ func (m Model) Init() tea.Cmd {
 	// yet to open one against. Init cannot change the model, so the phase
 	// starts by sending itself a message rather than by mutating state here.
 	start := m.startSession()
-	if m.setup.spec.wanted() {
+	switch {
+	case m.setup.spec.wanted():
 		start = func() tea.Msg { return setupBeginMsg{} }
+	case m.launching:
+		// No agent yet: the first launch is a command like any other, so the
+		// window is drawn and answering before the handshake finishes.
+		start = m.launchCmd(true)
 	}
 	return tea.Batch(waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink)
 }

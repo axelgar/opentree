@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // CodeAuthRequired is the JSON-RPC error code an agent returns when a request
@@ -52,6 +53,12 @@ type Client struct {
 	cmd    *exec.Cmd
 	stderr *ring
 	done   chan struct{}
+
+	// killOnce guards the half of Close that is not idempotent. A pid is
+	// recyclable and Wait may only be called once, so a second Close would
+	// signal a process group that has since become somebody else's and then
+	// swallow a "Wait was already called".
+	killOnce sync.Once
 
 	// caps is what the agent said it can do, written once by Initialize before
 	// the client is handed to anything that reads it. Every method that is
@@ -119,6 +126,11 @@ type outResponse struct {
 	Result  any             `json:"result"`
 }
 
+// cancelGrace is how long Wait may go on waiting for the agent's pipes after
+// the process group has been killed. Short: everything the agent had to say is
+// already in the stderr ring by then, and the caller is tearing down.
+const cancelGrace = time.Second
+
 // Spawn starts an agent process in dir and begins serving its stdio.
 func Spawn(ctx context.Context, name string, args []string, dir string, h Handlers) (*Client, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -127,6 +139,19 @@ func Spawn(ctx context.Context, name string, args []string, dir string, h Handle
 	// calls, MCP servers — and killing only the direct child orphans those to
 	// init, leaving them holding the worktree after the chat is gone.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Which is exactly what exec's own cancellation would have done: its
+	// default is Process.Kill(), the direct child and nothing under it. The
+	// group the line above exists to create has to be what a cancelled context
+	// kills too, or the two teardown paths disagree about what a subprocess is.
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	// A group member holding the agent's stdout keeps Wait from returning even
+	// after the kill, since Wait waits on the pipes as well as the process.
+	cmd.WaitDelay = cancelGrace
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -170,12 +195,14 @@ func (c *Client) Close() error {
 	if c.cmd == nil || c.cmd.Process == nil {
 		return nil
 	}
-	// Negative pid signals the whole group, so the agent's children go with it.
-	// Fall back to the bare process if the group is already gone.
-	if err := syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL); err != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	_ = c.cmd.Wait()
+	c.killOnce.Do(func() {
+		// Negative pid signals the whole group, so the agent's children go with
+		// it. Fall back to the bare process if the group is already gone.
+		if err := syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			_ = c.cmd.Process.Kill()
+		}
+		_ = c.cmd.Wait()
+	})
 	return nil
 }
 

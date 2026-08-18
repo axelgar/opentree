@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -2251,5 +2252,61 @@ func TestWithAgentInfo_BelievesTheAgentAboutImages(t *testing.T) {
 	}})
 	if !m.canSendImages {
 		t.Error("canSendImages is unset for an agent that advertised image support")
+	}
+}
+
+// The window between opening and having an agent used to render an ordinary
+// composer with nothing behind it — enter discarded whatever was typed,
+// because Send is inert with no session, and nothing said why. For an adapter
+// that accepts stdio and never completes the handshake, that was the whole
+// experience of the window.
+func TestOverlay_LaunchingSaysSoInsteadOfInvitingAMessage(t *testing.T) {
+	m := newTestModel()
+	m.sessionID = ""
+	m.launching = true
+
+	if got := m.overlay(); got != overlayLaunching {
+		t.Fatalf("overlay() = %v, want overlayLaunching", got)
+	}
+	if _, ok := overlayDefs[overlayLaunching]; !ok {
+		t.Fatal("overlayLaunching has no row in overlayDefs — its keys, height and view would not be wired")
+	}
+	if !strings.Contains(m.launchingView(), "starting") {
+		t.Errorf("launching panel = %q, want it to say the agent is starting", m.launchingView())
+	}
+}
+
+// A launch that failed hands over to the stopped panel, which is the one that
+// says what went wrong and offers the restart. Left set, the launching panel
+// would sit on top of it forever.
+func TestLaunching_ClearsOnAFailedLaunch(t *testing.T) {
+	m := newTestModel()
+	m.launching = true
+
+	next, _ := m.update(errMsg{err: errors.New("adapter not installed"), fatal: true})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("update did not return a Model")
+	}
+	if nm.launching {
+		t.Error("a failed launch left the launching panel up")
+	}
+	if got := nm.overlay(); got != overlayStopped {
+		t.Errorf("overlay() = %v, want overlayStopped", got)
+	}
+}
+
+// And a launch that succeeded gives the window back to the conversation.
+func TestLaunching_ClearsWhenTheClientArrives(t *testing.T) {
+	m := newTestModel()
+	m.launching = true
+
+	next, _ := m.update(clientReadyMsg{generation: 1})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("update did not return a Model")
+	}
+	if nm.launching {
+		t.Error("the launching panel outlived the launch")
 	}
 }

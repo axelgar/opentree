@@ -1091,3 +1091,34 @@ func shortPath(path, cwd string) string {
 	}
 	return path
 }
+
+// launchingView is what a window shows between opening and having an agent.
+//
+// It exists because the alternative was an ordinary composer with nothing
+// behind it: overlay() had no case for a chat that has not started yet, so the
+// screen invited a message and enter discarded it — Send is inert without a
+// session. For an adapter that accepts stdio and never completes the handshake
+// that was the whole experience of the window.
+func (m Model) launchingView() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(permBoxStyle.Render(strings.Join(m.launchingLines(), "\n")))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("the conversation opens once the agent answers"))
+	return b.String()
+}
+
+func (m Model) launchingLines() []string {
+	name := "the agent"
+	if m.opts.Agent != nil && m.opts.Agent.Name != "" {
+		name = m.opts.Agent.Name
+	}
+	return []string{
+		noticeStyle.Render("starting " + name + "…"),
+		permKeyStyle.Render("[ctrl+c]") + " " + permLabelStyle.Render("back to opentree"),
+	}
+}
+
+// launchingHeight is the footer space the panel needs: its lines, the box
+// around them, and the hint under it.
+func (m Model) launchingHeight() int { return len(m.launchingLines()) + 4 }

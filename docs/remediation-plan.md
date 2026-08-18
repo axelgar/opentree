@@ -23,7 +23,7 @@ recorded there.
 - [x] WS1 — Field-scoped state writes
 - [x] WS2 — Destructive operations: guardrails
 - [x] WS3 — Chat control socket: identity on the wire
-- [ ] WS4 — Chat/agent process lifecycle
+- [x] WS4 — Chat/agent process lifecycle
 - [ ] WS5 — TUI state machine correctness
 - [ ] WS6 — Config resolution inside linked worktrees
 - [ ] WS7 — Close the test holes that hide the above

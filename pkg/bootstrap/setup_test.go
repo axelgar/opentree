@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,5 +150,76 @@ func TestRunSetup_NothingConfigured(t *testing.T) {
 	}
 	if len(lines) != 0 {
 		t.Errorf("emitted %v with nothing to run", lines)
+	}
+}
+
+// Regression: every descendant inherits the pipe both streams are written to,
+// so one that leaves the process group before the kill can reach it holds the
+// write end open after the shell has exited. cmd.Wait returns; the read never
+// sees EOF. runCommand used to wait on that read unconditionally, which wedged
+// the chat in "setting up" for good — with the phase's own cancel already
+// spent — and made `opentree setup` proof against ctrl+c.
+//
+// The escape needs setsid: a plain `&` leaves the child in the group, where
+// the kill finds it, which is why TestRunSetup_CancelStopsTheProcessGroup
+// never saw this.
+func TestRunSetup_SurvivingGrandchildDoesNotWedgeTheDrain(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		// macOS ships no setsid. `perl -e 'setsid'` is the portable stand-in,
+		// and the test is worth nothing without one of the two.
+		if _, err := exec.LookPath("perl"); err != nil {
+			t.Fatal("neither setsid nor perl is available to detach a grandchild")
+		}
+	}
+	detach := "setsid sh -c 'sleep 30' &"
+	if _, err := exec.LookPath("setsid"); err != nil {
+		detach = "perl -e 'setsid; exec q{sleep 30}' &"
+	}
+
+	dir := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		// The shell exits immediately; the detached grandchild keeps the pipe.
+		done <- RunSetup(context.Background(), dir, []string{detach + " echo started"}, func(string) {})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunSetup: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunSetup never returned — a detached grandchild is holding the output pipe open")
+	}
+}
+
+// And cancelling must not have to wait for the drain either: the same orphan
+// would otherwise hold a cancelled setup open just as long.
+func TestRunSetup_CancelIsNotDelayedByASurvivingGrandchild(t *testing.T) {
+	detach := "setsid sh -c 'sleep 30' &"
+	if _, err := exec.LookPath("setsid"); err != nil {
+		if _, err := exec.LookPath("perl"); err != nil {
+			t.Fatal("neither setsid nor perl is available to detach a grandchild")
+		}
+		detach = "perl -e 'setsid; exec q{sleep 30}' &"
+	}
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = RunSetup(ctx, dir, []string{detach + " sleep 30"}, func(string) {})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a cancelled setup was held open by a detached grandchild")
 	}
 }

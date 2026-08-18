@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,7 +48,12 @@ skipped, without restarting a chat and tearing down a live conversation.
 		if len(args) == 0 {
 			return fmt.Errorf("which workspace? give a branch name, or --suggest to propose a config")
 		}
-		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+		// SIGHUP and SIGTERM alongside the interrupt: setup runs the project's
+		// own install commands in a process group, and the only thing that
+		// kills that group is this context being cancelled. A closed tmux
+		// window sends SIGHUP, whose default action would end opentree and
+		// leave the install running against a worktree nobody is watching.
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
 		defer stop()
 		return runSetup(ctx, args[0])
 	},
