@@ -85,8 +85,9 @@ func (m Model) status() Status {
 	case m.perm() != nil:
 		st.State = StateAwaiting
 		st.Permission = &Permission{
-			Title:   toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
-			Options: m.perm().req.Options,
+			Title:      toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
+			Options:    m.perm().req.Options,
+			ToolCallID: m.perm().req.ToolCall.ToolCallID,
 		}
 	case m.setup.active():
 		st.State = StateSettingUp
@@ -686,6 +687,17 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 	case CommandPermission:
 		if m.perm() == nil {
 			return m, nil, Result{Reason: "nothing is waiting on permission"}
+		}
+		// Answer the question that was asked. The sender saw a permission at
+		// most one refresh tick ago; if it has since been answered here and
+		// another has taken its place, applying the answer anyway allows a
+		// tool nobody looked at.
+		//
+		// Only when the sender said which one. An empty id is a dashboard
+		// older than this chat, and refusing all of those would break remote
+		// answering entirely for anyone mid-upgrade.
+		if cmd.ToolCallID != "" && cmd.ToolCallID != m.perm().req.ToolCall.ToolCallID {
+			return m, nil, Result{Reason: "that permission has already been answered"}
 		}
 		return m.answerPerm(cmd.OptionID), nil, Result{OK: true}
 

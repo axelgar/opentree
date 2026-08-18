@@ -54,7 +54,7 @@ func TestSocketPath_StablePerRepo(t *testing.T) {
 
 func TestServe_QueryReturnsPublishedStatus(t *testing.T) {
 	path := socketPath(t)
-	srv, err := serve(path, nil)
+	srv, err := serve(path, "fix-auth", nil)
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestServe_QueryReturnsPublishedStatus(t *testing.T) {
 
 	srv.publish(Status{Workspace: "fix-auth", State: StateWorking, Tool: "go test ./...", Cost: 0.42})
 
-	got, ok := Query(path)
+	got, ok := Query(path, "fix-auth")
 	if !ok {
 		t.Fatal("Query failed against a live socket")
 	}
@@ -78,7 +78,7 @@ func TestServe_QueryReturnsPublishedStatus(t *testing.T) {
 }
 
 func TestQuery_NoSocketIsNotAnError(t *testing.T) {
-	if _, ok := Query(filepath.Join(t.TempDir(), "absent")); ok {
+	if _, ok := Query(filepath.Join(t.TempDir(), "absent"), "fix-auth"); ok {
 		t.Error("expected a missing socket to report not-running")
 	}
 }
@@ -87,20 +87,20 @@ func TestServe_ReplacesStaleSocket(t *testing.T) {
 	// A killed chat process leaves its socket file behind; the next one must
 	// still be able to bind.
 	path := socketPath(t)
-	first, err := serve(path, nil)
+	first, err := serve(path, "fix-auth", nil)
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	_ = first.ln.Close() // die without cleaning up
 
-	second, err := serve(path, nil)
+	second, err := serve(path, "fix-auth", nil)
 	if err != nil {
 		t.Fatalf("serve over a stale socket: %v", err)
 	}
 	defer func() { _ = second.Close() }()
 
 	second.publish(Status{State: StateIdle})
-	if _, ok := Query(path); !ok {
+	if _, ok := Query(path, "fix-auth"); !ok {
 		t.Error("expected the replacement socket to answer")
 	}
 }
@@ -110,7 +110,7 @@ func TestSend_DeliversCommand(t *testing.T) {
 
 	var mu sync.Mutex
 	var got []Command
-	srv, err := serve(path, func(c Command) Result {
+	srv, err := serve(path, "fix-auth", func(c Command) Result {
 		mu.Lock()
 		defer mu.Unlock()
 		got = append(got, c)
@@ -121,7 +121,7 @@ func TestSend_DeliversCommand(t *testing.T) {
 	}
 	defer func() { _ = srv.Close() }()
 
-	if err := Send(path, Command{Type: CommandPermission, OptionID: "once"}); err != nil {
+	if err := Send(path, "fix-auth", Command{Type: CommandPermission, OptionID: "once"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -147,21 +147,21 @@ func TestSend_DeliversCommand(t *testing.T) {
 }
 
 func TestSend_NoSocketErrors(t *testing.T) {
-	if err := Send(filepath.Join(t.TempDir(), "absent"), Command{Type: CommandInterrupt}); err == nil {
+	if err := Send(filepath.Join(t.TempDir(), "absent"), "fix-auth", Command{Type: CommandInterrupt}); err == nil {
 		t.Error("expected an error sending to a socket nobody is listening on")
 	}
 }
 
 func TestClose_RemovesSocket(t *testing.T) {
 	path := socketPath(t)
-	srv, err := serve(path, nil)
+	srv, err := serve(path, "fix-auth", nil)
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	if err := srv.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, ok := Query(path); ok {
+	if _, ok := Query(path, "fix-auth"); ok {
 		t.Error("a closed socket should not answer")
 	}
 }
@@ -504,7 +504,7 @@ func TestRemoteCommand_AcceptedPromptReportsOK(t *testing.T) {
 // the list as an error, not be swallowed by a successful write.
 func TestSend_SurfacesARefusal(t *testing.T) {
 	path := socketPath(t)
-	srv, err := serve(path, func(Command) Result {
+	srv, err := serve(path, "fix-auth", func(Command) Result {
 		return Result{Reason: "the agent is busy — interrupt it first"}
 	})
 	if err != nil {
@@ -512,7 +512,7 @@ func TestSend_SurfacesARefusal(t *testing.T) {
 	}
 	defer func() { _ = srv.Close() }()
 
-	err = Send(path, Command{Type: CommandPrompt, Text: "hello"})
+	err = Send(path, "fix-auth", Command{Type: CommandPrompt, Text: "hello"})
 	if err == nil {
 		t.Fatal("Send reported success for a refused command")
 	}
@@ -523,13 +523,13 @@ func TestSend_SurfacesARefusal(t *testing.T) {
 
 func TestSend_AcceptedCommandReturnsNil(t *testing.T) {
 	path := socketPath(t)
-	srv, err := serve(path, func(Command) Result { return Result{OK: true} })
+	srv, err := serve(path, "fix-auth", func(Command) Result { return Result{OK: true} })
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	defer func() { _ = srv.Close() }()
 
-	if err := Send(path, Command{Type: CommandInterrupt}); err != nil {
+	if err := Send(path, "fix-auth", Command{Type: CommandInterrupt}); err != nil {
 		t.Errorf("Send: %v", err)
 	}
 }
@@ -596,3 +596,140 @@ func TestRemoteCommand_UnknownTypeIsInert(t *testing.T) {
 }
 
 var _ tea.Model = Model{}
+
+// Regression: the path used to be the workspace name truncated to 32 bytes, so
+// two branches sharing a 32-character prefix — one afternoon of
+// feature/<ticket>-<description> — resolved to one socket. The second chat to
+// start unlinked the first's live socket and bound over it, and prompts meant
+// for one worktree ran in the other.
+func TestSocketPath_LongNamesStayDistinct(t *testing.T) {
+	const prefix = "feature/a-very-long-branch-name-"
+	a := SocketPath("/repos/one", prefix+"that-keeps-going")
+	b := SocketPath("/repos/one", prefix+"x")
+
+	if a == b {
+		t.Fatalf("two workspaces share a socket path: %q", a)
+	}
+	if len(a) > 90 || len(b) > 90 {
+		t.Errorf("paths are %d and %d bytes, want comfortably under the ~104 limit", len(a), len(b))
+	}
+}
+
+// The suffix is only added when the name had to be shortened, so every
+// ordinary workspace keeps the path it already has — a chat started by the
+// previous binary stays reachable across the upgrade.
+func TestSocketPath_ShortNamesAreUnchanged(t *testing.T) {
+	for _, name := range []string{"main", "fix/auth", "feature/exactly-32-chars-long-a"} {
+		got := SocketPath("/repos/one", name)
+		want := strings.NewReplacer("/", "-", ":", "-").Replace(name)
+		if filepath.Base(got) != want {
+			t.Errorf("SocketPath(%q) base = %q, want %q", name, filepath.Base(got), want)
+		}
+	}
+}
+
+// The list's view of a session is up to a refresh tick old. An answer given
+// for one permission must not land on whichever one is waiting by the time it
+// arrives.
+func TestRemoteCommand_StaleToolCallIDIsRefused(t *testing.T) {
+	m := newTestModel()
+	m.perms = []permissionMsg{{
+		req:   acp.PermissionRequest{ToolCall: acp.ToolCall{ToolCallID: "call_2"}},
+		reply: make(chan string, 1),
+	}}
+
+	_, _, res := m.applyRemoteCommand(Command{
+		Type: CommandPermission, OptionID: "allow", ToolCallID: "call_1",
+	})
+	if res.OK {
+		t.Error("an answer for a permission that has gone was applied")
+	}
+	if len(m.perms[0].reply) != 0 {
+		t.Error("the pending permission was answered anyway")
+	}
+}
+
+// A dashboard older than this chat sends no id at all. Refusing those would
+// break remote answering for everyone mid-upgrade, and a chat window is never
+// relaunched while it is still serving — so mid-upgrade is the normal state.
+func TestRemoteCommand_EmptyToolCallIDIsAccepted(t *testing.T) {
+	m := newTestModel()
+	m.perms = []permissionMsg{{
+		req:   acp.PermissionRequest{ToolCall: acp.ToolCall{ToolCallID: "call_2"}},
+		reply: make(chan string, 1),
+	}}
+	replies := m.perms[0].reply
+
+	_, _, res := m.applyRemoteCommand(Command{Type: CommandPermission, OptionID: "allow"})
+	if !res.OK {
+		t.Fatalf("an id-less answer was refused: %q", res.Reason)
+	}
+	if got := <-replies; got != "allow" {
+		t.Errorf("reply = %q, want %q", got, "allow")
+	}
+}
+
+// The matching id is the ordinary case and must still go through.
+func TestRemoteCommand_MatchingToolCallIDIsAccepted(t *testing.T) {
+	m := newTestModel()
+	m.perms = []permissionMsg{{
+		req:   acp.PermissionRequest{ToolCall: acp.ToolCall{ToolCallID: "call_2"}},
+		reply: make(chan string, 1),
+	}}
+	replies := m.perms[0].reply
+
+	_, _, res := m.applyRemoteCommand(Command{
+		Type: CommandPermission, OptionID: "allow", ToolCallID: "call_2",
+	})
+	if !res.OK {
+		t.Fatalf("the right answer was refused: %q", res.Reason)
+	}
+	if got := <-replies; got != "allow" {
+		t.Errorf("reply = %q, want %q", got, "allow")
+	}
+}
+
+// A socket that answers for a different workspace is not this workspace's
+// chat. Reading its status would show another branch's agent in this row, and
+// sending it a prompt would run that prompt in the wrong worktree.
+func TestQuery_WrongWorkspace(t *testing.T) {
+	path := socketPath(t)
+	srv, err := serve(path, "fix-auth", func(Command) Result { return Result{OK: true} })
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+	srv.publish(Status{Workspace: "fix-auth", State: StateIdle})
+
+	if _, ok := Query(path, "some-other-branch"); ok {
+		t.Error("Query accepted a chat belonging to another workspace")
+	}
+	if err := Send(path, "some-other-branch", Command{Type: CommandInterrupt}); err == nil {
+		t.Error("Send delivered a command to another workspace's chat")
+	}
+
+	// And the workspace it really is still works.
+	if _, ok := Query(path, "fix-auth"); !ok {
+		t.Error("Query refused the chat it was asking for")
+	}
+}
+
+// A chat that has bound but not published yet says who it is from the first
+// moment — otherwise the "starting…" state, which lasts as long as the agent
+// takes to answer, could never be attributed to a workspace.
+func TestServe_GreetingIsNamed(t *testing.T) {
+	path := socketPath(t)
+	srv, err := serve(path, "fix-auth", nil)
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	st, ok := Query(path, "fix-auth")
+	if !ok {
+		t.Fatal("Query failed against a freshly served socket")
+	}
+	if st.Workspace != "fix-auth" || st.State != StateStarting {
+		t.Errorf("greeting = %+v, want workspace fix-auth in state %q", st, StateStarting)
+	}
+}

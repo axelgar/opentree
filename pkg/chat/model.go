@@ -184,7 +184,7 @@ func Run(ctx context.Context, opts Options) error {
 				return Result{Reason: "chat closed"}
 			}
 		}
-		if srv, err := serve(opts.SocketPath, onCommand); err == nil {
+		if srv, err := serve(opts.SocketPath, opts.Workspace, onCommand); err == nil {
 			defer func() { _ = srv.Close() }()
 			m.publish = srv.publish
 		}

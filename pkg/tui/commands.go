@@ -390,7 +390,7 @@ func (m Model) sendReviewsCmd(ws WorkspaceItem) tea.Cmd {
 		if len(comments) == 0 {
 			return reviewsSentMsg{wsName: wsName}
 		}
-		if err := chat.Send(chat.SocketPath(repoRoot, wsName), chat.Command{
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, chat.Command{
 			Type: chat.CommandPrompt, Text: github.FormatReviewsPrompt(comments),
 		}); err != nil {
 			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
