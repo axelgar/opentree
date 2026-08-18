@@ -27,6 +27,29 @@ const (
 	commandTimeout = 2 * time.Second
 )
 
+// ProtocolVersion is the version of this socket's wire format, stamped on
+// everything that crosses it.
+//
+// It exists because the two ends of this socket are routinely different
+// binaries. A chat window is only ever relaunched when it has stopped serving
+// one — workspace.EnsureWindow starts one where there is no window, or a bare
+// shell — so after an in-place upgrade the dashboard is the new opentree and
+// every chat still open is the one it replaced, for as long as those windows
+// live. Without a number on the wire neither side can tell a peer that predates
+// a field from a peer that is broken, and the two want opposite reactions.
+//
+// Nothing refuses a peer over it, and nothing may start. A version older than
+// this one — zero included, which is what every chat built before this constant
+// publishes — is precisely the case it exists to describe; refusing those would
+// break the upgrade it is here to survive. A newer one is not refused either:
+// encoding/json drops fields it has no home for, so a status from the future
+// still parses into everything this binary knows how to read.
+//
+// Bump it when a change needs the other side to know it happened: a field one
+// end must not assume the other honours, or a command whose refusal would
+// otherwise read as a fault.
+const ProtocolVersion = 1
+
 // Status is what a chat process publishes about its session. It replaces the
 // hook-written status file for ACP agents: the chat process is holding the
 // protocol connection, so it knows exactly what the agent is doing rather than
@@ -52,7 +75,28 @@ type Status struct {
 	// to. The list copies it into opentree's error log; the chat is where it is
 	// acted on.
 	Error string `json:"error,omitempty"`
+
+	// Protocol is the wire version this chat speaks and Version is the opentree
+	// release it is running. Both travel because they answer different
+	// questions: the number is what code compares, and the release is what a row
+	// can show somebody. "This chat is running opentree 0.4.1" is a sentence
+	// that gets a window closed and reopened; a row that has quietly stopped
+	// understanding half of what the dashboard sends it is a bug report.
+	//
+	// Zero and empty mean a chat older than these fields, which is the ordinary
+	// reading for the first upgrade after they land — see ProtocolVersion.
+	Protocol int    `json:"protocol,omitempty"`
+	Version  string `json:"version,omitempty"`
 }
+
+// Behind reports whether the chat that published this status speaks an older
+// version of the protocol than the binary reading it.
+//
+// True is not a fault and not an error to raise. Every chat window that was
+// open when opentree was replaced answers yes, which is most of them for the
+// rest of the day — it is a thing for a row to say, not a reason to stop
+// reading one.
+func (s Status) Behind() bool { return s.Protocol < ProtocolVersion }
 
 // Permission is an escalation waiting on a human, mirrored so the workspace
 // list can answer it without attaching.
@@ -89,6 +133,12 @@ type Command struct {
 	// remote answer it got, and the refusal would look like the dashboard
 	// being broken.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	// Protocol is the wire version the sender speaks, stamped by Send so no
+	// caller has to remember it. Read only to explain a refusal: a command a
+	// chat has no case for is an unknown command when it came from a peer of the
+	// same age, and an out-of-date window when it came from a newer one.
+	Protocol int `json:"protocol,omitempty"`
 }
 
 // Result is the chat's answer to a command. A command that arrives at a moment
@@ -167,11 +217,17 @@ func serve(path, workspace string, onCommand func(Command) Result) (*server, err
 	if err != nil {
 		return nil, err
 	}
-	// Named from the first moment, before the model has published anything.
-	// A status that cannot say whose it is cannot be checked against the
-	// workspace the caller asked about, and "starting…" is a state a chat can
-	// sit in for as long as its agent takes to answer.
-	s := &server{ln: ln, last: Status{Workspace: workspace, State: StateStarting}}
+	// Named and versioned from the first moment, before the model has published
+	// anything. A status that cannot say whose it is cannot be checked against
+	// the workspace the caller asked about, and "starting…" is a state a chat
+	// can sit in for as long as its agent takes to answer. The release this is
+	// running is not known here and arrives with the first published status,
+	// which is the chat's first frame away.
+	s := &server{ln: ln, last: Status{
+		Workspace: workspace,
+		State:     StateStarting,
+		Protocol:  ProtocolVersion,
+	}}
 	go s.accept(onCommand)
 	return s, nil
 }
@@ -287,6 +343,10 @@ func Send(path, workspace string, cmd Command) error {
 		return fmt.Errorf("the chat listening for %s answers for %q", workspace, st.Workspace)
 	}
 
+	// Stamped here rather than by the caller: every sender would otherwise have
+	// to remember, and the one that forgot would look like a chat from before
+	// the field existed.
+	cmd.Protocol = ProtocolVersion
 	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
 		return err
 	}

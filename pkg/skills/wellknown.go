@@ -52,7 +52,17 @@ const (
 
 // source is sourceFile's contents.
 type source struct {
-	Index  string `json:"index"`
+	Index string `json:"index"`
+	// Origin is the scheme and host that actually answered for the index, which
+	// is not the same as Index's own host once a redirect is in the way. It is
+	// what a later update is held to: the index is the only thing vouching for
+	// every digest under it, so the site that answered when the user chose to
+	// install a skill is the site that gets to answer for it afterwards.
+	//
+	// Omitted from files written before this was recorded. An install that
+	// predates the check is not a reason to refuse to update it, so the first
+	// update fills it in rather than treating the absence as a mismatch.
+	Origin string `json:"origin,omitempty"`
 	Name   string `json:"name"`
 	Digest string `json:"digest"`
 	Type   string `json:"type"`
@@ -73,6 +83,11 @@ type Entry struct {
 	// installed, which is the intent: the digest is only worth anything when
 	// the index it came from is known.
 	index *url.URL
+
+	// origin is the scheme and host that answered, which is index's own only
+	// when nothing redirected on the way. It is recorded with the skill so an
+	// update can tell it is still asking the site the user chose.
+	origin string
 }
 
 // Discover asks a site what skills it publishes.
@@ -85,10 +100,11 @@ func Discover(ctx context.Context, site string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := fetch(ctx, index, maxArtifact)
+	body, final, err := fetch(ctx, index, maxArtifact)
 	if err != nil {
 		return nil, err
 	}
+	origin := (&url.URL{Scheme: final.Scheme, Host: final.Host}).String()
 
 	var doc struct {
 		Schema string  `json:"$schema"`
@@ -116,6 +132,7 @@ func Discover(ctx context.Context, site string) ([]Entry, error) {
 			continue
 		}
 		e.index = index
+		e.origin = origin
 		out = append(out, e)
 	}
 	if len(out) == 0 {
@@ -174,6 +191,9 @@ func Update(ctx context.Context, dir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if err := checkPublisher(dir, &src, entries[0].origin); err != nil {
+		return false, err
+	}
 	i := slices.IndexFunc(entries, func(e Entry) bool { return e.Name == src.Name })
 	if i < 0 {
 		return false, fmt.Errorf("%s no longer publishes %s", indexHost(src.Index), src.Name)
@@ -187,6 +207,33 @@ func Update(ctx context.Context, dir string) (bool, error) {
 	return true, replace(ctx, entries[i], dir)
 }
 
+// checkPublisher holds an update to the site the skill was installed from.
+//
+// The index is the root of trust here: every digest opentree checks an artifact
+// against is read out of it, so an index that has moved to another host is not a
+// redirect to follow quietly. The digests downloaded afterwards would all check
+// out — they would simply be someone else's, and a skill is instructions the
+// agent reads and acts on.
+//
+// A skill installed before this was recorded has nothing to compare against, so
+// the first update writes the pin rather than refusing. Making every skill an
+// earlier opentree installed permanently un-updatable would be a worse answer
+// than trusting the site it is already pointed at.
+func checkPublisher(dir string, src *source, origin string) error {
+	if src.Origin == "" {
+		src.Origin = origin
+		// Best effort: failing to record it costs the same check again next
+		// time, not the update that is about to happen.
+		_ = writeSource(dir, *src)
+		return nil
+	}
+	if src.Origin != origin {
+		return fmt.Errorf("%s came from %s, which now serves its skills index from %s — install it again from there if the publisher moved",
+			src.Name, src.Origin, origin)
+	}
+	return nil
+}
+
 // fetchInto downloads one entry into a directory of its own, leaving nothing
 // behind if any part of it fails.
 func fetchInto(ctx context.Context, e Entry, dst string) error {
@@ -194,7 +241,7 @@ func fetchInto(ctx context.Context, e Entry, dst string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %s is not a URL", e.Name, e.URL)
 	}
-	body, err := fetch(ctx, e.index.ResolveReference(artifact), maxArtifact)
+	body, _, err := fetch(ctx, e.index.ResolveReference(artifact), maxArtifact)
 	if err != nil {
 		return err
 	}
@@ -220,7 +267,13 @@ func fetchInto(ctx context.Context, e Entry, dst string) error {
 		}
 	}
 	if err == nil {
-		err = writeSource(dst, e)
+		err = writeSource(dst, source{
+			Index:  e.index.String(),
+			Origin: e.origin,
+			Name:   e.Name,
+			Digest: e.Digest,
+			Type:   e.Type,
+		})
 	}
 	if err != nil {
 		// Half an unpacked archive would show up in the list as a skill with
@@ -287,13 +340,8 @@ func checkUnedited(dir string, src source) error {
 }
 
 // writeSource records where a skill was taken from, alongside the skill.
-func writeSource(dst string, e Entry) error {
-	data, err := json.Marshal(source{
-		Index:  e.index.String(),
-		Name:   e.Name,
-		Digest: e.Digest,
-		Type:   e.Type,
-	})
+func writeSource(dst string, s source) error {
+	data, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
@@ -335,37 +383,85 @@ func indexURL(site string) (*url.URL, error) {
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("%q does not name a site", site)
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, fmt.Errorf("%s is not http", u.Scheme)
+	// https only, including for a site typed with the scheme spelled out. The
+	// index is what says the hash of everything installed under it, so over
+	// plaintext there is nothing to check that whoever answered did not also
+	// write — and a skill is instructions the agent goes on to act on.
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("%s is not https — a skills index is only taken over https", u.Scheme)
 	}
-	return &url.URL{Scheme: u.Scheme, Host: u.Host, Path: wellKnownPath}, nil
+	return &url.URL{Scheme: "https", Host: u.Host, Path: wellKnownPath}, nil
 }
 
-// fetch GETs a URL, refusing a body past limit. Redirects are followed, which
-// the spec requires and http.DefaultClient does.
-func fetch(ctx context.Context, u *url.URL, limit int64) ([]byte, error) {
+// httpClient is what everything in this file is fetched with. A package-level
+// var rather than http.DefaultClient for two reasons: the redirect rule below
+// is opentree's and not the default one's, and the tests need somewhere to hand
+// a client that trusts their own certificate — https is the only scheme left
+// here, so a test served over plaintext would be exercising a path production
+// refuses.
+var httpClient = &http.Client{CheckRedirect: refuseDowngrade}
+
+// maxRedirects is net/http's own default, which setting CheckRedirect replaces.
+const maxRedirects = 10
+
+// refuseDowngrade stops a redirect chain the moment it leaves https.
+//
+// http.DefaultClient follows a redirect across schemes without comment, so an
+// https index could hand an artifact fetch to plaintext and the digest check
+// would still pass: the party answering on the wire would have chosen both the
+// bytes and the hash they are compared against. Redirects are otherwise
+// followed, which the spec requires and publishers rely on — a release asset
+// that lands on a CDN is the ordinary case.
+func refuseDowngrade(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("%s redirects to %s, which is not https — skills are only taken over https",
+			via[len(via)-1].URL.Host, req.URL.Scheme)
+	}
+	return nil
+}
+
+// fetch GETs a URL, refusing a body past limit, and reports the URL it ended up
+// at. Redirects are followed, which the spec requires; where they led is the
+// caller's business because the index is only worth what the host answering for
+// it is worth.
+func fetch(ctx context.Context, u *url.URL, limit int64) ([]byte, *url.URL, error) {
+	// The scheme is checked here as well as in indexURL, because an artifact
+	// URL is not built by indexURL: the index may name one by absolute URL, and
+	// "http://" in that field is the same hole by a shorter route.
+	if u.Scheme != "https" {
+		return nil, nil, fmt.Errorf("%s is not https — skills are only taken over https", u.Scheme)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// The request the response came back on is the last one in the chain, so
+	// this is where the redirects finished rather than where they started.
+	final := u
+	if resp.Request != nil && resp.Request.URL != nil {
+		final = resp.Request.URL
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: %s", u.Host, resp.Status)
+		return nil, nil, fmt.Errorf("%s: %s", u.Host, resp.Status)
 	}
 	// One past the ceiling, so a body sitting exactly on it is still known to
 	// be short rather than assumed to be.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%s is larger than %d MiB", u.Path, limit>>20)
+		return nil, nil, fmt.Errorf("%s is larger than %d MiB", u.Path, limit>>20)
 	}
-	return body, nil
+	return body, final, nil
 }
 
 // verify checks a body against a digest of the form sha256:<hex>.

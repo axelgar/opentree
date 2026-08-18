@@ -733,3 +733,115 @@ func TestServe_GreetingIsNamed(t *testing.T) {
 		t.Errorf("greeting = %+v, want workspace fix-auth in state %q", st, StateStarting)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Protocol version
+// ---------------------------------------------------------------------------
+
+// A chat window is never relaunched on upgrade, so the two ends of this socket
+// are routinely different binaries. Both facts travel: the number is what code
+// compares, and the release is what a row can show somebody.
+func TestStatus_SaysWhichOpentreePublishedIt(t *testing.T) {
+	m := newTestModel()
+	m.opts.Version = "0.5.0"
+
+	st := m.status()
+	if st.Protocol != ProtocolVersion {
+		t.Errorf("Protocol = %d, want %d", st.Protocol, ProtocolVersion)
+	}
+	if st.Version != "0.5.0" {
+		t.Errorf("Version = %q, want the release this chat is running", st.Version)
+	}
+	if st.Behind() {
+		t.Error("a chat of the reader's own age reported itself out of date")
+	}
+}
+
+// A chat started before these fields existed publishes neither, and that is the
+// case they exist for. Reading a zero as "older than me" is the whole point;
+// refusing it would break exactly the upgrade the version is here to survive.
+func TestStatus_NoProtocolIsAnOlderChat(t *testing.T) {
+	path := socketPath(t)
+	srv, err := serve(path, "fix-auth", nil)
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+	srv.publish(Status{Workspace: "fix-auth", State: StateIdle, Tool: "grep"})
+
+	st, ok := Query(path, "fix-auth")
+	if !ok {
+		t.Fatal("a status with no protocol was refused")
+	}
+	if !st.Behind() {
+		t.Error("a chat that publishes no protocol should read as an older one")
+	}
+	if st.State != StateIdle || st.Tool != "grep" {
+		t.Errorf("status = %+v, want everything else read as it always was", st)
+	}
+}
+
+// The greeting carries it before anything has been published, so a chat that is
+// still starting can already be told apart from one that cannot answer.
+func TestServe_GreetingCarriesTheProtocol(t *testing.T) {
+	path := socketPath(t)
+	srv, err := serve(path, "fix-auth", nil)
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	st, ok := Query(path, "fix-auth")
+	if !ok {
+		t.Fatal("Query failed against a freshly served socket")
+	}
+	if st.Protocol != ProtocolVersion {
+		t.Errorf("greeting Protocol = %d, want %d", st.Protocol, ProtocolVersion)
+	}
+}
+
+// Stamped by Send rather than by each caller, so the one that forgot would not
+// look like a dashboard from before the field existed.
+func TestSend_StampsTheProtocol(t *testing.T) {
+	path := socketPath(t)
+	got := make(chan Command, 1)
+	srv, err := serve(path, "fix-auth", func(c Command) Result {
+		got <- c
+		return Result{OK: true}
+	})
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+	srv.publish(Status{Workspace: "fix-auth", State: StateWorking})
+
+	if err := Send(path, "fix-auth", Command{Type: CommandInterrupt}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case cmd := <-got:
+		if cmd.Protocol != ProtocolVersion {
+			t.Errorf("Protocol = %d, want %d", cmd.Protocol, ProtocolVersion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the command never arrived")
+	}
+}
+
+// A command this chat has no case for is an unknown command from a peer of its
+// own age, and an out-of-date window from a newer one. Saying "unknown command"
+// to the second sends somebody hunting for a bug that is not there.
+func TestRemoteCommand_UnknownFromANewerPeerNamesTheOldWindow(t *testing.T) {
+	m := newTestModel()
+	m.opts.Version = "0.4.1"
+
+	_, _, res := m.applyRemoteCommand(Command{Type: "teleport", Protocol: ProtocolVersion + 1})
+	if res.OK {
+		t.Fatal("a command this chat has no case for was accepted")
+	}
+	for _, want := range []string{"0.4.1", "teleport"} {
+		if !strings.Contains(res.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", res.Reason, want)
+		}
+	}
+}

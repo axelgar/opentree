@@ -52,6 +52,10 @@ type Options struct {
 	// every reading rather than only the changes: deciding what is an edge
 	// belongs to the notifier, and Update is the one method every change
 	// already passes through.
+	//
+	// It is called on the render loop, so it must return promptly and must not
+	// wait on anything a notification surface does — a banner or a bell that
+	// blocks here is a chat that stops drawing while it is raised.
 	Notify func(notify.Signal)
 
 	// Setup is the project's bootstrap phase, run before the agent is
@@ -192,6 +196,11 @@ func Run(ctx context.Context, opts Options) error {
 		if srv, err := serve(opts.SocketPath, opts.Workspace, onCommand); err == nil {
 			defer func() { _ = srv.Close() }()
 			m.publish = srv.publish
+			// Published once here so the greeting carries which opentree this
+			// is from the moment the socket answers, rather than from the first
+			// frame. serve cannot know it, and a dashboard that dialled in
+			// between would read a blank version off a chat that has one.
+			srv.publish(m.status())
 		}
 	}
 
@@ -511,6 +520,13 @@ type Model struct {
 	spinnerFrame int
 	usage        *acp.ContextUsage
 
+	// spinning is whether a tick is already on its way back. The chain sustains
+	// itself — each tick asks for the next — so whatever starts one has to know
+	// that nothing else already did. Two chains is a spinner at twice the rate
+	// and twice the renders, which is exactly what a turn drained from the queue
+	// the instant the last one ended would have produced.
+	spinning bool
+
 	// hideThoughts collapses the agent's reasoning, which is noise when you
 	// are following what it did rather than why.
 	hideThoughts bool
@@ -621,10 +637,21 @@ func (b brand) paint(s lipgloss.Style) lipgloss.Style {
 	return s.Foreground(lipgloss.Color(b.colour))
 }
 
-// adapterMissing reports whether the agent has never started, which for an
-// agent reached through an adapter is what a missing one looks like. An agent
-// that started and later died wants a restart, not an install.
-func (m Model) adapterMissing() bool { return m.client == nil }
+// adapterMissing reports whether the ACP adapter this agent is reached through
+// is not on the machine — the one failure installing it would actually fix.
+//
+// It used to ask whether there was a client, which is false of every agent that
+// has not started for any reason: an adapter that crashes on launch, one that
+// answers stdio and never completes the handshake, one that a proxy stopped
+// from reaching its API. All three were told to install what was already
+// sitting on the PATH, and the hint displaced the line that would have helped.
+//
+// Asked rather than remembered, for the reason acpBinary is: installing the
+// adapter is something that happens while this window is open, from the agent
+// list two keys away, and an answer cached at launch is stale immediately after.
+func (m Model) adapterMissing() bool {
+	return m.opts.Agent != nil && !m.opts.Agent.ACPInstalled()
+}
 
 // canLogIn reports whether logging in is a remedy for the current state, which
 // takes both an agent asking for credentials and a way to give them: a command
@@ -924,4 +951,20 @@ func (m Model) launchCmd(keepLog bool) tea.Cmd {
 
 func spinnerTick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+// spin begins the frame ticker, unless one is already running.
+//
+// The guard is the whole point. A tick asks for the next tick, so a second
+// chain started over the top of the first never ends — both keep ticking, the
+// spinner runs at twice the rate and the log is re-rendered twice as often, for
+// the rest of the session. Both starters can reach that: the setup retry key
+// arrives while the previous run's last tick may still be in flight, and a
+// queued prompt begins its turn in the same update that ended the one before it.
+func (m Model) spin() (Model, tea.Cmd) {
+	if m.spinning {
+		return m, nil
+	}
+	m.spinning = true
+	return m, spinnerTick()
 }

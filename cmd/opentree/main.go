@@ -59,6 +59,7 @@ func init() {
 	rootCmd.AddCommand(cmd.PrCmd)
 	rootCmd.AddCommand(cmd.IssueCmd)
 	rootCmd.AddCommand(cmd.InstallCompletionCmd)
+	rootCmd.AddCommand(cmd.UninstallCmd)
 	rootCmd.AddCommand(cmd.ConfigCmd)
 	rootCmd.AddCommand(cmd.AgentsCmd)
 	rootCmd.AddCommand(cmd.ReviewCmd)

@@ -502,8 +502,11 @@ func newUnlaunchedModel() Model {
 	m.dead = true
 	m.err = stringError("failed to start claude-agent-acp: executable file not found in $PATH")
 	// The one registry agent behind an adapter, so the panel has an install
-	// hint to derive.
+	// hint to derive — pointed at a name nothing can resolve, because whether
+	// the machine running these tests happens to have the real adapter sitting
+	// on its PATH is not what any of them is about.
 	m.opts.Agent = testAgent("claude")
+	m.opts.Agent.ACP.Command = "opentree-adapter-that-is-not-installed"
 	return m
 }
 
@@ -514,24 +517,48 @@ func TestMissingAdapter_SaysWhereToGetIt(t *testing.T) {
 	}
 	view := m.footer()
 	// The chat states the problem and points at the agent list; installing a
-	// 303MB dependency from inside a conversation that cannot start reads as
+	// 340MB dependency from inside a conversation that cannot start reads as
 	// the wrong place for it.
-	for _, want := range []string{"303MB", "agent list", "[r]"} {
+	for _, want := range []string{"340MB", "agent list", "[r]"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("stopped panel missing %q\ngot:\n%s", want, view)
 		}
 	}
 }
 
+// An agent that started and later died wants a restart, not advice about a
+// dependency it demonstrably has.
+//
+// Whether the adapter is on the machine is what tells the two apart. The panel
+// used to ask whether this chat had ever held a client, which is false of every
+// failure there is — an adapter that crashes on launch, one that accepts stdio
+// and never answers the handshake, a proxy between it and its API — and all of
+// them were told to go and install what was already sitting on the PATH, in
+// place of the line that would have helped.
 func TestRunningAgent_IsNotToldToInstallAnything(t *testing.T) {
-	// An agent that started and later died wants a restart, not advice about a
-	// dependency it demonstrably has.
 	m := newUnlaunchedModel()
+	// sh stands in for an adapter that is plainly installed; opentree needs a
+	// POSIX shell to run tmux at all, so it is there.
+	m.opts.Agent.ACP.Command = "sh"
+	m.err = stringError("claude-agent-acp exited")
 	m.client = &acp.Client{} // it launched once
 	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
 
 	if strings.Contains(m.footer(), "agent list") {
 		t.Errorf("stopped panel should not mention installing\ngot:\n%s", m.footer())
+	}
+}
+
+// And the same agent with the adapter genuinely absent still gets the hint,
+// whether or not a client was ever held — a crash before the first handshake
+// and a missing binary look identical from the outside.
+func TestMissingAdapter_HintSurvivesAClientThatOnceExisted(t *testing.T) {
+	m := newUnlaunchedModel()
+	m.client = &acp.Client{}
+	m, _ = applyUpdate(m, agentGoneMsg{generation: m.generation})
+
+	if !strings.Contains(m.footer(), "agent list") {
+		t.Errorf("an adapter that is not installed was not offered the install\ngot:\n%s", m.footer())
 	}
 }
 

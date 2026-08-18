@@ -74,6 +74,150 @@ func (m *Manager) worktreePath(branchName string) (string, error) {
 	return path, nil
 }
 
+// ensureBaseDir creates the directory the worktrees live in, and on the way
+// makes sure git ignores it.
+func (m *Manager) ensureBaseDir() error {
+	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
+	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
+	}
+	m.excludeBaseDir()
+	return nil
+}
+
+// excludeBaseDir asks git to ignore the directory the worktrees live in.
+//
+// The base directory defaults to .opentree inside the repository, so a single
+// `opentree new feat/x` leaves a complete second checkout sitting in the user's
+// working tree. Git notices: `git add -A` warns "adding embedded git
+// repository" and stages a gitlink — mode 160000, pointing at a commit that
+// exists nowhere but this machine — and whoever checks that branch out gets an
+// empty directory with no way to fill it. Nothing in opentree used to write an
+// ignore rule anywhere, so every repository except the author's own, which has
+// carried the entry by hand for as long as it has existed, met that on its
+// first workspace.
+//
+// The rule goes in .git/info/exclude rather than .gitignore. .gitignore is
+// tracked and belongs to the project: writing to it turns "make me a worktree"
+// into an uncommitted change in a shared file, which the user then has to
+// either carry through somebody's review or explain away, and in a repository
+// they have merely cloned they may want neither. The worktrees are one
+// person's working area, their location is configurable per user, and none of
+// it is shared, so a local-only exclude is the honest scope. It also keeps
+// opentree from putting a file inside the base directory, where a workspace
+// named .gitignore would collide with it.
+//
+// Every failure here is swallowed. A read-only .git, an exclude file that is
+// not a file, a git too old to answer, no repository at all: none of that is a
+// reason to refuse a worktree the user asked for, and opentree has no log to
+// report it to.
+func (m *Manager) excludeBaseDir() {
+	entry, ok := m.excludeEntry()
+	if !ok {
+		return
+	}
+
+	// Ask git rather than read the file. The rule may already be in force from
+	// an earlier run, from the project's own .gitignore, or from a global
+	// core.excludesFile, and a second copy of a rule that already works is
+	// litter in a file opentree does not own.
+	if m.ignoredByGit(strings.TrimPrefix(entry, "/")) {
+		return
+	}
+
+	commonDir := m.gitCommonDir()
+	if commonDir == "" {
+		return
+	}
+	excludeFile := filepath.Join(commonDir, "info", "exclude")
+
+	existing, err := os.ReadFile(excludeFile)
+	if err != nil && !os.IsNotExist(err) {
+		return
+	}
+	// check-ignore is the authority on whether the rule bites; this second look
+	// is for the case where it could not answer, and stops a run of those from
+	// stacking identical lines.
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(excludeFile), 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(excludeFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	// Append, never rewrite. Whatever the user keeps in here is theirs and in
+	// the order they put it; a file that does not end in a newline would
+	// otherwise have the rule welded onto its last line.
+	var addition strings.Builder
+	if len(existing) > 0 {
+		if !strings.HasSuffix(string(existing), "\n") {
+			addition.WriteString("\n")
+		}
+		addition.WriteString("\n")
+	}
+	addition.WriteString("# opentree's worktrees\n")
+	addition.WriteString(entry + "\n")
+	_, _ = f.WriteString(addition.String())
+}
+
+// excludeEntry is the gitignore pattern for the base directory, and whether git
+// has any use for one. The documented ../worktrees layout puts the worktrees
+// outside the repository, where nothing git does will ever look at them.
+func (m *Manager) excludeEntry() (string, bool) {
+	rel, err := filepath.Rel(m.repoRoot, filepath.Join(m.repoRoot, m.baseDir))
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	// Anchored, and marked as a directory: "/.opentree/" ignores the one
+	// directory opentree owns and not whatever else happens to share the name
+	// further down the tree.
+	return "/" + rel + "/", true
+}
+
+// ignoredByGit reports whether git already ignores this path, whichever file
+// the rule came from. The trailing slash the caller leaves on the path is what
+// tells git to judge it as a directory: a "/.opentree/" rule matches
+// directories only, and the question is worth asking before the directory
+// exists.
+func (m *Manager) ignoredByGit(path string) bool {
+	cmd := exec.Command("git", "check-ignore", "-q", "--", path)
+	cmd.Dir = m.repoRoot
+	return cmd.Run() == nil
+}
+
+// gitCommonDir is where the repository keeps what every worktree shares,
+// info/exclude among it. That is .git in an ordinary clone, but a repository
+// which is itself a linked worktree has a .git file and a private directory of
+// its own, and the exclude git actually reads is in neither.
+func (m *Manager) gitCommonDir() string {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = m.repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(m.repoRoot, dir)
+	}
+	return dir
+}
+
 // Create creates a new git worktree for the given branch
 func (m *Manager) Create(branchName, baseBranch string) error {
 	worktreePath, err := m.worktreePath(branchName)
@@ -86,10 +230,8 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 		return fmt.Errorf("worktree already exists: %s", worktreePath)
 	}
 
-	// Create base directory if it doesn't exist
-	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
-	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
-		return fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
+	if err := m.ensureBaseDir(); err != nil {
+		return err
 	}
 
 	// Create git worktree
@@ -118,10 +260,8 @@ func (m *Manager) CreateFromRemote(branchName string) (createdBranch bool, err e
 		return false, fmt.Errorf("worktree already exists: %s", worktreePath)
 	}
 
-	// Create base directory if it doesn't exist
-	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
-	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
-		return false, fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
+	if err := m.ensureBaseDir(); err != nil {
+		return false, err
 	}
 
 	// Fetch the remote branch

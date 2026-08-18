@@ -95,17 +95,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateServers(msg)
 		}
 
-		// Confirming an adapter download before switching agent
+		// Confirming an adapter download, however it was asked for. Both keys
+		// that can start one arrive here, and they differ only in what happens
+		// afterwards: a pending selection means enter asked for it and the
+		// switch is waiting on the install, no pending selection means i did
+		// and the adapter is being fetched for later.
 		if m.agentInstallConfirm != nil {
 			agent := *m.agentInstallConfirm
 			switch msg.String() {
 			case "y", "Y", "enter":
 				m.agentInstallConfirm = nil
-				m.agentPendingSelect = &agent
 				m.agentSelecting = false
 				return m, m.installAdapterCmd(agent)
 			case "n", "esc", "q":
 				m.agentInstallConfirm = nil
+				m.agentPendingSelect = nil
 			}
 			return m, nil
 		}
@@ -132,8 +136,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.transientErrCmd(fmt.Sprintf(
 						"%s is not installed — install %s first", agent.Name, agent.Command))
 				case agentAdapterMissing:
-					// A download this size is asked about, not sprung.
+					// A download this size is asked about, not sprung. The
+					// selection is recorded now and honoured once the adapter
+					// lands; declining takes it back.
 					m.agentInstallConfirm = &agents[m.agentCursor]
+					m.agentPendingSelect = &agents[m.agentCursor]
 					return m, nil
 				}
 				m.agentSelecting = false
@@ -141,7 +148,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.transientErrCmd(errMsg)
 				}
 			case "i":
-				// Installing without switching to it, for preparing ahead.
+				// Installing without switching to it, for preparing ahead. It
+				// goes through the same confirmation enter does: the download
+				// is the same hundreds of megabytes off the same registry
+				// whichever key asked for it, and a keystroke away from the
+				// list is exactly where an unattended install should not be.
 				agent := agents[m.agentCursor]
 				if len(agent.ACPInstallCommand()) == 0 {
 					return m, m.transientErrCmd(fmt.Sprintf("%s needs no adapter", agent.Name))
@@ -149,8 +160,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if agent.ACPInstalled() {
 					return m, m.transientErrCmd(fmt.Sprintf("%s is already installed", agent.ACPCommand()))
 				}
-				m.agentSelecting = false
-				return m, m.installAdapterCmd(agent)
+				m.agentInstallConfirm = &agents[m.agentCursor]
+				return m, nil
 			case "esc", "q":
 				m.agentSelecting = false
 			}

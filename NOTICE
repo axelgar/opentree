@@ -1,0 +1,54 @@
+opentree — third-party notices
+==============================
+
+opentree itself is distributed under the MIT Licence; see LICENSE. This file
+records the third-party names, marks and code that opentree touches, and the
+rights it does not claim in them.
+
+
+Trade marks
+-----------
+
+opentree drives coding agents it did not write. It draws each one under that
+agent's own name, wordmark and brand colour so that the agent you are talking
+to is identifiable at a glance, and those wordmarks are reproduced as terminal
+text in pkg/config/agents.go, transcribed from each tool's own splash screen.
+
+  opencode         "opencode", its wordmark and the colour #CFCECD are marks of
+                   the opencode project.
+
+  Claude Code      "Anthropic", "Claude", "Claude Code", the Claude mark and
+                   the colour #D97757 are marks of Anthropic PBC.
+
+  GitHub Copilot   "GitHub", "Copilot", "GitHub Copilot", the Copilot mark and
+                   the colour #A371F7 are marks of GitHub, Inc.
+
+  Gemini CLI       "Google", "Gemini", "Gemini CLI", the Gemini sparkle and the
+                   colour #4285F4 are marks of Google LLC.
+
+All trade marks, service marks, trade names and logos are the property of their
+respective owners. They appear here only to identify the tools opentree can
+drive, descriptively and accurately, and no claim of any right in them is made
+or implied.
+
+opentree is an independent project. It is not affiliated with, sponsored by,
+endorsed by or otherwise connected to any of the owners named above; none of
+them has reviewed or approved it, and its MIT licence grants no rights in
+anyone's marks.
+
+If you own one of these marks and would prefer opentree did not reproduce it,
+open an issue at https://github.com/axelgar/opentree/issues and it will be
+changed.
+
+
+Third-party code
+----------------
+
+opentree redistributes no code belonging to the projects above. The one adapter
+it needs — @agentclientprotocol/claude-agent-acp, which bridges Claude Code onto
+the Agent Client Protocol — is fetched from npm when the user asks for it and
+installed under ~/.opentree/tools, under its own licence. `opentree uninstall`
+removes that directory again.
+
+The Go modules opentree links against are listed in go.mod and carry their own
+licences.

@@ -145,7 +145,14 @@ func (m Model) startSetup() (Model, tea.Cmd) {
 		cancel()
 		return setupDoneMsg{err: err}
 	}
-	return m.relayout(), run
+
+	// The spinner has to be started as well as drawn. The tick chain sustains
+	// itself but has to be begun by whoever needs it, and until now the only
+	// place that did was a turn — so the panel saying "setting up…" sat on frame
+	// zero for the whole of an install that can run for minutes, which reads as
+	// a window that has hung rather than one that is working.
+	m, tick := m.spin()
+	return m.relayout(), tea.Batch(run, tick)
 }
 
 // finishSetup records a completed phase and hands the window to the agent.

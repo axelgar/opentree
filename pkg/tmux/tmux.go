@@ -104,8 +104,19 @@ func (c *Controller) newWindow(name, workdir string, env []string, trailing ...s
 // descriptor limit is raised first so the agents behind the chat do not hit the
 // default macOS limit; exec then replaces the shell, so the pane's process is
 // the program itself.
+//
+// The command is quoted along with its arguments. It is not always a bare
+// program name: a workspace's agent window runs os.Executable(), so an opentree
+// installed under a path with a space in it — "Application Support" is the one
+// people hit — would reach the shell as a command that does not exist followed
+// by an argument nobody passed, and the window would die the moment it opened.
+//
+// Quoting is safe for the callers that hand this a shell fragment rather than a
+// path. They pass "sh" or "portless" as the command and the fragment as an
+// argument, and a POSIX shell strips quoting before it looks a command up, so
+// 'sh' and sh resolve to the same program.
 func launchLine(command string, args []string) string {
-	parts := []string{"exec", command}
+	parts := []string{"exec", shellQuote(command)}
 	for _, a := range args {
 		parts = append(parts, shellQuote(a))
 	}

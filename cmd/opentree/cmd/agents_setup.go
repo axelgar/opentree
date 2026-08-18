@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,7 +20,9 @@ var agentsSetupCmd = &cobra.Command{
 opentree talks to every agent over ACP and draws the conversation itself, so it
 reads status straight from the protocol and no hooks are involved. Agents that
 serve ACP themselves have nothing to install; the ones reached through an
-adapter get it fetched into ~/.opentree/tools, not the user's global npm root.`,
+adapter get it fetched into ~/.opentree/tools, not the user's global npm root,
+at the version this opentree was built against and with npm's install hooks
+switched off. The command it runs is printed before it runs.`,
 	Args: cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
@@ -51,18 +54,41 @@ func setupACPAgent(agent *config.PredefinedAgent) error {
 	if len(install) == 0 {
 		return reportNoHooksNeeded(agent.Name)
 	}
+	// "Already there" and "already the version opentree was built against" used
+	// to be the same sentence, because the install resolved `latest` and this
+	// command's advice was to run it again. The version is a decision recorded
+	// in the registry now, so a stale copy is replaced rather than reported as
+	// fine — otherwise pinning would leave every existing install frozen on
+	// whatever it happened to fetch.
 	if agent.ACPInstalled() {
-		fmt.Printf("✓ %s is already available at %s\n", agent.ACPCommand(), agent.ResolveACPCommand())
-		fmt.Println("Run this again to update it.")
-		return nil
+		switch have := agent.ACPInstalledVersion(); have {
+		case "":
+			// On PATH but not in opentree's prefix: somebody installed this
+			// themselves, and their copy is theirs to manage. Naming the
+			// pinned version is the whole remedy on offer.
+			fmt.Printf("✓ %s is already on PATH at %s\n", agent.ACPCommand(), agent.ResolveACPCommand())
+			fmt.Printf("opentree is built against %s and leaves your own copy alone.\n",
+				agent.ACPPackageSpec())
+			return nil
+		case agent.ACP.Version:
+			fmt.Printf("✓ %s %s is already available at %s\n",
+				agent.ACPCommand(), have, agent.ResolveACPCommand())
+			return nil
+		default:
+			fmt.Printf("%s %s is installed; opentree is built against %s.\n\n",
+				agent.ACPCommand(), have, agent.ACP.Version)
+		}
 	}
 
 	fmt.Printf("%s speaks the Agent Client Protocol through %s.\n", agent.Name, agent.ACPCommand())
-	fmt.Printf("Installing %s", agent.ACP.Package)
+	fmt.Printf("Installing %s", agent.ACPPackageSpec())
 	if agent.ACP.InstallSize != "" {
 		fmt.Printf(" (%s, needs node)", agent.ACP.InstallSize)
 	}
-	fmt.Printf(" into %s\n\n", config.ToolsDir())
+	// The command is printed rather than summarised: this runs a package
+	// manager over a few hundred packages, and the pin, the prefix and the
+	// refusal to run install hooks are the parts worth being able to check.
+	fmt.Printf(" into %s by running:\n\n  %s\n\n", config.ToolsDir(), strings.Join(install, " "))
 
 	cmd := exec.Command(install[0], install[1:]...) // #nosec G204 -- from the agent registry
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

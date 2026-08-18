@@ -60,6 +60,16 @@ sudo mv opentree /usr/local/bin/
 go install github.com/axelgar/opentree/cmd/opentree@latest
 ```
 
+### Uninstalling
+
+```bash
+opentree uninstall
+```
+
+Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
+
+It never touches a repository. The worktrees under `<repo>/.opentree` are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
+
 ## Quick Start
 
 ```bash
@@ -248,7 +258,7 @@ is queued rather than refused.
 themselves, so having the binary is the whole setup. Claude Code is reached
 through the `claude-agent-acp` adapter, which opentree installs on request into
 `~/.opentree/tools` rather than your global npm root — press `A` in the
-dashboard, pick Claude Code, and it offers the download (303MB, needs `node`).
+dashboard, pick Claude Code, and it offers the download (340MB, needs `node`).
 
 Those four are the whole list. opentree drives agents over ACP and nothing else,
 so an agent without an ACP server has no way in — if one ships support, it
@@ -716,6 +726,10 @@ See [PLAN.md](PLAN.md) for detailed architecture documentation.
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## Trademarks
+
+opentree draws each agent it drives — opencode, Claude Code, GitHub Copilot and Gemini CLI — under that agent's own wordmark and brand colour, so you can see at a glance which one you are talking to. Those marks belong to their respective owners. opentree is an independent project and is not affiliated with, sponsored by or endorsed by any of them. See [NOTICE](NOTICE).
 
 ## Acknowledgments
 

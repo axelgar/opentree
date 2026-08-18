@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/axelgar/opentree/pkg/fsutil"
 )
 
 // Store manages workspace state persistence
@@ -20,9 +24,35 @@ type Store struct {
 	state    *State
 }
 
+// stateVersion is the schema this binary writes, and the highest one it will
+// read.
+//
+// It is deliberately not bumped when a field is added. Keys this binary has no
+// field for survive a round trip — see the passthrough below — so a binary that
+// predates a field carries it through untouched instead of deleting it, which
+// is what a downgrade used to do to session ids, setup hashes and dev-server
+// ports. An additive change therefore needs no version at all.
+//
+// Bump it only for a change an older binary cannot carry through: a field whose
+// meaning changes, or one that goes away. That convention is what earns the
+// refusal in loadFromDisk. Turning away a file from the future is a heavy thing
+// to do — a stale `go install` copy still on PATH stops working — but by the
+// rule above the file it turns away is one it would otherwise rewrite into
+// something the newer binary no longer understands, and the message says which
+// ways out there are. Warning and carrying on was the other option, and it
+// trades a loud failure the user can act on for a quiet one they discover
+// afterwards.
+const stateVersion = 1
+
 // State represents the persisted state
 type State struct {
+	// Version is the schema the file was last written under. Zero is every
+	// file written before the field existed, and that is exactly the schema
+	// version 1 describes, so those load without ceremony.
+	Version    int                   `json:"version"`
 	Workspaces map[string]*Workspace `json:"workspaces"`
+
+	unknown map[string]json.RawMessage
 }
 
 // Workspace represents a workspace's metadata
@@ -73,6 +103,11 @@ type Workspace struct {
 	// ACPSessionID is the current one; this is what makes the earlier ones
 	// offerable again.
 	ACPSessions []ACPSession `json:"acp_sessions,omitempty"`
+
+	// unknown is shared by every copy of the record rather than cloned, which
+	// is safe because nothing ever writes to the map — a decode replaces it
+	// wholesale, and no caller outside this package can reach it at all.
+	unknown map[string]json.RawMessage
 }
 
 // ACPSession is one agent conversation this workspace has had.
@@ -85,6 +120,8 @@ type ACPSession struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+
+	unknown map[string]json.RawMessage
 }
 
 // maxRecordedSessions caps the ledger.
@@ -146,6 +183,146 @@ func (w *Workspace) ForgetSession(id string) {
 	}
 }
 
+// The passthrough for fields this binary does not know.
+//
+// Go's decoder drops object keys it has no field for, and every mutation
+// re-marshals the whole file, so without this an older opentree reading a newer
+// state.json deletes everything it does not recognise the moment the user runs
+// any command that writes. No race is needed — one serialized process is enough
+// — and a session id, a setup hash or a dev-server port has nothing to
+// re-derive it from, so the loss is permanent.
+//
+// Each type keeps the keys it did not recognise verbatim and folds them back in
+// on the way out. A key this binary does know always wins: the passthrough is
+// for carrying a stranger's data, never for shadowing our own.
+
+var (
+	stateKeys     = jsonKeys(State{})
+	workspaceKeys = jsonKeys(Workspace{})
+	sessionKeys   = jsonKeys(ACPSession{})
+)
+
+// jsonKeys is the set of object keys a struct marshals to, read off its own
+// tags so that adding a field to the struct is all adding a field takes.
+func jsonKeys(v any) map[string]struct{} {
+	t := reflect.TypeOf(v)
+	keys := make(map[string]struct{}, t.NumField())
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = f.Name
+		}
+		keys[name] = struct{}{}
+	}
+	return keys
+}
+
+// unknownFields picks out the members of a JSON object that known does not name.
+func unknownFields(data []byte, known map[string]struct{}) (map[string]json.RawMessage, error) {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil, err
+	}
+	for k := range all {
+		if _, ok := known[k]; ok {
+			delete(all, k)
+		}
+	}
+	if len(all) == 0 {
+		return nil, nil
+	}
+	return all, nil
+}
+
+// marshalWith encodes v and puts the carried keys back beside its own.
+//
+// It only re-encodes through a map when there is something to put back, so a
+// file with no strangers in it keeps the field order the structs declare rather
+// than being alphabetised for everybody by a case almost nobody hits.
+func marshalWith(v any, unknown map[string]json.RawMessage) ([]byte, error) {
+	data, err := json.Marshal(v)
+	if err != nil || len(unknown) == 0 {
+		return data, err
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(data, &merged); err != nil {
+		return nil, err
+	}
+	for k, raw := range unknown {
+		if _, ours := merged[k]; !ours {
+			merged[k] = raw
+		}
+	}
+	return json.Marshal(merged)
+}
+
+func (s State) MarshalJSON() ([]byte, error) {
+	type plain State // a defined type inherits no methods, so this does not recurse
+	return marshalWith(plain(s), s.unknown)
+}
+
+func (s *State) UnmarshalJSON(data []byte) error {
+	type plain State
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	unknown, err := unknownFields(data, stateKeys)
+	if err != nil {
+		return err
+	}
+	*s = State(p)
+	s.unknown = unknown
+	return nil
+}
+
+func (w Workspace) MarshalJSON() ([]byte, error) {
+	type plain Workspace
+	return marshalWith(plain(w), w.unknown)
+}
+
+func (w *Workspace) UnmarshalJSON(data []byte) error {
+	type plain Workspace
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	unknown, err := unknownFields(data, workspaceKeys)
+	if err != nil {
+		return err
+	}
+	*w = Workspace(p)
+	w.unknown = unknown
+	return nil
+}
+
+func (s ACPSession) MarshalJSON() ([]byte, error) {
+	type plain ACPSession
+	return marshalWith(plain(s), s.unknown)
+}
+
+func (s *ACPSession) UnmarshalJSON(data []byte) error {
+	type plain ACPSession
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	unknown, err := unknownFields(data, sessionKeys)
+	if err != nil {
+		return err
+	}
+	*s = ACPSession(p)
+	s.unknown = unknown
+	return nil
+}
+
 // New creates a new state store
 func New(repoRoot string) (*Store, error) {
 	opentreeDir := filepath.Join(repoRoot, ".opentree")
@@ -175,7 +352,15 @@ func (s *Store) withFileLock(lockType int, fn func() error) error {
 		return fmt.Errorf("failed to create lock directory: %w", err)
 	}
 
-	f, err := os.OpenFile(s.lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	// 0600, matching the state file it guards. A checkout shared between two
+	// Unix users cannot work once state.json itself is private anyway — the
+	// second user would take the lock and then fail on the read — and failing
+	// at the lock says "permission denied" against a path they can act on
+	// rather than leaving them to infer it from a JSON error. A 0644 lock left
+	// by an older release keeps its mode: chmod'ing a file that may belong to
+	// somebody else, on every single command, to tighten a file that holds no
+	// data, is a worse trade than the one it fixes.
+	f, err := os.OpenFile(s.lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
 	}
@@ -214,6 +399,13 @@ func (s *Store) loadFromDisk() error {
 		// mismatch need errors.As to reach the *json.SyntaxError underneath.
 		return fmt.Errorf("state file %s is corrupted (%w) — fix it or delete it to reset workspace tracking (worktrees and branches are not affected)", s.filePath, err)
 	}
+	// A file from the future is one whose schema changed in a way this binary
+	// cannot carry through — see stateVersion for why additive changes never
+	// get here. Loading it would mean writing it back mangled, so it is refused
+	// while the newer binary that wrote it can still read it.
+	if fresh.Version > stateVersion {
+		return fmt.Errorf("state file %s was written by a newer opentree (schema %d, this one reads %d) — upgrade opentree, or delete it to reset workspace tracking (worktrees and branches are not affected)", s.filePath, fresh.Version, stateVersion)
+	}
 	if fresh.Workspaces == nil { // e.g. `{}` or `"workspaces": null` on disk
 		fresh.Workspaces = make(map[string]*Workspace)
 	}
@@ -230,36 +422,25 @@ func (s *Store) loadFromDisk() error {
 
 // atomicWrite marshals and writes state to disk via temp file + fsync + rename.
 // Caller must hold an exclusive lock.
+//
+// The temp file is named rather than left to os.CreateTemp because
+// `.opentree/state.json.tmp` is one of the three names the worktree manager
+// refuses to hand to a workspace, and because a crashed writer should leave one
+// file the next write truncates rather than a new piece of litter every time.
+// The flock WriteAtomicVia asks its callers for is the one mutate already
+// holds.
 func (s *Store) atomicWrite() error {
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create state directory: %w", err)
-	}
+	// Every write stamps the schema this binary speaks. Doing it here rather
+	// than at load keeps a file that arrived without a version honest until it
+	// is actually rewritten under one.
+	s.state.Version = stateVersion
 
 	data, err := json.MarshalIndent(s.state, "", "  ")
 	if err != nil {
 		return err
 	}
-
-	tmpPath := s.filePath + ".tmp"
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create temp state file: %w", err)
-	}
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync() // flush to disk so the rename never installs a truncated file
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to write temp state file: %w", err)
-	}
-	if err := os.Rename(tmpPath, s.filePath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to rename temp state file: %w", err)
+	if err := fsutil.WriteAtomicVia(s.filePath, s.filePath+".tmp", data); err != nil {
+		return fmt.Errorf("failed to write state file %s: %w", s.filePath, err)
 	}
 	return nil
 }
@@ -294,6 +475,12 @@ func (s *Store) Load() error {
 func (s *Store) AddWorkspace(ws *Workspace) error {
 	return s.mutate(func() error {
 		cp := *ws // store a copy so later caller mutations don't alias the map
+		// Overwriting a name that is already here: the caller built its struct
+		// from nothing, so anything a newer opentree wrote against this record
+		// would go out with the old one unless it is carried across.
+		if cur, ok := s.state.Workspaces[ws.Name]; ok {
+			cp.unknown = cur.unknown
+		}
 		s.state.Workspaces[ws.Name] = &cp
 		return nil
 	})

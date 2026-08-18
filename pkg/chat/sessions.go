@@ -197,23 +197,45 @@ func (m Model) switchSessionCmd(chosen acp.SessionInfo) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		msg := m.reopenSession(client, chosen.SessionID, cwd)
-		ready, ok := msg.(sessionReadyMsg)
-		if !ok || m.opts.SaveSession == nil {
-			// A fresh session created by the fallback path has already recorded
-			// itself; anything else failed and has nothing to record.
-			return msg
-		}
-		if err := m.opts.SaveSession(acp.SessionInfo{
-			SessionID: ready.id,
-			Cwd:       cwd,
-			Title:     chosen.Title,
-			UpdatedAt: time.Now(),
-		}); err != nil {
-			return errMsg{err: fmt.Errorf("failed to record session id: %w", err)}
-		}
+		return m.recordSwitch(m.reopenSession(client, chosen.SessionID, cwd), chosen)
+	}
+}
+
+// recordSwitch is the bookkeeping a finished switch owes the workspace, applied
+// to whatever reopening it produced. It is separate from the command around it
+// for the reason composeTurn is: the decision is worth a test, and running the
+// command needs a live agent to reopen a conversation with.
+func (m Model) recordSwitch(msg tea.Msg, chosen acp.SessionInfo) tea.Msg {
+	ready, ok := msg.(sessionReadyMsg)
+	if !ok || !ready.resumed || m.opts.SaveSession == nil {
+		// Only a conversation that was genuinely reopened is recorded here.
+		// reopenSession falls back to a brand new session when the agent has
+		// forgotten the one it was asked for, and that path has already recorded
+		// the session it created — writing again would file the chosen
+		// conversation's title against the id of the one that replaced it, so
+		// /resume would offer that name twice, pointing at two different
+		// conversations. Anything that is not a sessionReadyMsg failed and has
+		// nothing to record.
 		return msg
 	}
+
+	err := m.opts.SaveSession(acp.SessionInfo{
+		SessionID: ready.id,
+		Cwd:       m.opts.Cwd,
+		Title:     chosen.Title,
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		// The conversation is open either way, so the ready message goes through
+		// and the failure rides along on it. Returning an error instead dropped
+		// the message: the agent held a live session this view had no id for,
+		// m.sessionID stayed empty from the switch, and every prompt typed
+		// afterwards queued for a session that was never going to arrive. What
+		// is actually lost is far smaller — closing the window comes back to the
+		// conversation that was left rather than the one that was chosen.
+		ready.note = joinMeta(ready.note, fmt.Sprintf("switched, but recording it failed: %v", err))
+	}
+	return ready
 }
 
 // nameSessionCmd records what a conversation is about, from the first thing

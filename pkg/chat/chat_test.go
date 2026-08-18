@@ -948,7 +948,7 @@ func diffCall(status, old, updated string) acp.ToolCall {
 	}
 }
 
-func TestDiffStat(t *testing.T) {
+func TestCountChanges(t *testing.T) {
 	tests := []struct {
 		name             string
 		old, updated     string
@@ -965,9 +965,9 @@ func TestDiffStat(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			added, removed := diffStat(diffCall(acp.StatusCompleted, tt.old, tt.updated))
+			added, removed := countChanges(callDiff(diffCall(acp.StatusCompleted, tt.old, tt.updated)))
 			if added != tt.wantAdd || removed != tt.wantRem {
-				t.Errorf("diffStat() = +%d/-%d, want +%d/-%d", added, removed, tt.wantAdd, tt.wantRem)
+				t.Errorf("countChanges() = +%d/-%d, want +%d/-%d", added, removed, tt.wantAdd, tt.wantRem)
 			}
 		})
 	}
@@ -1432,6 +1432,40 @@ func TestErrorText_FirstLineOnly(t *testing.T) {
 	m.err = stringError("agent closed the connection\nstderr line 1\nstderr line 2")
 	if got := m.errorText(); got != "agent closed the connection" {
 		t.Errorf("errorText() = %q, want just the cause", got)
+	}
+}
+
+// The other half of that decision. The panel keeps one line because a footer
+// has one to give; everything after it used to be dropped on the floor, which
+// on the launch path is the only account there is of what went wrong — acp
+// folds the whole stderr ring into the error precisely so it travels, and
+// errorText was the only thing that ever read it.
+func TestFailedLaunch_KeepsTheWholeFailureInTheLog(t *testing.T) {
+	m := newTestModel()
+	m.launching = true
+	m, _ = applyUpdate(m, errMsg{fatal: true, err: stringError(
+		"ACP handshake failed: EOF\nnode: bad option: --acp\nsee `node --help`")})
+
+	if got := m.errorText(); got != "ACP handshake failed: EOF" {
+		t.Errorf("errorText() = %q, want the panel to keep its one line", got)
+	}
+	log := m.renderLog()
+	for _, want := range []string{"node: bad option: --acp", "see `node --help`"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("the log dropped %q, which is the only account of what happened\ngot:\n%s", want, log)
+		}
+	}
+}
+
+// A failure that fits on one line is already on screen in the panel above; a
+// notice repeating it word for word is the message twice.
+func TestFailedLaunch_OneLineFailureIsNotSaidTwice(t *testing.T) {
+	m := newTestModel()
+	before := len(m.entries)
+	m, _ = applyUpdate(m, errMsg{err: stringError("session/new: refused"), fatal: true})
+
+	if len(m.entries) != before {
+		t.Errorf("entries = %+v, want nothing echoing a one-line failure", m.entries)
 	}
 }
 
@@ -1939,7 +1973,7 @@ func TestTypedPath_IsNotConvertedWhileTyping(t *testing.T) {
 		t.Errorf("input = %q, want the typed path left alone", got)
 	}
 	// It still travels as an image — it is only the label that waits.
-	blocks, _ := m.composeTurn(m.input.Value())
+	blocks, _ := m.composeTurn(m.input.Value(), typedHere)
 	if len(blocks) != 1 || blocks[0].Type != acp.BlockImage {
 		t.Errorf("blocks = %+v, want the typed path still sent as an image", blocks)
 	}
@@ -1967,7 +2001,7 @@ func newPastingModel() Model {
 
 // mustCompose is the blocks the model would send for whatever is typed.
 func mustCompose(m Model) []acp.ContentBlock {
-	blocks, _ := m.composeTurn(strings.TrimSpace(m.input.Value()))
+	blocks, _ := m.composeTurn(strings.TrimSpace(m.input.Value()), typedHere)
 	return blocks
 }
 
@@ -1998,7 +2032,7 @@ func TestPastedImage_GoesInAtTheCursor(t *testing.T) {
 	m, _ = applyUpdate(m, pastedImage())
 	m.input.InsertString("look wrong?")
 
-	blocks, _ := m.composeTurn(m.input.Value())
+	blocks, _ := m.composeTurn(m.input.Value(), typedHere)
 	if len(blocks) != 3 {
 		t.Fatalf("blocks = %+v, want text, image, text", blocks)
 	}
@@ -2046,7 +2080,7 @@ func TestPastedImage_DeletingTheLabelDropsTheImage(t *testing.T) {
 	m, _ = applyUpdate(m, pastedImage())
 	m.input.SetValue("never mind")
 
-	blocks, _ := m.composeTurn(m.input.Value())
+	blocks, _ := m.composeTurn(m.input.Value(), typedHere)
 	for _, b := range blocks {
 		if b.Type == acp.BlockImage {
 			t.Fatalf("blocks = %+v, want the image gone with its label", blocks)
@@ -2092,7 +2126,7 @@ func TestPastedImage_TwoOfTheSameResolveInOrder(t *testing.T) {
 	m.input.InsertString("and ")
 	m, _ = applyUpdate(m, pastedImage())
 
-	blocks, _ := m.composeTurn(m.input.Value())
+	blocks, _ := m.composeTurn(m.input.Value(), typedHere)
 	images := 0
 	for _, b := range blocks {
 		if b.Type == acp.BlockImage {
@@ -2308,5 +2342,127 @@ func TestLaunching_ClearsWhenTheClientArrives(t *testing.T) {
 	}
 	if nm.launching {
 		t.Error("the launching panel outlived the launch")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The spinner
+// ---------------------------------------------------------------------------
+
+// The tick chain sustains itself but has to be begun, and the only thing that
+// ever began one was a turn. A setup phase runs before any turn exists, so the
+// panel saying "setting up…" sat on frame zero for the whole of an install that
+// can run for minutes — a window that reads as hung rather than as working.
+func TestSetup_SpinnerRunsWhileTheCommandsDo(t *testing.T) {
+	m := setupModel(t, approvedSetup("pnpm install"))
+	m, _ = applyUpdate(m, setupBeginMsg{})
+
+	if !m.spinning {
+		t.Fatal("the commands are running and nothing asked for a frame")
+	}
+	before := m.spinnerFrame
+	m, cmd := applyUpdate(m, spinnerTickMsg{})
+	if m.spinnerFrame == before {
+		t.Error("a tick during setup did not move the spinner on")
+	}
+	if cmd == nil {
+		t.Error("the chain stopped after one frame")
+	}
+}
+
+// One chain at a time, and a new one once it has ended. Two are reachable —
+// the setup retry key arrives while the previous run's last tick may still be
+// in flight, and a queued prompt begins its turn in the same update that ended
+// the one before it — and two self-sustaining chains never stop.
+func TestSpin_OneChainAtATime(t *testing.T) {
+	m := newTestModel()
+
+	m, first := m.spin()
+	if first == nil {
+		t.Fatal("nothing started the spinner")
+	}
+	if _, second := m.spin(); second != nil {
+		t.Error("a second chain was started over the first; both would tick for ever")
+	}
+
+	// Nothing is running any more, so the chain ends — and whatever needs one
+	// next has to be able to start a fresh one.
+	m, cmd := applyUpdate(m, spinnerTickMsg{})
+	if cmd != nil {
+		t.Error("the spinner kept ticking with nothing to spin for")
+	}
+	if m.spinning {
+		t.Fatal("the chain ended but the model still thinks one is running")
+	}
+	if _, again := m.spin(); again == nil {
+		t.Error("the spinner could never be started again")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Whose message a turn is carrying
+// ---------------------------------------------------------------------------
+
+// A prompt from the workspace list is somebody else's sentence. Attaching the
+// image the user is halfway through composing to it sends a screenshot nobody
+// meant to send — and leaves the label for it sitting in a message box whose
+// attachment has gone.
+func TestRemotePrompt_LeavesThePastedImageAlone(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+	m.input.InsertString("what is wrong here?")
+	writing := m.input.Value()
+
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "run the tests"}})
+
+	if len(m.pending) != 1 {
+		t.Errorf("pending = %d, want the user's attachment still waiting for its own message", len(m.pending))
+	}
+	if got := m.input.Value(); got != writing {
+		t.Errorf("input = %q, want the half-written message untouched", got)
+	}
+	if len(m.entries) != 1 {
+		t.Fatalf("entries = %+v, want the one remote prompt", m.entries)
+	}
+	if strings.Contains(m.entries[0].text, "image") {
+		t.Errorf("logged %q, want a remote prompt to carry no attachment", m.entries[0].text)
+	}
+}
+
+// And the same when it waited in the queue first: the wait makes the case
+// stronger, since the image was pasted after the prompt was already accepted.
+func TestQueuedPrompt_LeavesThePastedImageAlone(t *testing.T) {
+	m := newPastingModel()
+	m.turn = true
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "run the tests"}})
+	if m.queued != "run the tests" {
+		t.Fatalf("queued = %q, want the prompt held while the agent works", m.queued)
+	}
+
+	m, _ = applyUpdate(m, pastedImage())
+	m, _ = applyUpdate(m, promptDoneMsg{}) // the turn ends and the queue drains
+
+	if !m.turn {
+		t.Fatal("the queued prompt did not run")
+	}
+	if len(m.pending) != 1 {
+		t.Errorf("pending = %d, want the image still waiting for the message it belongs to", len(m.pending))
+	}
+}
+
+// The message typed here still takes its attachments with it, and still clears
+// them — a second turn must not send the same image twice.
+func TestTypedPrompt_StillCarriesThePastedImage(t *testing.T) {
+	m := newPastingModel()
+	m, _ = applyUpdate(m, pastedImage())
+	m.input.InsertString("what is wrong here?")
+
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if len(m.pending) != 0 {
+		t.Errorf("pending = %d, want it cleared by the message that carried it", len(m.pending))
+	}
+	if len(m.entries) != 1 || !strings.Contains(m.entries[0].text, "image") {
+		t.Errorf("entries = %+v, want the image sent with what was typed", m.entries)
 	}
 }

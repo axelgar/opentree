@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -16,6 +17,7 @@ import (
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
@@ -124,6 +126,53 @@ func TestStatusCheckErrMsg_LogsOnceWithoutBanner(t *testing.T) {
 	}
 	if !strings.Contains(m.errLog[0], "auth") {
 		t.Errorf("errLog[0] = %q, want to contain the failure reason", m.errLog[0])
+	}
+}
+
+// TestBranchStatusResult_KeepsTheHalfThatWorked: git ls-remote answers without
+// gh and without GitHub, and its answer used to be thrown away along with the
+// gh error. On a repo gh cannot speak for, that meant the push badge never
+// corrected itself however often the thirty-second poll ran.
+func TestBranchStatusResult_KeepsTheHalfThatWorked(t *testing.T) {
+	partial := github.BranchStatus{Pushed: true}
+	msg := branchStatusResult("feat-a", partial, errors.New("gh pr view failed: no known GitHub host"), false)
+
+	got, ok := msg.(branchStatusCheckedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want branchStatusCheckedMsg carrying the ls-remote half", msg)
+	}
+	if !got.status.Pushed {
+		t.Error("the branch was known to be pushed and the answer was discarded with the gh error")
+	}
+	if got.wsName != "feat-a" {
+		t.Errorf("wsName = %q, want the workspace that was polled", got.wsName)
+	}
+}
+
+// TestBranchStatusResult_FailedPollKeepsTheConflictBadge: gh not answering says
+// nothing about whether the branch merges cleanly, so the zero value must not
+// stand in for an answer.
+func TestBranchStatusResult_FailedPollKeepsTheConflictBadge(t *testing.T) {
+	msg := branchStatusResult("feat-a", github.BranchStatus{Pushed: true}, errors.New("gh: HTTP 401"), true)
+
+	got, ok := msg.(branchStatusCheckedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want branchStatusCheckedMsg", msg)
+	}
+	if !got.status.MergeConflicts {
+		t.Error("a poll that never reached GitHub cleared the known conflict badge")
+	}
+}
+
+// TestBranchStatusResult_NothingLearnedIsStillAnError: RemoteCheckFailed is how
+// the poll says even ls-remote came back empty-handed, and a poll that learned
+// nothing belongs in the error log rather than pretending to be an answer.
+func TestBranchStatusResult_NothingLearnedIsStillAnError(t *testing.T) {
+	nothing := github.BranchStatus{RemoteCheckFailed: true}
+	msg := branchStatusResult("feat-a", nothing, errors.New("offline"), false)
+
+	if _, ok := msg.(statusCheckErrMsg); !ok {
+		t.Fatalf("msg = %T, want statusCheckErrMsg", msg)
 	}
 }
 
@@ -560,8 +609,9 @@ func TestOpenURL_ReturnsNonNilCmd(t *testing.T) {
 }
 
 func TestOpenURL_CmdDoesNotPanicOnExec(t *testing.T) {
-	// openURLCmd uses cmd.Start() (fire-and-forget, ignores errors), so even if
-	// xdg-open/open is not available, the returned cmd must not panic.
+	// This one runs the real opener, so on a machine without xdg-open/open the
+	// start fails and the reaper waits on a process that never existed. Neither
+	// may panic; the failure comes back as a message instead.
 	cmd := openURLCmd("https://example.com")
 	defer func() {
 		if r := recover(); r != nil {
@@ -1503,6 +1553,104 @@ func TestDeletedWorkspace_OnlyClearsFinishedNames(t *testing.T) {
 	}
 }
 
+// fanOut flattens whatever a command produced: a tea.BatchMsg is a list of
+// commands the runtime will run, so a test that wants to see all of the
+// messages has to run them itself.
+func fanOut(msg tea.Msg) []tea.Msg {
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{msg}
+	}
+	out := make([]tea.Msg, 0, len(batch))
+	for _, cmd := range batch {
+		out = append(out, cmd())
+	}
+	return out
+}
+
+// TestBatchDeleteResult_PartialFailureStillRefreshes: a batch where one delete
+// failed came back as a bare errMsg, which is the one path that does not reload
+// the list — so the workspaces that really had gone stayed on screen, still
+// spinning, until the ten-second refresh tick swept them away.
+func TestBatchDeleteResult_PartialFailureStillRefreshes(t *testing.T) {
+	err := errors.Join(
+		errors.New("delete feat-b: worktree is locked"),
+		errors.New("delete state feat-c: state.json is read-only"),
+	)
+
+	var deleted deletedWorkspaceMsg
+	var failed errMsg
+	msgs := fanOut(batchDeleteResult([]string{"feat-a", "feat-b", "feat-c"}, err))
+	for _, msg := range msgs {
+		switch m := msg.(type) {
+		case deletedWorkspaceMsg:
+			deleted = m
+		case errMsg:
+			failed = m
+		}
+	}
+
+	if len(deleted.names) != 1 || deleted.names[0] != "feat-a" {
+		t.Errorf("deleted = %v, want only the workspace the error does not blame", deleted.names)
+	}
+	if failed.err == nil {
+		t.Fatal("the failures went unreported")
+	}
+	if strings.Contains(failed.err.Error(), "\n") {
+		t.Errorf("err = %q, want one line: the banner is one row tall", failed.err)
+	}
+	for _, name := range []string{"feat-b", "feat-c"} {
+		if !strings.Contains(failed.err.Error(), name) {
+			t.Errorf("err = %q, want it to name %s as not deleted", failed.err, name)
+		}
+	}
+}
+
+// TestBatchDeleteResult_NoNameIsBlamedForALongerOne: reading names back out of
+// a joined error must not match "a" inside "feat-a", or a workspace that failed
+// would be announced as deleted.
+func TestBatchDeleteResult_NoNameIsBlamedForALongerOne(t *testing.T) {
+	msgs := fanOut(batchDeleteResult([]string{"a", "feat-a"}, errors.New("delete feat-a: worktree is locked")))
+
+	var deleted deletedWorkspaceMsg
+	for _, msg := range msgs {
+		if m, ok := msg.(deletedWorkspaceMsg); ok {
+			deleted = m
+		}
+	}
+	if len(deleted.names) != 1 || deleted.names[0] != "a" {
+		t.Errorf("deleted = %v, want only a — feat-a is the one that failed", deleted.names)
+	}
+}
+
+// TestBatchDeleteResult_WholeBatchFailedIsJustTheError: nothing left the list,
+// so there is nothing to reload and no success to announce.
+func TestBatchDeleteResult_WholeBatchFailedIsJustTheError(t *testing.T) {
+	err := errors.Join(
+		errors.New("delete feat-a: worktree is locked"),
+		errors.New("delete feat-b: worktree is locked"),
+	)
+
+	msg := batchDeleteResult([]string{"feat-a", "feat-b"}, err)
+	if _, ok := msg.(errMsg); !ok {
+		t.Fatalf("msg = %T, want a plain errMsg when nothing was deleted", msg)
+	}
+}
+
+// TestBatchDeleteResult_CleanBatchAnnouncesEveryName guards the common path
+// against the partial-failure reading: a nil error means all of them went.
+func TestBatchDeleteResult_CleanBatchAnnouncesEveryName(t *testing.T) {
+	msg := batchDeleteResult([]string{"feat-a", "feat-b"}, nil)
+
+	got, ok := msg.(deletedWorkspaceMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want deletedWorkspaceMsg", msg)
+	}
+	if len(got.names) != 2 {
+		t.Errorf("deleted = %v, want both names", got.names)
+	}
+}
+
 // Regression: sort modes had no tie-break, so ties reshuffled randomly on
 // every refresh (base order comes from map iteration).
 func TestSortedWorkspaces_DeterministicOnTies(t *testing.T) {
@@ -1616,6 +1764,49 @@ func TestOpenURLCmd_SuccessReports(t *testing.T) {
 	}
 	if got.url != "https://github.com/a/b/pull/7" {
 		t.Errorf("url = %q, want the opened URL", got.url)
+	}
+}
+
+// TestOpenURLCmd_ReapsTheOpener: nothing ever waited on the opener, so every
+// press of o left a zombie behind for the life of the dashboard.
+func TestOpenURLCmd_ReapsTheOpener(t *testing.T) {
+	origStart, origWait := cmdStart, cmdWait
+	t.Cleanup(func() { cmdStart, cmdWait = origStart, origWait })
+	cmdStart = func(c *exec.Cmd) error { return nil }
+	reaped := make(chan *exec.Cmd, 1)
+	cmdWait = func(c *exec.Cmd) error { reaped <- c; return nil }
+
+	if _, ok := openURLCmd("https://github.com/a/b/pull/7")().(browserOpenedMsg); !ok {
+		t.Fatal("expected the open to be reported as successful")
+	}
+
+	select {
+	case c := <-reaped:
+		if !strings.Contains(strings.Join(c.Args, " "), "pull/7") {
+			t.Errorf("reaped %v, want the opener that was just started", c.Args)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the opener was never waited on")
+	}
+}
+
+// TestOpenURLCmd_StartFailureIsNotReaped: Wait on a process that never started
+// answers nothing useful, and starting a goroutine to ask is noise.
+func TestOpenURLCmd_StartFailureIsNotReaped(t *testing.T) {
+	origStart, origWait := cmdStart, cmdWait
+	t.Cleanup(func() { cmdStart, cmdWait = origStart, origWait })
+	cmdStart = func(c *exec.Cmd) error { return fmt.Errorf("no browser") }
+	reaped := make(chan *exec.Cmd, 1)
+	cmdWait = func(c *exec.Cmd) error { reaped <- c; return nil }
+
+	if _, ok := openURLCmd("https://github.com/a/b/pull/7")().(errMsg); !ok {
+		t.Fatal("expected the failed open to be reported")
+	}
+
+	select {
+	case <-reaped:
+		t.Error("waited on an opener that never started")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

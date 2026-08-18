@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -14,6 +16,38 @@ import (
 	"strings"
 	"testing"
 )
+
+// testCerts is the pool the package fetches against while a test is running,
+// and nil between tests. Everything here is served over TLS because https is
+// the only scheme the package will speak, and httptest signs each server with a
+// certificate of its own — so the pool accumulates, letting one test stand up
+// two sites and redirect between them.
+//
+// Swapping a package-level client is only safe because nothing in this file
+// calls t.Parallel; a test that did would be sharing the seam with whatever ran
+// beside it.
+var testCerts *x509.CertPool
+
+// useHTTPS points the package's fetches at a test server. The first call in a
+// test installs a client and undoes it afterwards; later ones only add their
+// certificate. The redirect policy is the real one, so a test can watch it
+// refuse.
+func useHTTPS(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	if testCerts == nil {
+		testCerts = x509.NewCertPool()
+		prev := httpClient
+		httpClient = &http.Client{
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				RootCAs:    testCerts,
+				MinVersion: tls.VersionTLS12,
+			}},
+			CheckRedirect: refuseDowngrade,
+		}
+		t.Cleanup(func() { httpClient, testCerts = prev, nil })
+	}
+	testCerts.AddCert(srv.Certificate())
+}
 
 func digestOf(b []byte) string {
 	sum := sha256.Sum256(b)
@@ -67,8 +101,9 @@ func publisher(t *testing.T, index string, files map[string][]byte) *httptest.Se
 			_, _ = w.Write(body)
 		})
 	}
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
+	useHTTPS(t, srv)
 	return srv
 }
 
@@ -77,16 +112,23 @@ func publisher(t *testing.T, index string, files map[string][]byte) *httptest.Se
 type site struct {
 	url   string
 	index string
-	files map[string][]byte
-	hits  map[string]int
+	// movedTo is where the index answers from instead, once the site starts
+	// redirecting it somewhere else.
+	movedTo string
+	files   map[string][]byte
+	hits    map[string]int
 }
 
 func newSite(t *testing.T) *site {
 	t.Helper()
 	s := &site{files: map[string][]byte{}, hits: map[string]int{}}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits[r.URL.Path]++
 		if r.URL.Path == wellKnownPath {
+			if s.movedTo != "" {
+				http.Redirect(w, r, s.movedTo, http.StatusFound)
+				return
+			}
 			_, _ = w.Write([]byte(s.index))
 			return
 		}
@@ -98,6 +140,7 @@ func newSite(t *testing.T) *site {
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
+	useHTTPS(t, srv)
 	s.url = srv.URL
 	return s
 }
@@ -176,8 +219,9 @@ func TestDiscover_NotAPublisher(t *testing.T) {
 }
 
 func TestDiscover_NoIndex(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
+	useHTTPS(t, srv)
 	if _, err := Discover(t.Context(), srv.URL); err == nil {
 		t.Fatal("a 404 has to be an error — it is how a non-publisher answers")
 	}
@@ -530,11 +574,10 @@ func TestSafeName(t *testing.T) {
 
 func TestIndexURL(t *testing.T) {
 	for in, want := range map[string]string{
-		"example.com":                    "https://example.com" + wellKnownPath,
-		"https://example.com":            "https://example.com" + wellKnownPath,
-		"https://example.com/docs/deep":  "https://example.com" + wellKnownPath,
-		"https://example.com?a=b#c":      "https://example.com" + wellKnownPath,
-		"http://localhost:8080/anything": "http://localhost:8080" + wellKnownPath,
+		"example.com":                   "https://example.com" + wellKnownPath,
+		"https://example.com":           "https://example.com" + wellKnownPath,
+		"https://example.com/docs/deep": "https://example.com" + wellKnownPath,
+		"https://example.com?a=b#c":     "https://example.com" + wellKnownPath,
 	} {
 		u, err := indexURL(in)
 		if err != nil {
@@ -549,5 +592,199 @@ func TestIndexURL(t *testing.T) {
 		if u, err := indexURL(in); err == nil {
 			t.Errorf("indexURL(%q) = %q, want an error", in, u)
 		}
+	}
+}
+
+// The index is the root of trust: every digest opentree checks an artifact
+// against is read out of it. Over plaintext there is nothing to stop whoever
+// answers from writing both halves, and what gets installed is instructions the
+// agent will act on — so a site asked for over http is refused rather than
+// upgraded, which would say https and mean whatever the wire allowed.
+func TestIndexURL_RefusesPlaintext(t *testing.T) {
+	for _, in := range []string{"http://example.com", "http://localhost:8080/anything"} {
+		u, err := indexURL(in)
+		if err == nil {
+			t.Errorf("indexURL(%q) = %q, want it refused", in, u)
+			continue
+		}
+		if !strings.Contains(err.Error(), "https") {
+			t.Errorf("indexURL(%q) error = %v, want it to name https", in, err)
+		}
+	}
+}
+
+// An index does not have to redirect to reach plaintext — it can name an
+// artifact by absolute URL. The digest would still match, because the host on
+// the other end of an unauthenticated connection picks the bytes and the index
+// entry describing them is the only thing vouching for either.
+func TestInstall_RefusesAPlaintextArtifactURL(t *testing.T) {
+	body := []byte("---\nname: review\n---\nfrom the clear\n")
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(plain.Close)
+
+	srv := publisher(t, fmt.Sprintf(`{"$schema":"%s0.2.0/schema.json","skills":[
+		{"name":"review","type":"skill-md","description":"d","url":"%s/review.md","digest":"%s"}]}`,
+		schemaPrefix, plain.URL, digestOf(body)), nil)
+
+	entries, err := Discover(t.Context(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	err = Install(t.Context(), entries[0], dir)
+	if err == nil {
+		t.Fatal("want the plaintext artifact refused, got none")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error = %v, want it to name https", err)
+	}
+}
+
+// http.DefaultClient follows a redirect across schemes without comment, so an
+// https index could hand the download to plaintext and the digest check would
+// still pass — the party on the wire chose the bytes and the hash both.
+func TestInstall_RefusesARedirectToPlaintext(t *testing.T) {
+	body := []byte("---\nname: review\n---\nfrom the clear\n")
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(plain.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(wellKnownPath, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"$schema":"%s0.2.0/schema.json","skills":[
+			{"name":"review","type":"skill-md","description":"d","url":"review.md","digest":"%s"}]}`,
+			schemaPrefix, digestOf(body))
+	})
+	mux.HandleFunc("/.well-known/agent-skills/review.md", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/review.md", http.StatusFound)
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	useHTTPS(t, srv)
+
+	entries, err := Discover(t.Context(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := Install(t.Context(), entries[0], dir); err == nil {
+		t.Fatal("want the downgrade refused, got none")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "review")); !os.IsNotExist(err) {
+		t.Error("the refused skill was left behind")
+	}
+}
+
+// The rule is about the scheme, not about staying put: a release asset that
+// lands on a CDN is the ordinary case, and refusing it would make the check
+// something publishers work around rather than something they meet.
+func TestInstall_FollowsARedirectThatStaysOnHTTPS(t *testing.T) {
+	body := []byte("---\nname: review\n---\nfrom the cdn\n")
+	cdn := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(cdn.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(wellKnownPath, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"$schema":"%s0.2.0/schema.json","skills":[
+			{"name":"review","type":"skill-md","description":"d","url":"review.md","digest":"%s"}]}`,
+			schemaPrefix, digestOf(body))
+	})
+	mux.HandleFunc("/.well-known/agent-skills/review.md", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, cdn.URL+"/review.md", http.StatusFound)
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	useHTTPS(t, srv)
+	useHTTPS(t, cdn)
+
+	entries, err := Discover(t.Context(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := Install(t.Context(), entries[0], dir); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "review", "SKILL.md"))
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("SKILL.md = %q, %v", got, err)
+	}
+}
+
+// Update re-asks the recorded index and takes whatever digest comes back, so
+// the site answering is the one deciding what the agent reads next. A site that
+// has started redirecting its index somewhere else is not that site any more:
+// the replacement would pass every digest check, because the index that named
+// the digests came from the new host too.
+func TestUpdate_RefusesAPublisherThatMoved(t *testing.T) {
+	v1 := []byte("---\nname: review\n---\nv1\n")
+	a := newSite(t)
+	a.publish("review", v1)
+	dir := installed(t, a, "review", t.TempDir())
+
+	theirs := []byte("---\nname: review\n---\nnot from the site you trusted\n")
+	b := newSite(t)
+	b.publish("review", theirs)
+	// Absolute, so the artifact comes from the new host as well: every digest
+	// checks out, because the index that named them came from there too.
+	b.index = fmt.Sprintf(`{"$schema":"%s0.2.0/schema.json","skills":[
+		{"name":"review","type":"skill-md","description":"d","url":"%s/.well-known/agent-skills/review.md","digest":"%s"}]}`,
+		schemaPrefix, b.url, digestOf(theirs))
+	a.movedTo = b.url + wellKnownPath
+
+	_, err := Update(t.Context(), dir)
+	if err == nil {
+		t.Fatal("want the move refused, got none")
+	}
+	if !strings.Contains(err.Error(), "install it again") {
+		t.Errorf("error = %v, want it to say what to do", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if !bytes.Equal(got, v1) {
+		t.Error("the installed version was replaced from a site it never came from")
+	}
+}
+
+// A skill installed before the publisher was recorded has nothing to compare
+// against. Refusing those would make every skill an earlier opentree installed
+// permanently un-updatable, so the first update records the site it is already
+// pointed at and carries on.
+func TestUpdate_RecordsAPublisherAnOlderInstallDidNot(t *testing.T) {
+	s := newSite(t)
+	s.publish("review", []byte("---\nname: review\n---\nv1\n"))
+	dir := installed(t, s, "review", t.TempDir())
+
+	// What an earlier opentree left behind: everything but the origin.
+	src, _ := readSource(dir)
+	src.Origin = ""
+	if err := writeSource(dir, src); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing to take, and the pin is recorded anyway. An update that changes no
+	// bytes is the usual answer, so it is the only chance most skills get to
+	// pick one up — waiting for a version that never comes would leave them
+	// checked against nothing forever.
+	changed, err := Update(t.Context(), dir)
+	if err != nil || changed {
+		t.Fatalf("Update = %v, %v, want no change", changed, err)
+	}
+	if got, _ := readSource(dir); got.Origin != s.url {
+		t.Errorf("origin = %q, want it filled in as %q", got.Origin, s.url)
+	}
+
+	// And the update it might have blocked goes through.
+	v2 := []byte("---\nname: review\n---\nv2\n")
+	s.publish("review", v2)
+	if changed, err := Update(t.Context(), dir); err != nil || !changed {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "SKILL.md")); !bytes.Equal(got, v2) {
+		t.Errorf("SKILL.md = %q, want the new version", got)
 	}
 }

@@ -253,6 +253,36 @@ func TestOverrideFile_PrefersWhereTheOverrideAlreadyIs(t *testing.T) {
 	}
 }
 
+// The file people actually keep is not an object of objects of strings: "model"
+// is a string and "voiceEnabled" is a bool. Decoding the whole document into a
+// typed map failed on the first of those, so the one file that did hold the
+// override read as unreadable and the write went to the first file in the list
+// instead — landing underneath a layer still saying off.
+func TestOverrideFile_ReadsPastTheSiblingKeys(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project.json")
+	user := filepath.Join(dir, "user.json")
+	if err := os.WriteFile(project, []byte(`{"skillOverrides":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(user, []byte(realSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := config.SkillsSpec{SettingsFiles: []string{project, user}, OverridesKey: "skillOverrides"}
+
+	if got := OverrideFile(spec, "", "tdd"); got != user {
+		t.Errorf("OverrideFile = %q, want the file already holding it (%q)", got, user)
+	}
+	// And the write follows it there, which is the whole point of asking.
+	if _, err := SetOverride(spec, "", "tdd", StateNameOnly); err != nil {
+		t.Fatalf("SetOverride: %v", err)
+	}
+	if readOverrides(specFor(user), "")["tdd"] != StateNameOnly {
+		data, _ := os.ReadFile(user)
+		t.Errorf("the change did not land in %s:\n%s", user, data)
+	}
+}
+
 func TestSettingsPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

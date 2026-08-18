@@ -264,6 +264,85 @@ func TestDeleteMultiple(t *testing.T) {
 	}
 }
 
+// A batch where one workspace refuses to go used to report one flat joined
+// error, and the caller had no way to tell which of the selected workspaces it
+// applied to: the ones that had gone stayed on screen, and the one that had not
+// was never named. The batch is not a transaction, so the successes must be
+// finished — window killed, state entry removed — and the error must say which
+// names are still there and why.
+func TestDeleteMultiple_MixedBatchNamesTheFailure(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	if _, err := svc.Create("branch-a", "main"); err != nil {
+		t.Fatalf("Create branch-a: %v", err)
+	}
+	if _, err := svc.Create("branch-b", "main"); err != nil {
+		t.Fatalf("Create branch-b: %v", err)
+	}
+
+	// A locked worktree is what this looks like in the wild: `git worktree
+	// remove --force` refuses one, so branch-a cannot go while branch-b can.
+	lock := exec.Command("git", "worktree", "lock", svc.WorktreePath("branch-a"))
+	lock.Dir = repoDir
+	if out, err := lock.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree lock: %v\n%s", err, out)
+	}
+
+	err = svc.DeleteMultiple([]string{"branch-a", "branch-b"})
+	if err == nil {
+		t.Fatal("DeleteMultiple with a locked worktree should report an error")
+	}
+
+	var batch *DeleteBatchError
+	if !errors.As(err, &batch) {
+		t.Fatalf("DeleteMultiple error is %T, want *DeleteBatchError: %v", err, err)
+	}
+	if !slices.Equal(batch.Deleted, []string{"branch-b"}) {
+		t.Errorf("batch.Deleted = %v, want [branch-b]", batch.Deleted)
+	}
+	if len(batch.Failed) != 1 || batch.Failed[0].Name != "branch-a" {
+		t.Fatalf("batch.Failed = %+v, want one failure named branch-a", batch.Failed)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "branch-a") || !strings.Contains(msg, "locked") {
+		t.Errorf("error should name branch-a and say what stopped it, got %q", msg)
+	}
+
+	// The half that worked is finished, not half-finished.
+	if _, err := svc.state.GetWorkspace("branch-b"); err == nil {
+		t.Error("branch-b's state entry survived a successful delete")
+	}
+	if dirExists(svc.WorktreePath("branch-b")) {
+		t.Error("branch-b's worktree survived a successful delete")
+	}
+	if !slices.Contains(mock.killWindowCalls, "branch-b") || !slices.Contains(mock.killWindowCalls, "branch-b:run") {
+		t.Errorf("KillWindow calls = %v, want branch-b and its server", mock.killWindowCalls)
+	}
+
+	// The half that failed is untouched, so the row stays and can be retried.
+	if _, err := svc.state.GetWorkspace("branch-a"); err != nil {
+		t.Errorf("branch-a's state entry was removed although its worktree is still there: %v", err)
+	}
+	if slices.Contains(mock.killWindowCalls, "branch-a") {
+		t.Errorf("branch-a's window was killed although its worktree is still there: %v", mock.killWindowCalls)
+	}
+	if mock.killSessionCalled {
+		t.Error("the tmux session was killed while a workspace is still there")
+	}
+}
+
 // A dev server outlives the worktree it was serving: the run window is not in
 // the workspace list, so it holds its port and a Node process while nothing on
 // screen mentions it. That is the same mess prune already means.

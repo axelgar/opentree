@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -411,25 +410,83 @@ func (s *Service) Delete(name string) error {
 	return nil
 }
 
+// DeleteFailure is one workspace a batch delete could not remove, and why.
+type DeleteFailure struct {
+	Name string
+	Err  error
+}
+
+// DeleteBatchError reports a batch delete that only partly happened: which
+// workspaces went, which stayed, and what stopped each one that stayed.
+//
+// Deleting a batch is not a transaction and cannot be made into one — each
+// worktree is off the disk and its branch gone long before the next name is
+// reached — so "it failed" is never the whole truth about a mixed batch. A
+// caller told only that much either leaves rows on screen for workspaces that
+// no longer exist, or clears rows for workspaces that are still there. Both
+// lists are carried here so it does not have to guess, and so the message the
+// user reads names the workspaces still waiting for them.
+//
+// The joined error this replaced carried the same facts as one flat string with
+// the names buried inside it, which nothing could read back out.
+type DeleteBatchError struct {
+	// Deleted names the workspaces that went, in the order they were asked for.
+	// Their state entries have been removed and their windows killed.
+	Deleted []string
+	// Failed names the workspaces that did not, each with its own reason.
+	Failed []DeleteFailure
+}
+
+func (e *DeleteBatchError) Error() string {
+	reasons := make([]string, 0, len(e.Failed))
+	for _, f := range e.Failed {
+		reasons = append(reasons, f.Name+": "+f.Err.Error())
+	}
+	msg := "could not delete " + strings.Join(reasons, "; ")
+	if len(e.Deleted) > 0 {
+		msg += " (deleted " + strings.Join(e.Deleted, ", ") + ")"
+	}
+	return msg
+}
+
+// Unwrap keeps errors.Is and errors.As working through the batch, the way they
+// did when this was an errors.Join.
+func (e *DeleteBatchError) Unwrap() []error {
+	errs := make([]error, 0, len(e.Failed))
+	for _, f := range e.Failed {
+		errs = append(errs, f.Err)
+	}
+	return errs
+}
+
 // DeleteMultiple removes multiple workspaces in sequence. A failure on one
-// workspace doesn't abandon the rest; all errors are reported together.
+// workspace does not abandon the rest, and the rest are genuinely gone: their
+// windows are killed and their state entries removed whatever happened to their
+// neighbours. A mixed batch returns a *DeleteBatchError naming both halves.
 func (s *Service) DeleteMultiple(names []string) error {
-	var errs []error
+	batch := &DeleteBatchError{}
 	for _, name := range names {
 		if err := s.worktrees.Delete(name, s.deletesBranch(name)); err != nil {
-			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
+			batch.Failed = append(batch.Failed, DeleteFailure{Name: name, Err: fmt.Errorf("failed to delete worktree: %w", err)})
 			continue
 		}
 		_ = s.process.KillWindow(name)
 		_ = s.process.KillWindow(s.ServerWindow(name))
 		if err := s.state.DeleteWorkspace(name); err != nil {
-			errs = append(errs, fmt.Errorf("delete state %s: %w", name, err))
+			batch.Failed = append(batch.Failed, DeleteFailure{Name: name, Err: fmt.Errorf("failed to delete workspace state: %w", err)})
+			continue
 		}
+		batch.Deleted = append(batch.Deleted, name)
 	}
 
 	s.killSessionIfOurs()
 
-	return errors.Join(errs...)
+	// A typed nil in an error interface is not nil, and every caller here tests
+	// the result against nil.
+	if len(batch.Failed) == 0 {
+		return nil
+	}
+	return batch
 }
 
 // HasChanges reports work that would be lost by deleting the workspace:

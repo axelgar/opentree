@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -283,11 +285,73 @@ func (m Model) attachServerCmd(name string) tea.Cmd {
 
 func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.svc.DeleteMultiple(names); err != nil {
-			return errMsg{err}
-		}
+		return batchDeleteResult(names, m.svc.DeleteMultiple(names))
+	}
+}
+
+// batchDeleteResult turns DeleteMultiple's single verdict on a whole batch into
+// what the dashboard has to do about it.
+//
+// A batch that half worked used to come back as a bare errMsg, which is the one
+// path that does not refresh the list — so the workspaces that really had gone
+// stayed on screen, spinner and all, until the ten-second tick swept them away.
+// The successes are reported first so the list corrects itself, and the failure
+// follows so the banner still says what went wrong and to which of them.
+func batchDeleteResult(names []string, err error) tea.Msg {
+	if err == nil {
 		return deletedWorkspaceMsg{names: names}
 	}
+	gone := deletedDespite(names, err)
+	failed := func() tea.Msg { return errMsg{oneLine(err)} }
+	if len(gone) == 0 {
+		return failed()
+	}
+	return tea.Batch(func() tea.Msg { return deletedWorkspaceMsg{names: gone} }, failed)()
+}
+
+// deletedDespite picks out the workspaces a failed batch delete still finished.
+//
+// DeleteMultiple joins one error per workspace it could not remove and names
+// each of them, so the names the error does not mention are the ones that went.
+// Reading names back out of an error is unlovely, and it is deliberately not
+// coupled to the wording: a name is looked up as a whole identifier, so nothing
+// here breaks if the joined error is phrased differently tomorrow. A name the
+// error does not mention is assumed gone, which is the direction that
+// self-corrects — deletedWorkspaceMsg reloads the list, and a workspace that is
+// still there simply reappears.
+func deletedDespite(names []string, err error) []string {
+	blamed := identifiers(err.Error())
+	gone := make([]string, 0, len(names))
+	for _, name := range names {
+		if !blamed[name] {
+			gone = append(gone, name)
+		}
+	}
+	return gone
+}
+
+// identifiers splits text into the runs that could be a workspace name, which
+// is what keeps "delete feat/a: ..." from reading as a complaint about "a". The
+// characters held together are the ones a branch name may contain.
+func identifiers(text string) map[string]bool {
+	set := make(map[string]bool)
+	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-_./", r)
+	}) {
+		set[field] = true
+	}
+	return set
+}
+
+// oneLine folds a joined error onto a single line. errors.Join separates its
+// causes with newlines and the error banner is one row tall, so a join left as
+// it is shows its first cause and silently hides every other.
+func oneLine(err error) error {
+	text := strings.TrimSpace(err.Error())
+	if !strings.Contains(text, "\n") {
+		return err
+	}
+	return errors.New(strings.Join(strings.Split(text, "\n"), "; "))
 }
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
@@ -365,14 +429,44 @@ func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {
 	}
 }
 
+// checkBranchStatusCmd asks whether the branch is on the remote and what its
+// pull request is doing. The two halves fail independently: git ls-remote needs
+// neither gh nor GitHub, so on a GitLab remote, or with a lapsed gh login, it
+// keeps answering long after the PR half stops. Discarding its answer with the
+// error is why a push badge on such a repo never corrected itself — the poll ran
+// every thirty seconds and threw away the half that worked every time.
+//
+// Exactly one message comes back either way: statusChecksInFlight counts one
+// reply per check, and a check answering twice would let the next thirty-second
+// round start on top of an unfinished one. The price is that a gh failure the
+// ls-remote half survived reaches no log, since only statusCheckErrMsg writes
+// there — worth revisiting the day branchStatusCheckedMsg can carry an error of
+// its own.
 func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bool) tea.Cmd {
+	// gh failing says nothing about whether the branch merges cleanly, so the
+	// last answer is carried forward rather than letting a zero value clear the
+	// conflict badge until the next poll that does reach GitHub.
+	knownConflicts := false
+	if i := m.workspaceIndex(wsName); i >= 0 {
+		knownConflicts = m.workspaces[i].MergeConflicts
+	}
 	return func() tea.Msg {
 		status, err := m.prMgr.GetBranchAndPRStatus(branch, repoDir, wasPushed)
-		if err != nil {
+		return branchStatusResult(wsName, status, err, knownConflicts)
+	}
+}
+
+// branchStatusResult decides how much of a failed poll is still worth having.
+// GetBranchAndPRStatus returns whatever it managed to learn alongside its error,
+// and RemoteCheckFailed is how it says the ls-remote half is not among it.
+func branchStatusResult(wsName string, status github.BranchStatus, err error, knownConflicts bool) tea.Msg {
+	if err != nil {
+		if status.RemoteCheckFailed {
 			return statusCheckErrMsg{err: err}
 		}
-		return branchStatusCheckedMsg{wsName: wsName, status: status}
+		status.MergeConflicts = knownConflicts
 	}
+	return branchStatusCheckedMsg{wsName: wsName, status: status}
 }
 
 // sendReviewsCmd hands a workspace's open PR review comments to its agent as a

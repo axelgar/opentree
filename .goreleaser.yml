@@ -13,7 +13,15 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
+  # LICENSE and NOTICE ride along. goreleaser includes README and LICENSE by
+  # default, but naming the set turns that default off, so both are listed:
+  # NOTICE names third-party marks the binary renders, and it has to reach
+  # whoever received the binary rather than only whoever cloned the repository.
   - formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE
 
 brews:
   # A tap formula has no notion of a prerelease channel: whatever is in it is

@@ -104,6 +104,14 @@ fi
 # ── Copy README into main package so it appears on npmjs.com ──────────────────
 cp README.md "${NPM_DIR}/opentree/README.md"
 
+# ── The licence and the attribution travel with the binary ────────────────────
+# npm picks LICENSE up on its own when it sits beside package.json, and picks
+# nothing else up ever. NOTICE names third-party marks opentree renders, so it
+# has to reach whoever received the thing rendering them — a file in the git
+# repository does not, for someone who installed from a registry.
+cp LICENSE "${NPM_DIR}/opentree/LICENSE"
+cp NOTICE "${NPM_DIR}/opentree/NOTICE"
+
 # ── Bump version + optionalDependencies in the main package ───────────────────
 jq --arg v "${NPM_VERSION}" '
   .version = $v |

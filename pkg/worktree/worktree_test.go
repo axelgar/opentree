@@ -949,3 +949,169 @@ func TestDelete_MissingBranchStillSucceeds(t *testing.T) {
 		t.Fatalf("Delete() with an already-deleted branch should succeed, got %v", err)
 	}
 }
+
+// ---- base directory exclusion ----
+
+// readExclude returns the contents of a repository's .git/info/exclude, or ""
+// when git has not written one yet.
+func readExclude(t *testing.T, repoDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoDir, ".git", "info", "exclude"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatalf("read exclude: %v", err)
+	}
+	return string(data)
+}
+
+// Regression: the base directory sits inside the repository and nothing taught
+// git to ignore it, so the first workspace made the repository dirty. `git add
+// -A` warned "adding embedded git repository" and staged a gitlink pointing at
+// a commit that existed only on the machine that made it.
+func TestCreate_ExcludesTheBaseDirectory(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	if got := readExclude(t, repoDir); !strings.Contains(got, "/.opentree/") {
+		t.Errorf(".git/info/exclude does not exclude the base directory:\n%s", got)
+	}
+
+	// The rule is only worth anything if git agrees it bites, and the whole
+	// point is that `git add -A` leaves the worktree alone.
+	if out, err := exec.Command("git", "-C", repoDir, "add", "-A").CombinedOutput(); err != nil {
+		t.Fatalf("git add -A: %v\n%s", err, out)
+	}
+	staged, err := exec.Command("git", "-C", repoDir, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v\n%s", err, staged)
+	}
+	if strings.Contains(string(staged), ".opentree") {
+		t.Errorf("the worktree was staged by `git add -A`:\n%s", staged)
+	}
+}
+
+// The exclude file belongs to the user; opentree may add its rule once and
+// never again, however many workspaces are made.
+func TestCreate_ExcludeRuleIsWrittenOnce(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	if err := m.Create("feat/one", "main"); err != nil {
+		t.Fatalf("Create(feat/one): %v", err)
+	}
+	first := readExclude(t, repoDir)
+	if err := m.Create("feat/two", "main"); err != nil {
+		t.Fatalf("Create(feat/two): %v", err)
+	}
+	second := readExclude(t, repoDir)
+
+	if second != first {
+		t.Errorf("a second Create rewrote .git/info/exclude:\nbefore:\n%s\nafter:\n%s", first, second)
+	}
+	if n := strings.Count(second, "/.opentree/"); n != 1 {
+		t.Errorf("the exclude rule appears %d times, want 1:\n%s", n, second)
+	}
+}
+
+// A project that already ignores the base directory — this one has carried
+// `.opentree/` in its .gitignore by hand since before opentree wrote any rule
+// of its own — gets nothing appended anywhere.
+func TestCreate_AlreadyIgnoredBaseDirectoryIsLeftAlone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte(".opentree/\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	before := readExclude(t, repoDir)
+
+	m := New(repoDir, ".opentree")
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	if after := readExclude(t, repoDir); after != before {
+		t.Errorf(".git/info/exclude was touched although .gitignore already covers the base directory:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// The documented ../worktrees layout puts the worktrees outside the repository
+// altogether. Git will never look there, so a rule for it would be a line in
+// the user's exclude file that means nothing.
+func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	before := readExclude(t, repoDir)
+
+	m := New(repoDir, filepath.Join("..", "worktrees"))
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "..", "worktrees", "feat-x")); err != nil {
+		t.Fatalf("worktree not created outside the repository: %v", err)
+	}
+
+	after := readExclude(t, repoDir)
+	if after != before {
+		t.Errorf(".git/info/exclude was touched for an out-of-repository base directory:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if strings.Contains(after, "worktrees") {
+		t.Errorf("exclude file names an out-of-repository base directory:\n%s", after)
+	}
+}
+
+// The exclude is a courtesy, not a precondition: whatever is wrong with the
+// repository's own files, the worktree the user asked for still gets made.
+// `.git/info` is replaced with a plain file here, which is the cheapest way to
+// make every path to the exclude fail — read, mkdir and open alike — without
+// depending on file permissions, which do nothing when the tests run as root.
+func TestCreate_SucceedsWhenTheExcludeCannotBeWritten(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	infoDir := filepath.Join(repoDir, ".git", "info")
+	if err := os.RemoveAll(infoDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if err := os.WriteFile(infoDir, []byte("not a directory\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := New(repoDir, ".opentree")
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create() should not fail because the exclude could not be written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, ".opentree", "feat-x")); err != nil {
+		t.Errorf("worktree not created: %v", err)
+	}
+}
+
+// Outside a git repository there is no exclude file to find, and the manager
+// must not invent one: creating .git/info/exclude in a directory that is not a
+// repository would leave a .git behind that git itself would then choke on.
+func TestExcludeBaseDir_OutsideARepositoryWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	m := New(dir, ".opentree")
+
+	m.excludeBaseDir()
+
+	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		t.Errorf("a .git directory was created outside a repository (err = %v)", err)
+	}
+}

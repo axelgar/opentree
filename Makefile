@@ -12,7 +12,13 @@ install: build
 	install -m 0755 $(BINARY) $(INSTALL_DIR)/$(BINARY)
 	$(INSTALL_DIR)/$(BINARY) install-completion
 
+# The binary was never the whole install: the target above also runs
+# install-completion, and opentree goes on to write adapters, the trust file and
+# the global config into the user's home. Only the binary knows where all of
+# that is, so it is asked first and removed last — running it afterwards would
+# mean asking a file that is no longer there.
 uninstall:
+	@if [ -x "$(INSTALL_DIR)/$(BINARY)" ]; then $(INSTALL_DIR)/$(BINARY) uninstall; fi
 	rm -f $(INSTALL_DIR)/$(BINARY)
 
 # Worktrees live inside the repo, so a plain find would reformat the checked-out

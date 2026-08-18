@@ -39,13 +39,42 @@ func watch(t *testing.T, on ...string) (*Watcher, *recorder, *clock) {
 	if w == nil {
 		t.Fatal("New returned nil for a watcher with a surface and events")
 	}
+	retire(t, w)
 	return w, rec, c
 }
 
-func observe(w *Watcher, states ...State) {
+// retire ends the watcher's delivery goroutine with the test that made it.
+// Nothing does this in production — a watcher lives as long as the chat process
+// — but a test binary makes hundreds of them.
+func retire(t *testing.T, w *Watcher) {
+	t.Helper()
+	t.Cleanup(func() { close(w.queue) })
+}
+
+// settle waits for everything already queued to have been dealt with, so an
+// assertion about what a surface received is made after delivery rather than
+// racing it.
+//
+// The marker rides the same queue as the events, and one goroutine drains it in
+// order — so a marker that comes back is proof that everything sent before it
+// has been decided on, delivered or suppressed.
+func settle(t *testing.T, w *Watcher) {
+	t.Helper()
+	done := make(chan struct{})
+	w.queue <- pending{done: done}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the delivery goroutine never caught up")
+	}
+}
+
+func observe(t *testing.T, w *Watcher, states ...State) {
+	t.Helper()
 	for _, s := range states {
 		w.Observe(Signal{State: s})
 	}
+	settle(t, w)
 }
 
 func TestWatcher_TheThreeEvents(t *testing.T) {
@@ -89,7 +118,7 @@ func TestWatcher_TheThreeEvents(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w, rec, _ := watch(t)
-			observe(w, tt.states...)
+			observe(t, w, tt.states...)
 			if got := rec.kinds(); !sameKinds(got, tt.want) {
 				t.Errorf("events = %v, want %v", got, tt.want)
 			}
@@ -107,6 +136,7 @@ func TestWatcher_EdgeNotLevel(t *testing.T) {
 		c.add(time.Minute)
 		w.Observe(Signal{State: StateBlocked, Detail: "rm -rf dist"})
 	}
+	settle(t, w)
 	if len(rec.events) != 1 {
 		t.Fatalf("sent %d notifications for one escalation, want 1", len(rec.events))
 	}
@@ -114,7 +144,7 @@ func TestWatcher_EdgeNotLevel(t *testing.T) {
 
 func TestWatcher_OnlyTheEnabledEvents(t *testing.T) {
 	w, rec, _ := watch(t, "blocked")
-	observe(w, StateWorking, StateIdle, StateStopped, StateBlocked)
+	observe(t, w, StateWorking, StateIdle, StateStopped, StateBlocked)
 	if got := rec.kinds(); !sameKinds(got, []Kind{Blocked}) {
 		t.Errorf("events = %v, want only the one that was switched on", got)
 	}
@@ -145,6 +175,7 @@ func TestWatcher_CooldownSwallowsAFlicker(t *testing.T) {
 		w.Observe(Signal{State: StateWorking})
 		c.add(time.Second)
 	}
+	settle(t, w)
 	if len(rec.events) != 1 {
 		t.Fatalf("sent %d notifications for one flickering escalation, want 1", len(rec.events))
 	}
@@ -152,6 +183,7 @@ func TestWatcher_CooldownSwallowsAFlicker(t *testing.T) {
 	// Past the cooldown it is news again.
 	c.add(cooldown)
 	w.Observe(Signal{State: StateBlocked, Detail: "rm -rf dist"})
+	settle(t, w)
 	if len(rec.events) != 2 {
 		t.Fatalf("sent %d, want the same question again once the cooldown passed", len(rec.events))
 	}
@@ -167,6 +199,7 @@ func TestWatcher_CooldownIsPerQuestion(t *testing.T) {
 	w.Observe(Signal{State: StateWorking})
 	c.add(time.Second)
 	w.Observe(Signal{State: StateBlocked, Detail: "git push --force"})
+	settle(t, w)
 
 	if len(rec.events) != 2 {
 		t.Fatalf("sent %d notifications for two different questions, want 2", len(rec.events))
@@ -178,13 +211,20 @@ func TestWatcher_CooldownIsPerQuestion(t *testing.T) {
 
 // TestWatcher_SuppressedWhenWatched is decision 6: a notification about the
 // window you are reading is an interruption with no content.
+//
+// It is also what pins the order of the two questions. Both are asked on the
+// delivery goroutine, visibility first, and settling between the halves is what
+// makes the flag below safe to flip: the goroutine has finished reading it
+// before the marker comes back.
 func TestWatcher_SuppressedWhenWatched(t *testing.T) {
 	rec := &recorder{}
 	looking := true
 	w := New(Options{Workspace: "fix-auth", On: Default(), Send: rec,
 		Watched: func() bool { return looking }})
+	retire(t, w)
 
 	w.Observe(Signal{State: StateBlocked, Detail: "rm -rf dist"})
+	settle(t, w)
 	if len(rec.events) != 0 {
 		t.Fatalf("sent %d notifications about the window being looked at", len(rec.events))
 	}
@@ -194,6 +234,7 @@ func TestWatcher_SuppressedWhenWatched(t *testing.T) {
 	looking = false
 	w.Observe(Signal{State: StateWorking})
 	w.Observe(Signal{State: StateBlocked, Detail: "rm -rf dist"})
+	settle(t, w)
 	if len(rec.events) != 1 {
 		t.Fatalf("sent %d, want the escalation once nobody was looking", len(rec.events))
 	}
@@ -206,6 +247,7 @@ func TestWatcher_DoneCarriesTheTurnLength(t *testing.T) {
 	w.Observe(Signal{State: StateWorking})
 	c.add(4 * time.Minute)
 	w.Observe(Signal{State: StateIdle})
+	settle(t, w)
 
 	if len(rec.events) != 1 {
 		t.Fatalf("sent %d notifications, want the one done", len(rec.events))
@@ -218,6 +260,7 @@ func TestWatcher_DoneCarriesTheTurnLength(t *testing.T) {
 func TestWatcher_EventsNameTheirWorkspace(t *testing.T) {
 	w, rec, _ := watch(t)
 	w.Observe(Signal{State: StateBlocked, Detail: "rm -rf dist"})
+	settle(t, w)
 	if got := rec.events[0].Workspace; got != "fix-auth" {
 		t.Errorf("Workspace = %q, want the one the watcher was made for", got)
 	}
@@ -233,4 +276,49 @@ func sameKinds(got, want []Kind) bool {
 		}
 	}
 	return true
+}
+
+// stuckSender stands in for a notification daemon that has stopped answering:
+// osascript on a machine that has not been asked to allow notifications yet,
+// notify-send against a bus that is not there. Both are bounded at three
+// seconds each, and there is one per surface.
+type stuckSender struct{ release chan struct{} }
+
+func (s stuckSender) Send(Event) { <-s.release }
+
+// TestWatcher_ObserveDoesNotWaitOnTheSurface is why delivery is a goroutine.
+//
+// Observe is called from the chat's render loop, once per state change, and
+// everything after the edge test leaves the process — the tmux question about
+// whether anyone is looking, then a subprocess per surface. A single blocked
+// transition used to freeze the window it was about for as long as the slowest
+// of them took, which is up to three seconds of a chat that will not draw.
+func TestWatcher_ObserveDoesNotWaitOnTheSurface(t *testing.T) {
+	stuck := stuckSender{release: make(chan struct{})}
+	defer close(stuck.release)
+
+	w := New(Options{Workspace: "fix-auth", On: Default(), Send: stuck})
+	if w == nil {
+		t.Fatal("New returned nil for a watcher with a surface and events")
+	}
+	retire(t, w)
+
+	// The first transition is handed over and never comes back. Every reading
+	// after it has to return anyway — including enough to overrun the queue,
+	// because a queue that is full must drop rather than wait.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Observe(Signal{State: StateBlocked, Detail: "rm -rf dist"})
+		for range queueDepth * 2 {
+			w.Observe(Signal{State: StateWorking})
+			w.Observe(Signal{State: StateStopped})
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Observe waited on a surface that never answered")
+	}
 }
