@@ -13,6 +13,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/ui"
 )
 
@@ -721,12 +722,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadWorkspacesCmd, next)
 
 	case prCreatedMsg:
-		ws, err := m.stateStore.GetWorkspace(msg.wsName)
-		if err == nil {
+		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
 			ws.PRURL = msg.prURL
 			ws.PRStatus = "open"
-			_ = m.stateStore.UpdateWorkspace(ws)
-		}
+			return nil
+		})
 		var branch, worktreeDir string
 		var wasPushed bool
 		if i := m.workspaceIndex(msg.wsName); i >= 0 {
@@ -778,12 +778,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case prStatusCheckedMsg:
-		ws, err := m.stateStore.GetWorkspace(msg.wsName)
-		if err == nil {
+		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
 			ws.PRURL = msg.prURL
 			ws.PRStatus = msg.prStatus
-			_ = m.stateStore.UpdateWorkspace(ws)
-		}
+			return nil
+		})
 		if i := m.workspaceIndex(msg.wsName); i >= 0 {
 			m.workspaces[i].PRURL = msg.prURL
 			m.workspaces[i].PRStatus = msg.prStatus
@@ -797,8 +796,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case branchStatusCheckedMsg:
 		m.statusChecksInFlight = max(0, m.statusChecksInFlight-1)
-		ws, err := m.stateStore.GetWorkspace(msg.wsName)
-		if err == nil {
+		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
 			if !msg.status.RemoteCheckFailed {
 				ws.BranchPushed = msg.status.Pushed
 				ws.RemoteDeleted = msg.status.RemoteDeleted
@@ -810,8 +808,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.status.PRState != "" {
 				ws.PRStatus = msg.status.PRState
 			}
-			_ = m.stateStore.UpdateWorkspace(ws)
-		}
+			return nil
+		})
 		if i := m.workspaceIndex(msg.wsName); i >= 0 {
 			if !msg.status.RemoteCheckFailed {
 				m.workspaces[i].BranchPushed = msg.status.Pushed

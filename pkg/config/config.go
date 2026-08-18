@@ -377,6 +377,21 @@ func LoadWithSources(repoPath string) (*Config, ConfigSource, error) {
 		repoCfg.Notify = NotifyConfig{}
 	}
 
+	// And the one value a repository may not choose freely. base_dir is joined
+	// to the repository root, and the result is what `opentree delete` hands to
+	// os.RemoveAll — so `base_dir = "../.."` in a cloned repository's
+	// opentree.toml is that repository asking to have the directory above the
+	// clone removed, on a keypress meant to delete a workspace.
+	//
+	// Only the repository layer, and only for a path that leaves the
+	// repository: "../worktrees" is a documented layout, and the user's own
+	// config is entitled to ask for it. IsLocal is the same question phrased
+	// as the standard library asks it — does joining this to a directory stay
+	// inside that directory. Dropped rather than refused, as above.
+	if repoCfg != nil && repoCfg.Worktree.BaseDir != "" && !filepath.IsLocal(repoCfg.Worktree.BaseDir) {
+		repoCfg.Worktree.BaseDir = ""
+	}
+
 	resolved := Default()
 	mergeInto(resolved, globalCfg)
 	mergeInto(resolved, repoCfg)

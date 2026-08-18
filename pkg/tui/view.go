@@ -235,9 +235,14 @@ func (m Model) View() string {
 		// implied: a dev server outlives the window it was started from, and
 		// one still running against a deleted worktree holds its port and
 		// prints stack traces at nobody.
-		return m.dialogCard(titleMsg,
+		body := []string{
 			confirmLabelStyle.Render("The worktree, its tmux windows — including any dev server — and all local changes will be removed."),
-			footer, dialogDanger)
+		}
+		if losses := m.deletionLosses(); len(losses) > 0 {
+			body = append(body, "")
+			body = append(body, losses...)
+		}
+		return m.dialogCard(titleMsg, strings.Join(body, "\n"), footer, dialogDanger)
 	}
 
 	// Issue creation dialog

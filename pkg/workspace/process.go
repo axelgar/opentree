@@ -10,6 +10,7 @@ type Window struct {
 	ID     string // unique window identifier
 	Name   string // display name (sanitized branch name)
 	Active bool   // whether this window is currently focused
+	Path   string // working directory of the window, or "" if unknown
 }
 
 // ProcessManager abstracts process/window management so the workspace service

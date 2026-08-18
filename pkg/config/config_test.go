@@ -722,3 +722,57 @@ func TestFindConfigFile_StopsAtRepoRoot(t *testing.T) {
 		t.Errorf("FindConfigFile() = %q, want %q", got, want)
 	}
 }
+
+// A repository may say where its worktrees go, and may not say "somewhere
+// else entirely". base_dir is joined to the repo root and the result is what
+// `opentree delete` hands to os.RemoveAll, so a cloned repository asking for
+// "../.." is asking to have the directory above the clone removed.
+func TestLoadWithSources_RepoBaseDirCannotEscape(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global config in the way
+
+	for _, base := range []string{"../..", "..", "../worktrees", "/tmp/elsewhere"} {
+		t.Run(base, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "opentree.toml")
+			toml := "[worktree]\nbase_dir = \"" + base + "\"\n"
+			if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
+				t.Fatalf("WriteFile(): %v", err)
+			}
+
+			cfg, src, err := LoadWithSources(path)
+			if err != nil {
+				t.Fatalf("LoadWithSources(): %v", err)
+			}
+			if cfg.Worktree.BaseDir != Default().Worktree.BaseDir {
+				t.Errorf("BaseDir = %q, want the default %q — an escaping repo value must be dropped",
+					cfg.Worktree.BaseDir, Default().Worktree.BaseDir)
+			}
+			if src.WorktreeBaseDir == SourceRepo {
+				t.Error("source says repo for a value that was dropped")
+			}
+		})
+	}
+}
+
+// The narrowness is the point: a repository that names a directory inside
+// itself is doing something ordinary and supported.
+func TestLoadWithSources_RepoBaseDirLocalIsKept(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	for _, base := range []string{".custom", "build/worktrees"} {
+		t.Run(base, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "opentree.toml")
+			toml := "[worktree]\nbase_dir = \"" + base + "\"\n"
+			if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
+				t.Fatalf("WriteFile(): %v", err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load(): %v", err)
+			}
+			if cfg.Worktree.BaseDir != base {
+				t.Errorf("BaseDir = %q, want %q", cfg.Worktree.BaseDir, base)
+			}
+		})
+	}
+}

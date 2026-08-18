@@ -7,6 +7,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 )
 
@@ -141,6 +142,8 @@ func (s *Service) ensurePort(name string) (int, error) {
 		return ws.Port, nil
 	}
 
+	// Read before the Update, not inside it: Update runs its callback holding
+	// the store's lock, and ListWorkspaces takes the same one.
 	taken := make(map[int]bool)
 	for _, other := range s.state.ListWorkspaces() {
 		if other.Port != 0 {
@@ -152,8 +155,17 @@ func (s *Service) ensurePort(name string) (int, error) {
 		return 0, err
 	}
 
-	ws.Port = port
-	if err := s.state.UpdateWorkspace(ws); err != nil {
+	if err := s.state.Update(name, func(w *state.Workspace) error {
+		// Another process may have assigned one between the read above and
+		// this lock. Theirs is already on disk and may already be bound, so
+		// it wins; the port picked here is simply dropped.
+		if w.Port != 0 {
+			port = w.Port
+			return nil
+		}
+		w.Port = port
+		return nil
+	}); err != nil {
 		return 0, fmt.Errorf("failed to record %s's port: %w", name, err)
 	}
 	return port, nil

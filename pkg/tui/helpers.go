@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,6 +103,54 @@ func (ws WorkspaceItem) actionHint() string {
 		return "p create PR • d diff • m message"
 	}
 	return ""
+}
+
+// deletionLosses is one line per workspace the delete dialog is about, naming
+// the branch that goes with it and what is on it that is not anywhere else.
+//
+// Every number here has already been loaded for the row behind the dialog —
+// DiffStat and FileChanges by the refresh, UncommittedCount beside them,
+// BranchPushed by the 30s status poll — so this costs no git calls and nothing
+// async. Which matters: the TUI is the only delete path that never calls
+// HasChanges, so it was the one asking "are you sure?" while showing the least.
+//
+// Workspaces with nothing to lose contribute no line rather than a reassuring
+// one. A dialog that says "clean" four times teaches people to press y.
+func (m Model) deletionLosses() []string {
+	targets := []string{m.deleteTarget}
+	if m.deleteTarget == "" {
+		targets = targets[:0]
+		for name := range m.selected {
+			targets = append(targets, name)
+		}
+		sort.Strings(targets)
+	}
+
+	var lines []string
+	for _, name := range targets {
+		i := m.workspaceIndex(name)
+		if i < 0 {
+			continue
+		}
+		ws := m.workspaces[i]
+
+		var loss []string
+		if ws.UncommittedCount > 0 {
+			loss = append(loss, dangerStyle.Render(plural(ws.UncommittedCount, "uncommitted file")))
+		}
+		if len(ws.FileChanges) > 0 {
+			loss = append(loss, ws.renderDiffStat())
+		}
+		if !ws.BranchPushed {
+			loss = append(loss, dangerStyle.Render("never pushed"))
+		}
+		if len(loss) == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s",
+			confirmLabelStyle.Render(ws.Branch), strings.Join(loss, confirmLabelStyle.Render(" · "))))
+	}
+	return lines
 }
 
 // renderDiffStat is the change summary in a row's detail line. The raw git

@@ -178,18 +178,18 @@ func TestParseWindows(t *testing.T) {
 	}{
 		{
 			name:  "single window",
-			input: "@0|1|main",
+			input: "@0|1|/repo|main",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: true},
+				{ID: "@0", Name: "main", Active: true, Path: "/repo"},
 			},
 		},
 		{
 			name:  "multiple windows",
-			input: "@0|0|main\n@1|1|feat-auth\n@2|0|fix-bug",
+			input: "@0|0|/repo|main\n@1|1|/repo/.opentree/feat-auth|feat-auth\n@2|0|/repo/.opentree/fix-bug|fix-bug",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: false},
-				{ID: "@1", Name: "feat-auth", Active: true},
-				{ID: "@2", Name: "fix-bug", Active: false},
+				{ID: "@0", Name: "main", Active: false, Path: "/repo"},
+				{ID: "@1", Name: "feat-auth", Active: true, Path: "/repo/.opentree/feat-auth"},
+				{ID: "@2", Name: "fix-bug", Active: false, Path: "/repo/.opentree/fix-bug"},
 			},
 		},
 		{
@@ -199,33 +199,43 @@ func TestParseWindows(t *testing.T) {
 		},
 		{
 			name:  "input with empty lines",
-			input: "@0|1|main\n\n@1|0|feat",
+			input: "@0|1|/repo|main\n\n@1|0|/repo|feat",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: true},
-				{ID: "@1", Name: "feat", Active: false},
+				{ID: "@0", Name: "main", Active: true, Path: "/repo"},
+				{ID: "@1", Name: "feat", Active: false, Path: "/repo"},
 			},
 		},
 		{
 			name:  "malformed line (skipped)",
-			input: "@0|1|main\ninvalid\n@1|0|feat",
+			input: "@0|1|/repo|main\ninvalid\n@1|0|/repo|feat",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: true},
-				{ID: "@1", Name: "feat", Active: false},
+				{ID: "@0", Name: "main", Active: true, Path: "/repo"},
+				{ID: "@1", Name: "feat", Active: false, Path: "/repo"},
 			},
 		},
 		{
+			// The name is the last field for exactly this reason, and it is
+			// why the field count is exact rather than a minimum.
 			name:  "window name containing pipes",
-			input: "@0|1|fix|bug|now",
+			input: "@0|1|/repo|fix|bug|now",
 			want: []Window{
-				{ID: "@0", Name: "fix|bug|now", Active: true},
+				{ID: "@0", Name: "fix|bug|now", Active: true, Path: "/repo"},
 			},
 		},
 		{
 			name:  "window name containing dots",
-			input: "@0|0|release-1.2",
+			input: "@0|0|/repo|release-1.2",
 			want: []Window{
-				{ID: "@0", Name: "release-1.2", Active: false},
+				{ID: "@0", Name: "release-1.2", Active: false, Path: "/repo"},
 			},
+		},
+		{
+			// A line from before the path was asked for. Nothing produces one
+			// today, but a short line must be dropped rather than read as a
+			// window whose name is a directory.
+			name:  "line without a path field (skipped)",
+			input: "@0|1|main",
+			want:  []Window{},
 		},
 	}
 

@@ -43,13 +43,43 @@ func reservedDirName(dirName string) bool {
 	return false
 }
 
-// Create creates a new git worktree for the given branch
-func (m *Manager) Create(branchName, baseBranch string) error {
+// worktreePath is where a branch's worktree belongs, or an error saying why
+// that is not somewhere opentree may touch.
+//
+// Two things put a name out of bounds. It can collide with opentree's own
+// files, which share the base directory — `opentree delete state.json` used to
+// hand the registry itself to os.RemoveAll, and then fail on the branch, so
+// the tool reported an error while having already destroyed the thing it
+// tracks everything with. And it can climb: filepath.Join(root, ".opentree",
+// "..") is the repository, and the same os.RemoveAll was one branch name away
+// from it.
+//
+// Creating asks through here as well as deleting. The guard is only worth
+// anything on the deleting side, but the two have to agree about where a
+// worktree lives or the guard is protecting a different path than the one that
+// gets removed.
+func (m *Manager) worktreePath(branchName string) (string, error) {
+	base := filepath.Join(m.repoRoot, m.baseDir)
 	dirName := gitutil.SanitizeBranchName(branchName)
 	if reservedDirName(dirName) {
-		return fmt.Errorf("workspace name %q is reserved for opentree's state files", branchName)
+		return "", fmt.Errorf("workspace name %q is reserved for opentree's state files", branchName)
 	}
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	path := filepath.Join(base, dirName)
+	// One level down and no further. Anything else — "..", ".", a name that
+	// sanitized to nothing, a nested path — leaves the base directory, and a
+	// worktree has never lived anywhere but directly inside it.
+	if filepath.Dir(path) != base {
+		return "", fmt.Errorf("workspace name %q does not name a directory inside %s — refusing to touch %s", branchName, base, path)
+	}
+	return path, nil
+}
+
+// Create creates a new git worktree for the given branch
+func (m *Manager) Create(branchName, baseBranch string) error {
+	worktreePath, err := m.worktreePath(branchName)
+	if err != nil {
+		return err
+	}
 
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
@@ -78,11 +108,10 @@ func (m *Manager) Create(branchName, baseBranch string) error {
 // opposed to checking out a pre-existing one) so cleanup paths know whether
 // deleting the branch would destroy the user's own work.
 func (m *Manager) CreateFromRemote(branchName string) (createdBranch bool, err error) {
-	dirName := gitutil.SanitizeBranchName(branchName)
-	if reservedDirName(dirName) {
-		return false, fmt.Errorf("workspace name %q is reserved for opentree's state files", branchName)
+	worktreePath, err := m.worktreePath(branchName)
+	if err != nil {
+		return false, err
 	}
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
@@ -132,8 +161,10 @@ func (m *Manager) List() ([]Worktree, error) {
 
 // Delete removes a worktree and optionally deletes the branch
 func (m *Manager) Delete(branchName string, deleteBranch bool) error {
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath, err := m.worktreePath(branchName)
+	if err != nil {
+		return err
+	}
 
 	// Distinct branch names can sanitize to the same directory ("feat/x" and
 	// "feat-x" both map to feat-x), so make sure the directory we are about
@@ -165,14 +196,30 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 		// fail with "is not a working tree", so remove the leftover directory
 		// directly and prune any dangling metadata; then branch/state cleanup
 		// can proceed as usual. os.RemoveAll is a no-op if it's already gone.
+		//
+		// A worktree is a directory, though. Lstat rather than Stat, so a
+		// symlink is judged as the link it is rather than as whatever it
+		// points at: git would not have put either one here, and this is the
+		// arm that removes without asking git anything.
+		if info, err := os.Lstat(worktreePath); err == nil && !info.IsDir() {
+			return fmt.Errorf("%s is not a worktree directory — refusing to remove it", worktreePath)
+		}
 		if err := os.RemoveAll(worktreePath); err != nil {
 			return fmt.Errorf("failed to remove leftover worktree directory: %w", err)
 		}
 		_ = m.Prune()
 	}
 
-	// Delete branch if requested
-	if deleteBranch {
+	// Delete branch if requested, and only if there is one. A branch that has
+	// already gone — deleted by hand, or never created because this worktree
+	// adopted a detached HEAD — used to fail here, after the worktree was
+	// already removed, and the caller reads that as "the delete failed": the
+	// tmux window and the state entry survive, so the row cannot be deleted
+	// and its dev server keeps the port.
+	//
+	// Asked with rev-parse rather than read off git's complaint, which is
+	// translated.
+	if deleteBranch && m.branchExists(branchName) {
 		cmd := exec.Command("git", "branch", "-D", "--", branchName)
 		cmd.Dir = m.repoRoot
 		if output, err := cmd.CombinedOutput(); err != nil {
@@ -181,6 +228,14 @@ func (m *Manager) Delete(branchName string, deleteBranch bool) error {
 	}
 
 	return nil
+}
+
+// branchExists reports whether the repository still has a local branch by this
+// name.
+func (m *Manager) branchExists(branchName string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branchName)
+	cmd.Dir = m.repoRoot
+	return cmd.Run() == nil
 }
 
 // Push pushes a worktree's branch to origin, setting the upstream.

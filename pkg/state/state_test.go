@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -116,20 +117,21 @@ func TestGetWorkspace_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateWorkspace(t *testing.T) {
+func TestUpdate(t *testing.T) {
 	store := newTestStore(t)
-	ws := sampleWorkspace("gamma")
 
-	if err := store.AddWorkspace(ws); err != nil {
+	if err := store.AddWorkspace(sampleWorkspace("gamma")); err != nil {
 		t.Fatalf("AddWorkspace() failed: %v", err)
 	}
 
-	ws.Status = "idle"
-	ws.PRURL = "https://github.com/example/repo/pull/1"
-	ws.PRStatus = "open"
-
-	if err := store.UpdateWorkspace(ws); err != nil {
-		t.Fatalf("UpdateWorkspace() failed: %v", err)
+	const prURL = "https://github.com/example/repo/pull/1"
+	if err := store.Update("gamma", func(ws *Workspace) error {
+		ws.Status = "idle"
+		ws.PRURL = prURL
+		ws.PRStatus = "open"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update() failed: %v", err)
 	}
 
 	got, err := store.GetWorkspace("gamma")
@@ -139,21 +141,114 @@ func TestUpdateWorkspace(t *testing.T) {
 	if got.Status != "idle" {
 		t.Errorf("Status after update = %q, want %q", got.Status, "idle")
 	}
-	if got.PRURL != ws.PRURL {
-		t.Errorf("PRURL = %q, want %q", got.PRURL, ws.PRURL)
+	if got.PRURL != prURL {
+		t.Errorf("PRURL = %q, want %q", got.PRURL, prURL)
 	}
-	if got.PRStatus != ws.PRStatus {
-		t.Errorf("PRStatus = %q, want %q", got.PRStatus, ws.PRStatus)
+	if got.PRStatus != "open" {
+		t.Errorf("PRStatus = %q, want %q", got.PRStatus, "open")
 	}
 }
 
-func TestUpdateWorkspace_NotFound(t *testing.T) {
+func TestUpdate_NotFound(t *testing.T) {
 	store := newTestStore(t)
-	ws := sampleWorkspace("ghost")
 
-	err := store.UpdateWorkspace(ws)
+	called := false
+	err := store.Update("ghost", func(*Workspace) error {
+		called = true
+		return nil
+	})
 	if err == nil {
-		t.Fatal("UpdateWorkspace() expected error for non-existent workspace, got nil")
+		t.Fatal("Update() expected error for non-existent workspace, got nil")
+	}
+	if called {
+		t.Error("Update() ran the callback for a workspace that does not exist")
+	}
+}
+
+// A callback that fails leaves the record exactly as it was — both on disk and
+// in memory. Callers use the error to abandon a change, not to half-apply it.
+func TestUpdate_CallbackErrorWritesNothing(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.AddWorkspace(sampleWorkspace("delta")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	sentinel := errors.New("no")
+	err := store.Update("delta", func(ws *Workspace) error {
+		ws.Status = "clobbered"
+		ws.ACPSessionID = "ses_x"
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Update() error = %v, want the callback's own error", err)
+	}
+
+	got, err := store.GetWorkspace("delta")
+	if err != nil {
+		t.Fatalf("GetWorkspace(): %v", err)
+	}
+	if got.Status == "clobbered" || got.ACPSessionID != "" {
+		t.Errorf("failed Update() still applied its changes: %+v", got)
+	}
+}
+
+// The defect Update exists for. The dashboard and every `opentree chat` are
+// separate processes over one state.json. Each reads the workspace, changes the
+// field it cares about, and writes. Under the whole-record write this replaced,
+// whichever wrote last put back its own stale copy of the other's field — and
+// nothing re-derives a session id or a setup hash, so it was gone for good.
+func TestUpdate_ConcurrentProcessesKeepEachOthersFields(t *testing.T) {
+	dir := t.TempDir()
+
+	a, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if err := a.AddWorkspace(sampleWorkspace("shared")); err != nil {
+		t.Fatalf("AddWorkspace(): %v", err)
+	}
+
+	// b opens the store now, so it holds a snapshot from before a's write.
+	b, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+
+	if err := a.Update("shared", func(ws *Workspace) error {
+		ws.ACPSessionID = "ses_a"
+		ws.SetupHash = "hash_a"
+		ws.Port = 3001
+		return nil
+	}); err != nil {
+		t.Fatalf("a.Update(): %v", err)
+	}
+
+	if err := b.Update("shared", func(ws *Workspace) error {
+		ws.PRURL = "https://github.com/example/repo/pull/7"
+		return nil
+	}); err != nil {
+		t.Fatalf("b.Update(): %v", err)
+	}
+
+	final, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	got, err := final.GetWorkspace("shared")
+	if err != nil {
+		t.Fatalf("GetWorkspace(): %v", err)
+	}
+	if got.ACPSessionID != "ses_a" {
+		t.Errorf("ACPSessionID = %q, want %q — b's write erased a's session", got.ACPSessionID, "ses_a")
+	}
+	if got.SetupHash != "hash_a" {
+		t.Errorf("SetupHash = %q, want %q", got.SetupHash, "hash_a")
+	}
+	if got.Port != 3001 {
+		t.Errorf("Port = %d, want 3001", got.Port)
+	}
+	if got.PRURL == "" {
+		t.Error("PRURL is empty — b's own write did not survive either")
 	}
 }
 
@@ -597,9 +692,11 @@ func TestRecordSession_Persists(t *testing.T) {
 	if err := store.AddWorkspace(ws); err != nil {
 		t.Fatalf("AddWorkspace(): %v", err)
 	}
-	ws.RecordSession(ACPSession{Agent: "opencode", ID: "ses_a", Title: "the auth bug"})
-	if err := store.UpdateWorkspace(ws); err != nil {
-		t.Fatalf("UpdateWorkspace(): %v", err)
+	if err := store.Update("fix-auth", func(w *Workspace) error {
+		w.RecordSession(ACPSession{Agent: "opencode", ID: "ses_a", Title: "the auth bug"})
+		return nil
+	}); err != nil {
+		t.Fatalf("Update(): %v", err)
 	}
 
 	reopened, err := New(dir)

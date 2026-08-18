@@ -114,8 +114,11 @@ func runSetup(ctx context.Context, name string) error {
 		return err
 	}
 
-	ws.SetupAt, ws.SetupHash = time.Now(), bootstrap.Hash(commands, run)
-	if err := store.UpdateWorkspace(ws); err != nil {
+	hash := bootstrap.Hash(commands, run)
+	if err := store.Update(name, func(w *state.Workspace) error {
+		w.SetupAt, w.SetupHash = time.Now(), hash
+		return nil
+	}); err != nil {
 		return fmt.Errorf("setup finished, but recording it failed: %w", err)
 	}
 	fmt.Printf("✓ %s is set up\n", name)

@@ -797,3 +797,155 @@ func TestCreate_ReservedNamesRejected(t *testing.T) {
 		}
 	}
 }
+
+// ---- Delete guards ----
+
+// Regression: `opentree delete state.json` used to reach os.RemoveAll on the
+// registry itself. Nothing registers state.json as a worktree, so Delete took
+// the unregistered arm, removed the file, and only then failed on the branch —
+// reporting an error having already destroyed the thing that tracks every
+// workspace. Create rejected the same name; Delete did not.
+func TestDelete_ReservedNamesRejected(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	opentreeDir := filepath.Join(repoDir, ".opentree")
+	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	statePath := filepath.Join(opentreeDir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"workspaces":{}}`), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, name := range []string{"state.json", "state.lock", "state.json.tmp"} {
+		if err := m.Delete(name, true); err == nil {
+			t.Errorf("Delete(%q) should be refused", name)
+		}
+	}
+
+	if _, err := os.Stat(statePath); err != nil {
+		t.Errorf("state.json was removed by a refused Delete: %v", err)
+	}
+}
+
+// A name that climbs out of the base directory resolves to the base directory's
+// own parent — filepath.Join(root, ".opentree", "..") is the repository — and
+// the unregistered arm would hand that to os.RemoveAll.
+func TestDelete_EscapingNamesRejected(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	canary := filepath.Join(repoDir, "keep-me")
+	if err := os.WriteFile(canary, []byte("x"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// "sub/../.." is deliberately absent: SanitizeBranchName turns every "/"
+	// into "-", so it arrives as the ordinary directory name "sub-..-..". The
+	// names that still climb are the ones with no separator to flatten.
+	for _, name := range []string{"..", ".", ""} {
+		if err := m.Delete(name, false); err == nil {
+			t.Errorf("Delete(%q) should be refused", name)
+		}
+	}
+
+	if _, err := os.Stat(canary); err != nil {
+		t.Errorf("repository contents were removed by a refused Delete: %v", err)
+	}
+}
+
+// The unregistered arm removes a leftover directory. Anything else under the
+// base directory is one of opentree's own files, or somebody else's, and git
+// would never have put it there — so it is refused rather than removed.
+func TestDelete_UnregisteredNonDirectoryRefused(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	opentreeDir := filepath.Join(repoDir, ".opentree")
+	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stray := filepath.Join(opentreeDir, "notes")
+	if err := os.WriteFile(stray, []byte("not a worktree"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := m.Delete("notes", false); err == nil {
+		t.Error("Delete() on a plain file should be refused")
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("the file was removed anyway: %v", err)
+	}
+}
+
+// Regression: two branch names can sanitize to the same directory ("feat/x" and
+// "feat-x" both give feat-x), so Delete refuses when the worktree there holds a
+// different branch than the one asked for. The guard had no coverage.
+func TestDelete_WrongBranchAtPathRefused(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	// "feat-x" sanitizes to the same directory, where "feat/x" is checked out.
+	err := m.Delete("feat-x", true)
+	if err == nil {
+		t.Fatal("Delete(\"feat-x\") should be refused — feat/x is checked out there")
+	}
+	if !strings.Contains(err.Error(), "refusing to delete") {
+		t.Errorf("error = %v, want it to say why it refused", err)
+	}
+
+	// Neither the worktree nor the branch may have been touched.
+	if _, statErr := os.Stat(filepath.Join(repoDir, ".opentree", "feat-x")); statErr != nil {
+		t.Errorf("worktree was removed by a refused Delete: %v", statErr)
+	}
+	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "feat/x").Output()
+	if !strings.Contains(string(out), "feat/x") {
+		t.Error("branch feat/x was deleted by a refused Delete")
+	}
+}
+
+// Regression: a workspace whose branch has already gone — deleted by hand, or
+// squash-merged and pruned — used to fail the whole delete at `git branch -D`,
+// after the worktree was already removed. The caller reads that as a failure,
+// so the tmux window and the state entry survive: an undeletable row whose dev
+// server still holds its port.
+func TestDelete_MissingBranchStillSucceeds(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+
+	if err := m.Create("feat/gone", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	// Unregister the worktree, then remove the branch behind opentree's back.
+	if out, err := exec.Command("git", "-C", repoDir, "worktree", "remove", "--force",
+		filepath.Join(repoDir, ".opentree", "feat-gone")).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree remove: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repoDir, "branch", "-D", "feat/gone").CombinedOutput(); err != nil {
+		t.Fatalf("git branch -D: %v\n%s", err, out)
+	}
+
+	if err := m.Delete("feat/gone", true); err != nil {
+		t.Fatalf("Delete() with an already-deleted branch should succeed, got %v", err)
+	}
+}

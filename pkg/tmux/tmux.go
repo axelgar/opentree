@@ -190,9 +190,12 @@ func (c *Controller) ListWindows() ([]Window, error) {
 		return []Window{}, nil
 	}
 
-	// Format: window_id window_active window_name — the name is last so
-	// names containing "|" survive parsing (SplitN keeps the remainder).
-	cmd := exec.Command("tmux", "list-windows", "-t", exactSession(sessionName), "-F", "#{window_id}|#{window_active}|#{window_name}")
+	// Format: window_id window_active pane_current_path window_name — the name
+	// is last so names containing "|" survive parsing (SplitN keeps the
+	// remainder). The path is what says which checkout a window belongs to:
+	// two clones of the same project share one session, because the session is
+	// named after the directory's base name.
+	cmd := exec.Command("tmux", "list-windows", "-t", exactSession(sessionName), "-F", "#{window_id}|#{window_active}|#{pane_current_path}|#{window_name}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list windows: %w", err)
@@ -596,16 +599,19 @@ func (c *Controller) parseWindows(output string) ([]Window, error) {
 			continue
 		}
 
-		// id|active|name — name is last so names containing "|" stay intact.
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
+		// id|active|path|name — name is last so names containing "|" stay
+		// intact, which is also why the count is exact: a name with pipes in
+		// it is indistinguishable from extra fields any other way round.
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
 			continue
 		}
 
 		windows = append(windows, Window{
 			ID:     parts[0],
-			Name:   parts[2],
+			Name:   parts[3],
 			Active: parts[1] == "1",
+			Path:   parts[2],
 		})
 	}
 
@@ -617,4 +623,8 @@ type Window struct {
 	ID     string
 	Name   string
 	Active bool
+	// Path is the window's active pane's working directory, or empty when tmux
+	// did not report one. It is how a caller tells its own windows from those
+	// of another checkout sharing the session.
+	Path string
 }

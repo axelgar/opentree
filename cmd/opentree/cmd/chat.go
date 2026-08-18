@@ -77,17 +77,21 @@ func runChat(ctx context.Context, name, version string) error {
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
-			ws.RecordSession(state.ACPSession{
-				Agent:     agent.Command,
-				ID:        s.SessionID,
-				Title:     s.Title,
-				UpdatedAt: s.UpdatedAt,
+			return store.Update(name, func(w *state.Workspace) error {
+				w.RecordSession(state.ACPSession{
+					Agent:     agent.Command,
+					ID:        s.SessionID,
+					Title:     s.Title,
+					UpdatedAt: s.UpdatedAt,
+				})
+				return nil
 			})
-			return store.UpdateWorkspace(ws)
 		},
 		ForgetSession: func(id string) error {
-			ws.ForgetSession(id)
-			return store.UpdateWorkspace(ws)
+			return store.Update(name, func(w *state.Workspace) error {
+				w.ForgetSession(id)
+				return nil
+			})
 		},
 	})
 }
@@ -166,8 +170,10 @@ func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.S
 		Trusted:  bootstrap.Trusted(repoRoot, commands, run),
 		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run) },
 		Record: func() error {
-			ws.SetupAt, ws.SetupHash = time.Now(), hash
-			return store.UpdateWorkspace(ws)
+			return store.Update(ws.Name, func(w *state.Workspace) error {
+				w.SetupAt, w.SetupHash = time.Now(), hash
+				return nil
+			})
 		},
 	}
 }

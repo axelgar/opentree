@@ -43,6 +43,18 @@ type Workspace struct {
 	MergeConflicts bool      `json:"merge_conflicts,omitempty"`
 	RemoteDeleted  bool      `json:"remote_deleted,omitempty"`
 
+	// AdoptedBranch is a branch opentree found rather than made: `opentree new`
+	// from a branch that already existed locally, checked out into a worktree.
+	// Deleting the workspace deletes the branch, which is right for a branch
+	// this tool created and wrong for one it borrowed.
+	//
+	// Stated this way round on purpose. The zero value is every workspace
+	// written before the field existed, and false means "delete it", which is
+	// what those workspaces have always done — the opposite spelling would
+	// strand every one of them with an undeletable branch and block recreating
+	// a workspace under the same name.
+	AdoptedBranch bool `json:"adopted_branch,omitempty"`
+
 	// SetupAt and SetupHash are the project's bootstrap commands, as this
 	// worktree last ran them. The hash is what earns the pair its keep: a chat
 	// starts many times per workspace — losing a window relaunches one — so
@@ -299,14 +311,38 @@ func (s *Store) GetWorkspace(name string) (*Workspace, error) {
 	return &cp, nil
 }
 
-// UpdateWorkspace updates an existing workspace
-func (s *Store) UpdateWorkspace(ws *Workspace) error {
+// Update applies fn to a workspace's stored record and saves the result.
+//
+// fn is handed the record as it is on disk right now, not as the caller last
+// saw it, and it should touch only the fields it means to change. That is the
+// whole point of the shape. Handing the store a filled-in struct instead —
+// what this replaced — writes back every field as of whenever the caller read
+// it, and a caller's copy is always a snapshot taken before mutate reloaded
+// the file.
+//
+// It matters because the dashboard and every `opentree chat` are separate
+// processes sharing one state.json. Whole-record writes had them reverting
+// each other: the branch and PR fields survived it, since the 30s poll
+// re-derives them, but a session id, a setup hash or a port has nothing to
+// re-derive it from and was simply gone.
+//
+// fn runs holding s.mu and the file lock, so it must not call back into the
+// Store — ListWorkspaces takes the same mutex and a sync.RWMutex is not
+// reentrant. Read what the callback needs before calling Update.
+//
+// A callback that returns an error writes nothing, and leaves the in-memory
+// record as it found it.
+func (s *Store) Update(name string, fn func(*Workspace) error) error {
 	return s.mutate(func() error {
-		if _, ok := s.state.Workspaces[ws.Name]; !ok {
-			return fmt.Errorf("workspace not found: %s", ws.Name)
+		cur, ok := s.state.Workspaces[name]
+		if !ok {
+			return fmt.Errorf("workspace not found: %s", name)
 		}
-		cp := *ws
-		s.state.Workspaces[ws.Name] = &cp
+		cp := *cur
+		if err := fn(&cp); err != nil {
+			return err
+		}
+		s.state.Workspaces[name] = &cp
 		return nil
 	})
 }
