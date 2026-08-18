@@ -652,6 +652,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reorder rows (activity changes, deletions), and a stale index
 		// would point destructive keys at whatever moved under the cursor.
 		prev := m.currentWorkspaceName()
+		// The Servers tab needs the same anchor, and needs it here: its own
+		// handler only ever sees a KeyMsg, so the ten-second refresh — the one
+		// that reorders rows — never reaches it.
+		prevServer := m.currentServerName()
 		m.workspaces = msg.workspaces
 		m.portless = msg.portless
 		m.recordChatErrors()
@@ -666,6 +670,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
+		}
+		rows := m.serverRows()
+		if prevServer != "" {
+			for i, ws := range rows {
+				if ws.Name == prevServer {
+					m.serversTab.cursor = i
+					break
+				}
+			}
+		}
+		if m.serversTab.cursor >= len(rows) {
+			m.serversTab.cursor = max(0, len(rows)-1)
 		}
 		return m, nil
 
@@ -845,22 +861,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, afterExec(m.loadWorkspacesCmd)
 
 	case errMsg:
+		// Only the in-flight markers are cleared here. The dialog states are
+		// not, and used to be: errMsg is the shared failure of twenty-odd
+		// commands, several of them slow and launched from somewhere else
+		// entirely — a `gh` call for reviews, a diff on a big worktree, a
+		// browser that would not open. Any of those landing while a dialog was
+		// open tore it down, and resetCreateMode wipes the input with it, so
+		// the visible effect was the half-typed branch name vanishing for a
+		// reason that had nothing to do with what was being typed.
+		//
+		// Each dialog already ends itself on the path that opened it, so
+		// nothing here is holding them together. remoteBranchesLoadedMsg and
+		// prContentGeneratedMsg are the in-repo shape for this: a message that
+		// arrives late asks whether its own state is still current, and does
+		// nothing otherwise.
 		m.workspaceCreating = false
 		m.workspaceDeleting = false
 		m.workspaceDeletingName = ""
 		m.workspaceDeletingNames = make(map[string]bool)
-		m.resetCreateMode()
-		m.filtering = false
-		m.prGenerating = false
-		m.prCreating = false
 		m.err = msg.err
 		m.appendErrLog(msg.err.Error())
 		return m, m.scheduleErrClear()
 
 	case diffLoadedMsg:
-		// Don't pop the diff overlay over an open dialog (delete confirm,
-		// create, PR): its keys would land in the hidden dialog.
-		if m.deleting || m.creating || m.prCreating || m.agentSelecting {
+		// Don't pop the diff overlay over an open dialog: its keys would land
+		// in the hidden dialog. busyWithDialog rather than a list of four —
+		// the four missed the permission and message dialogs, which the view
+		// draws *above* the diff while the key handler routes to it, so every
+		// rune typed into a message went into a diff nobody could see. It also
+		// misses the tab: a diff that finished loading after switching to
+		// Skills or Servers sprang open on the way back.
+		//
+		// busyWithDialog deliberately omits diffViewing, so this is the right
+		// direction to call it in — the wheel consults it the other way round,
+		// scrolling an open diff before it asks about dialogs at all.
+		if m.busyWithDialog() || m.tab != tabWorkspaces {
 			return m, nil
 		}
 		m.diffViewing = true

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -1950,5 +1951,112 @@ func TestPromptDialog_ShowsQueueWarning(t *testing.T) {
 	m2.promptWs = "idle"
 	if view := m2.View(); strings.Contains(view, "queued") {
 		t.Errorf("idle agent should get no queue warning\ngot: %s", view)
+	}
+}
+
+// Regression: errMsg is the shared failure of twenty-odd commands, several of
+// them slow and launched from somewhere else entirely. Any of them landing
+// while a dialog was open tore it down — and resetCreateMode wipes the input,
+// so a half-typed branch name vanished for a reason unrelated to what was
+// being typed.
+func TestErrMsg_LeavesAnOpenDialogAlone(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m.creating = true
+	m.createStep = 1
+	m.input.SetValue("feat/half-typed")
+
+	next, _ := m.Update(errMsg{errors.New("gh: could not fetch reviews")})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if !nm.creating {
+		t.Error("a background failure closed the create dialog")
+	}
+	if got := nm.input.Value(); got != "feat/half-typed" {
+		t.Errorf("input = %q, want the typed text kept", got)
+	}
+	if nm.err == nil {
+		t.Error("the error itself was dropped")
+	}
+}
+
+// Filter mode is torn down the same way, and by the same accident.
+func TestErrMsg_LeavesFilterModeAlone(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m.filtering = true
+	m.filterQuery = "alp"
+
+	next, _ := m.Update(errMsg{errors.New("could not open browser")})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if !nm.filtering || nm.filterQuery != "alp" {
+		t.Error("a background failure dropped filter mode")
+	}
+}
+
+// What errMsg must still clear: the in-flight markers, or a failed create
+// leaves the spinner running and q blocked.
+func TestErrMsg_ClearsTheInFlightMarkers(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m.workspaceCreating = true
+	m.workspaceDeleting = true
+	m.workspaceDeletingName = "alpha"
+
+	next, _ := m.Update(errMsg{errors.New("create failed")})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if nm.workspaceCreating || nm.workspaceDeleting || nm.workspaceDeletingName != "" {
+		t.Error("a failed operation stayed marked as in flight")
+	}
+}
+
+// Regression: the diff overlay's guard named four dialogs and missed the
+// permission and message dialogs — which the view draws above the diff while
+// the key handler routes to it, so every rune typed into a message went into a
+// diff nobody could see.
+func TestDiffLoaded_DoesNotOpenUnderAnotherDialog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*Model)
+	}{
+		{"answering a permission", func(m *Model) { m.answering = true }},
+		{"typing a message", func(m *Model) { m.prompting = true }},
+		{"filtering", func(m *Model) { m.filtering = true }},
+		{"generating PR content", func(m *Model) { m.prGenerating = true }},
+		{"deleting", func(m *Model) { m.deleting = true }},
+		{"on another tab", func(m *Model) { m.tab = tabSkills }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(testWS("alpha"))
+			tc.set(&m)
+
+			next, _ := m.Update(diffLoadedMsg{wsName: "alpha", content: "diff --git a b"})
+			nm, ok := next.(Model)
+			if !ok {
+				t.Fatal("Update did not return a Model")
+			}
+			if nm.diffViewing {
+				t.Error("the diff opened invisibly behind another dialog")
+			}
+		})
+	}
+}
+
+// And it still opens when nothing is in the way.
+func TestDiffLoaded_OpensOnAnIdleList(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+
+	next, _ := m.Update(diffLoadedMsg{wsName: "alpha", content: "diff --git a b"})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if !nm.diffViewing {
+		t.Error("the diff did not open on an idle list")
 	}
 }
