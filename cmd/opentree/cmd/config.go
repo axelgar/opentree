@@ -150,11 +150,15 @@ var configSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
 
-		if globalOnlyKeys[key] && !configSetGlobal {
-			return fmt.Errorf("%s is global only — run with --global (a cloned repository does not get to decide how you are interrupted)", key)
-		}
+		// The list check comes first because it is the refusal with nowhere to
+		// go: `config set notify.on blocked` used to say "run with --global",
+		// and running it with --global then said "edit it in the file" — a
+		// flag offered as the answer to a question it cannot answer.
 		if held, ok := listValuedKeys[key]; ok {
 			return fmt.Errorf("%s is a list of %s — edit it in %s", key, held, configFileFor(key))
+		}
+		if globalOnlyKeys[key] && !configSetGlobal {
+			return fmt.Errorf("%s is global only — run with --global (a cloned repository does not get to decide how you are interrupted)", key)
 		}
 		if _, ok := configKeys[key]; !ok {
 			return fmt.Errorf("unknown config key %q\nRun 'opentree config list' to see available keys", key)
@@ -179,11 +183,16 @@ var configSetCmd = &cobra.Command{
 			return nil
 		}
 
-		if err := config.SetKeys(config.FindConfigFile(), map[string]any{key: parsed}); err != nil {
+		// The path is printed because there is more than one it could be, and
+		// which one is not obvious from where you are standing: run from
+		// inside a worktree this is the repository's file, not the branch's
+		// checked-out copy sitting in the current directory.
+		path := config.FindConfigFile()
+		if err := config.SetKeys(path, map[string]any{key: parsed}); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
 
-		fmt.Printf("%s = %s\n", key, value)
+		fmt.Printf("%s = %s  (%s)\n", key, value, path)
 		return nil
 	},
 }

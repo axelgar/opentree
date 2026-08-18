@@ -192,6 +192,24 @@ func FindConfigFile() string {
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
+	// Inside a linked worktree the walk is wrong in both directions and the
+	// repository root is the only right answer.
+	//
+	// Wrong downward: a worktree's opentree.toml is a checked-out file
+	// belonging to whatever the branch says, so the config found from inside
+	// one is the branch's rather than the project's — and `config set` run
+	// there edits the branch, dirtying an agent's working tree and scoping the
+	// setting to it. Wrong upward: RepoRoot is the main repository, which a
+	// worktree under `base_dir = "../worktrees"` is not inside, so the
+	// `dir == root` break is never reached and the walk climbs past the
+	// worktree to whatever opentree.toml it finds on the way to /.
+	//
+	// This is the rule the rest of the codebase already applies by hand —
+	// chat.go and setup.go and seed.go all join opentree.toml onto RepoRoot,
+	// with the reason written out. These are the call sites that never got it.
+	if wt, err := gitutil.WorktreeRoot(); err == nil && wt != root {
+		return filepath.Join(root, "opentree.toml")
+	}
 	for {
 		candidate := filepath.Join(dir, "opentree.toml")
 		if _, err := os.Stat(candidate); err == nil {
@@ -438,10 +456,22 @@ func LoadGlobal() (*Config, error) {
 }
 
 // SetKeys updates only the given dotted keys (e.g. "agent.command") in the
-// TOML file at path, preserving exactly what the file already contains.
+// TOML file at path, keeping every value the file already sets.
+//
 // Unlike Save with a merged Config, this never freezes defaults or another
 // source's values into the file — a later change to the global config still
 // applies to any key the repo file doesn't set itself.
+//
+// Values, though, not formatting. The document is parsed into a map and
+// written back out, so comments are dropped, sections come back
+// alphabetised, and strings are re-quoted the encoder's way. For a
+// repository's opentree.toml that is a tracked file and git has the original;
+// for the global one, which nothing tracks, the comments are gone for good.
+// Worth knowing before adding a caller that writes on a timer or on every
+// keystroke.
+//
+// A dotted key is split at the first dot only: "a.b.c" sets a field literally
+// named "b.c" in section "a".
 func SetKeys(path string, values map[string]any) error {
 	raw := map[string]any{}
 	data, err := os.ReadFile(path)

@@ -73,6 +73,28 @@ func RepoRoot() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// WorktreeRoot returns the top level of the working tree the process is
+// standing in — the linked worktree's own root, where RepoRoot returns the
+// main repository's.
+//
+// The two differ exactly when the caller is inside a worktree opentree made,
+// which is what makes it worth asking: opentree runs from both, and a
+// worktree's checked-out files belong to a branch rather than to the project.
+func WorktreeRoot() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("not in a git repository")
+	}
+	root := strings.TrimSpace(string(out))
+	// Resolved for the same reason RepoRoot resolves its own: the two are
+	// compared, and only one of them would otherwise have been through
+	// /var → /private/var.
+	if resolved, rerr := filepath.EvalSymlinks(root); rerr == nil {
+		root = resolved
+	}
+	return root, nil
+}
+
 // ValidateBranchName checks whether name is a valid git branch name
 // by running `git check-ref-format --branch`.
 func ValidateBranchName(name string) error {

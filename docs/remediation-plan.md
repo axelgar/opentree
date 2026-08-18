@@ -25,7 +25,7 @@ recorded there.
 - [x] WS3 — Chat control socket: identity on the wire
 - [x] WS4 — Chat/agent process lifecycle
 - [x] WS5 — TUI state machine correctness
-- [ ] WS6 — Config resolution inside linked worktrees
+- [x] WS6 — Config resolution inside linked worktrees
 - [ ] WS7 — Close the test holes that hide the above
 - [ ] WS8 — Polish batch
 - [ ] WS9 — What the review itself missed
