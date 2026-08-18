@@ -27,6 +27,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/diag"
 	"github.com/axelgar/opentree/pkg/notify"
 )
 
@@ -131,10 +132,18 @@ func Run(ctx context.Context, opts Options) error {
 	var generation atomic.Int64
 	launch := func() (*acp.Client, *acp.InitializeResponse, int, error) {
 		gen := int(generation.Add(1))
+		// The launch line is recorded before it is run. A window that opens and
+		// closes again leaves nothing on screen to read, and this is the line
+		// that was wrong when it does: a binary that is not there, a path with
+		// a space in it, an argument list the adapter did not expect.
+		diag.Log("chat", "launching agent",
+			"workspace", opts.Workspace, "generation", gen, "binary", opts.acpBinary(),
+			"args", strings.Join(opts.Agent.ACPArgs(opts.Cwd), " "), "cwd", opts.Cwd)
 		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Agent.ACPArgs(opts.Cwd), opts.Cwd, handlers)
 		if err != nil {
 			// Spawn already names the command; wrapping again produced
 			// "failed to start X: start X: exec: ...".
+			diag.Log("chat", "agent did not start", "workspace", opts.Workspace, "err", err)
 			return nil, nil, gen, err
 		}
 		// The handshake gets a deadline of its own, and not ctx's — ctx is what
@@ -147,9 +156,15 @@ func Run(ctx context.Context, opts Options) error {
 		info, err := client.Initialize(hctx, "opentree", opts.Version)
 		cancelHandshake()
 		if err != nil {
+			// With whatever the agent printed on its way to not answering,
+			// which is usually the whole story and is otherwise readable only
+			// inside a window that may have closed by the time anyone looks.
+			diag.Log("chat", "handshake failed", "workspace", opts.Workspace,
+				"err", err, "stderr", client.Stderr())
 			_ = client.Close()
 			return nil, nil, gen, fmt.Errorf("ACP handshake failed: %w", err)
 		}
+		diag.Log("chat", "agent ready", "workspace", opts.Workspace, "generation", gen)
 		go func() {
 			<-client.Done()
 			send(agentGoneMsg{generation: gen})
@@ -193,7 +208,14 @@ func Run(ctx context.Context, opts Options) error {
 				return Result{Reason: "chat closed"}
 			}
 		}
-		if srv, err := serve(opts.SocketPath, opts.Workspace, onCommand); err == nil {
+		srv, err := serve(opts.SocketPath, opts.Workspace, onCommand)
+		if err != nil {
+			// Worth recording precisely because it is not worth failing over:
+			// the dashboard reports no chat here, which looks exactly like a
+			// window nobody opened.
+			diag.Log("chat", "control socket unavailable",
+				"workspace", opts.Workspace, "path", opts.SocketPath, "err", err)
+		} else {
 			defer func() { _ = srv.Close() }()
 			m.publish = srv.publish
 			// Published once here so the greeting carries which opentree this

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/axelgar/opentree/pkg/diag"
 )
 
 // Seeding puts config where git could not. Setup is the other half: what has to
@@ -110,6 +112,9 @@ func runCommand(ctx context.Context, dir, command string, emit func(string)) err
 
 	err = cmd.Wait()
 	close(done)
+	if err != nil {
+		diag.Log("setup", "command failed", "dir", dir, "command", command, "err", err)
+	}
 
 	// Whatever it printed on the way out belongs on screen — but not at any
 	// price. Every descendant inherits the pipe's write end, so a process that

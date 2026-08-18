@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/axelgar/opentree/cmd/opentree/cmd"
+	"github.com/axelgar/opentree/pkg/diag"
 	"github.com/axelgar/opentree/pkg/tui"
 )
 
@@ -69,8 +70,18 @@ func init() {
 	rootCmd.AddCommand(cmd.SeedCmd)
 	rootCmd.AddCommand(cmd.SkillsCmd)
 	rootCmd.AddCommand(cmd.NotifyCmd)
+	rootCmd.AddCommand(cmd.DoctorCmd)
 }
 func main() {
+	// Before anything else, so a failure during startup is in the log too.
+	// Named for the command being run rather than "opentree": a dashboard and
+	// one chat per workspace write to the same file at once.
+	component := "opentree"
+	if len(os.Args) > 1 {
+		component = os.Args[1]
+	}
+	diag.Init(component)
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

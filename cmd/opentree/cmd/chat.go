@@ -15,6 +15,7 @@ import (
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/diag"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/state"
@@ -117,6 +118,11 @@ func notifier(repoRoot, workspace string) func(notify.Signal) {
 	// repository's copy of the section is dropped.
 	cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
 	if err != nil {
+		// Deliberately not surfaced here — but a chat that quietly stopped
+		// notifying, because a comma is missing three directories away, is
+		// undiagnosable without a record of it.
+		diag.Log("chat", "config would not parse; using defaults for [notify]",
+			"repo", repoRoot, "err", err)
 		cfg = config.Default()
 	}
 

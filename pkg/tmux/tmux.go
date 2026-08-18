@@ -493,6 +493,11 @@ func (c *Controller) GetWindowActivity(name string) (time.Time, error) {
 	return time.Unix(sec, 0), nil
 }
 
+// SessionName is the tmux session this controller works in, exported for the
+// commands that report rather than act — a session name that is not the one you
+// expected explains a great deal, and it is derived rather than recorded.
+func (c *Controller) SessionName() string { return c.getSessionName() }
+
 // getSessionName returns the tmux session name for this repository.
 // It includes the repository directory name so multiple repos can coexist.
 func (c *Controller) getSessionName() string {

@@ -649,6 +649,30 @@ opentree delete feat/add-dark-mode
 
 ## Troubleshooting
 
+### Start here: `opentree doctor`
+
+```bash
+opentree doctor
+```
+
+Prints what opentree can see — its own version, the versions of git, tmux, gh
+and node, which config file it resolved and what it says, whether this
+repository's setup commands are approved, where state and sockets live, and
+what each workspace's chat is doing. Everything it does is a read, so it is
+safe to run and safe to paste into an issue.
+
+If a problem needs reproducing rather than describing, point opentree at a log
+first:
+
+```bash
+OPENTREE_LOG=/tmp/opentree.log opentree
+```
+
+An environment variable rather than a flag, because the interesting failures
+happen inside `opentree chat`, which a tmux window starts rather than you — and
+the variable is inherited by every process opentree launches. Off by default.
+The file holds branch names, paths and session ids, and is written `0600`.
+
 ### "Error: not a git repository"
 
 opentree must be run from inside a git repository. Navigate to your project root first.

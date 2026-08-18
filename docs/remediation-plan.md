@@ -28,7 +28,7 @@ recorded there.
 - [x] WS6 — Config resolution inside linked worktrees
 - [x] WS7 — Close the test holes that hide the above
 - [x] WS8 — Polish batch
-- [ ] WS9 — What the review itself missed
+- [x] WS9 — What the review itself missed
 
 ---
 
