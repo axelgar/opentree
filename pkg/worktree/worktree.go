@@ -289,9 +289,7 @@ func (m *Manager) CreateFromRemote(branchName string) (createdBranch bool, err e
 
 // List returns all opentree-managed worktrees
 func (m *Manager) List() ([]Worktree, error) {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	cmd.Dir = m.repoRoot
-	output, err := cmd.CombinedOutput()
+	output, err := gitutil.Output(m.repoRoot, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list worktrees: %w", err)
 	}
@@ -424,11 +422,9 @@ func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) 
 
 	baseCommit := m.resolveBase(branchName, base, worktreePath)
 	// Compare merge-base to working tree (no HEAD) to include uncommitted changes
-	cmd := exec.Command("git", "diff", "--stat", baseCommit)
-	cmd.Dir = worktreePath
-	output, err := cmd.CombinedOutput()
+	output, err := gitutil.Output(worktreePath, "diff", "--stat", baseCommit)
 	if err != nil {
-		return "", fmt.Errorf("failed to get diff: %w\nOutput: %s", err, output)
+		return "", fmt.Errorf("failed to get diff: %w", err)
 	}
 
 	return string(output), nil
@@ -442,20 +438,14 @@ func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, err
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "merge-base", branchName, base)
-	cmd.Dir = worktreePath
-	baseOutput, err := cmd.CombinedOutput()
-	if err != nil {
-		cmd = exec.Command("git", "diff", "origin/"+base+"...HEAD")
-	} else {
-		baseCommit := strings.TrimSpace(string(baseOutput))
-		cmd = exec.Command("git", "diff", baseCommit, "HEAD")
+	args := []string{"diff", "origin/" + base + "...HEAD"}
+	if baseOutput, err := gitutil.Output(worktreePath, "merge-base", branchName, base); err == nil {
+		args = []string{"diff", strings.TrimSpace(string(baseOutput)), "HEAD"}
 	}
 
-	cmd.Dir = worktreePath
-	output, err := cmd.CombinedOutput()
+	output, err := gitutil.Output(worktreePath, args...)
 	if err != nil {
-		return "", fmt.Errorf("failed to get diff: %w\nOutput: %s", err, output)
+		return "", fmt.Errorf("failed to get diff: %w", err)
 	}
 
 	return string(output), nil
@@ -582,19 +572,15 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (string, []
 	baseCommit := m.resolveBase(branchName, base, worktreePath)
 
 	// --stat output
-	statCmd := exec.Command("git", "diff", "--stat", baseCommit)
-	statCmd.Dir = worktreePath
-	statOut, err := statCmd.CombinedOutput()
+	statOut, err := gitutil.Output(worktreePath, "diff", "--stat", baseCommit)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get diff stat: %w\nOutput: %s", err, statOut)
+		return "", nil, fmt.Errorf("failed to get diff stat: %w", err)
 	}
 
 	// --numstat output
-	numCmd := exec.Command("git", "diff", "--numstat", baseCommit)
-	numCmd.Dir = worktreePath
-	numOut, err := numCmd.CombinedOutput()
+	numOut, err := gitutil.Output(worktreePath, "diff", "--numstat", baseCommit)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get diff numstat: %w\nOutput: %s", err, numOut)
+		return "", nil, fmt.Errorf("failed to get diff numstat: %w", err)
 	}
 	files := parseNumstat(string(numOut))
 
@@ -614,9 +600,7 @@ func (m *Manager) DiffStats(branchName string, baseBranch ...string) (string, []
 // resolveBase finds the merge-base commit between branchName and the given base.
 // Falls back to "origin/<base>" if merge-base computation fails.
 func (m *Manager) resolveBase(branchName, base, worktreePath string) string {
-	cmd := exec.Command("git", "merge-base", branchName, base)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := gitutil.Output(worktreePath, "merge-base", branchName, base)
 	if err != nil {
 		return "origin/" + base
 	}
@@ -628,11 +612,9 @@ func (m *Manager) DiffUncommitted(branchName string) (string, error) {
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "diff", "HEAD")
-	cmd.Dir = worktreePath
-	output, err := cmd.CombinedOutput()
+	output, err := gitutil.Output(worktreePath, "diff", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("failed to get uncommitted diff: %w\nOutput: %s", err, output)
+		return "", fmt.Errorf("failed to get uncommitted diff: %w", err)
 	}
 
 	return string(output), nil
@@ -643,11 +625,9 @@ func (m *Manager) UntrackedFiles(branchName string) ([]string, error) {
 	dirName := gitutil.SanitizeBranchName(branchName)
 	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
 
-	cmd := exec.Command("git", "ls-files", "--others", "--exclude-standard")
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := gitutil.Output(worktreePath, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list untracked files: %w\nOutput: %s", err, out)
+		return nil, fmt.Errorf("failed to list untracked files: %w", err)
 	}
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -660,11 +640,9 @@ func (m *Manager) UntrackedFiles(branchName string) ([]string, error) {
 
 // uncommittedFiles returns a set of file names that have uncommitted changes in a worktree.
 func uncommittedFiles(worktreePath string) (map[string]bool, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := gitutil.Output(worktreePath, "diff", "--name-only", "HEAD")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list uncommitted files: %w\nOutput: %s", err, out)
+		return nil, fmt.Errorf("failed to list uncommitted files: %w", err)
 	}
 	result := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

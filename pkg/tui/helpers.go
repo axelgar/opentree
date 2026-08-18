@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
@@ -195,9 +196,7 @@ func renderDiffLine(line string) string {
 
 // countUncommitted counts files with uncommitted changes in a worktree.
 func countUncommitted(worktreePath string) int {
-	cmd := exec.Command("git", "status", "--short")
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := gitutil.Output(worktreePath, "status", "--short")
 	if err != nil {
 		return 0
 	}

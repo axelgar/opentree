@@ -3,7 +3,6 @@ package tui
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -388,9 +387,7 @@ func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
 func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, issueTitle string) (title, body string) {
 	var commits []string
 	if worktreeDir != "" {
-		cmd := exec.Command("git", "log", baseBranch+"..HEAD", "--format=%s", "--no-merges")
-		cmd.Dir = worktreeDir
-		if out, err := cmd.CombinedOutput(); err == nil {
+		if out, err := gitutil.Output(worktreeDir, "log", baseBranch+"..HEAD", "--format=%s", "--no-merges"); err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				if strings.TrimSpace(line) != "" {
 					commits = append(commits, strings.TrimSpace(line))
