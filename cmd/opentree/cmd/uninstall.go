@@ -272,9 +272,22 @@ func binaryRemoval() string {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
+	home, _ := os.UserHomeDir()
+	return removalFor(exe, home)
+}
+
+// removalFor is the classification on its own, so the four outcomes can be
+// tested without a binary installed four ways.
+func removalFor(exe, home string) string {
 	sep := string(filepath.Separator)
 	switch {
-	// Homebrew keeps the real file in the Cellar and links it onto PATH.
+	// Homebrew keeps the real file out of PATH and links it in. A cask stages
+	// it under Caskroom and a formula under Cellar. Both are checked, and they
+	// give different answers: `brew uninstall` without --cask leaves a cask's
+	// own bookkeeping behind. opentree ships as a cask; the formula arm is for
+	// anyone who installed one before it did.
+	case strings.Contains(exe, sep+"Caskroom"+sep):
+		return "Remove the binary itself with:\n  brew uninstall --cask opentree"
 	case strings.Contains(exe, sep+"Cellar"+sep):
 		return "Remove the binary itself with:\n  brew uninstall opentree"
 	// The npm package is a launcher that execs the platform binary out of
@@ -285,8 +298,7 @@ func binaryRemoval() string {
 	// go install, make install and a hand copy all leave a plain file and none
 	// of them records having done so. Naming the path is the whole remedy.
 	hint := fmt.Sprintf("Remove the binary itself with:\n  rm %s", exe)
-	home, err := os.UserHomeDir()
-	if err != nil || !strings.HasPrefix(exe, home+sep) {
+	if home == "" || !strings.HasPrefix(exe, home+sep) {
 		hint += "\n(it sits outside your home directory, so that may need sudo)"
 	}
 	return hint

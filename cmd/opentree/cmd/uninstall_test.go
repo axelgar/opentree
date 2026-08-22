@@ -282,3 +282,57 @@ func TestPlanReport_NamesEveryPathAndItsSize(t *testing.T) {
 		}
 	}
 }
+
+// The binary is the one thing uninstall cannot remove: brew, npm and go install
+// each record having put it there, and deleting it from underneath them leaves
+// them describing a file that has gone. So it names the command instead, and
+// naming the wrong one is the same failure with extra steps.
+func TestRemovalFor_NamesTheCommandThatOwnsTheBinary(t *testing.T) {
+	const home = "/Users/someone"
+	for _, tc := range []struct {
+		name string
+		exe  string
+		want string
+	}{
+		{
+			// opentree ships as a Homebrew cask. `brew uninstall` without
+			// --cask leaves the cask's own bookkeeping behind.
+			"a cask",
+			"/opt/homebrew/Caskroom/opentree/1.0.2/opentree",
+			"brew uninstall --cask opentree",
+		},
+		{
+			"a formula, for anyone who installed one before it was a cask",
+			"/opt/homebrew/Cellar/opentree/1.0.1/bin/opentree",
+			"brew uninstall opentree",
+		},
+		{
+			"the npm launcher, which execs the platform binary",
+			home + "/.nvm/versions/node/v24.0.0/lib/node_modules/@axelgar/opentree/bin/opentree",
+			"npm uninstall -g @axelgar/opentree",
+		},
+		{
+			"go install, which records nothing, so the path is the whole remedy",
+			home + "/go/bin/opentree",
+			"rm " + home + "/go/bin/opentree",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := removalFor(tc.exe, home); !strings.Contains(got, tc.want) {
+				t.Errorf("removalFor(%q) = %q, want it to name %q", tc.exe, got, tc.want)
+			}
+		})
+	}
+}
+
+// A binary outside the home directory needs a word about sudo, and one inside
+// it must not get one — the note is only useful where it is true.
+func TestRemovalFor_MentionsSudoOnlyOutsideHome(t *testing.T) {
+	const home = "/Users/someone"
+	if got := removalFor("/usr/local/bin/opentree", home); !strings.Contains(got, "sudo") {
+		t.Errorf("removalFor() = %q, want a note about sudo for a path outside home", got)
+	}
+	if got := removalFor(home+"/go/bin/opentree", home); strings.Contains(got, "sudo") {
+		t.Errorf("removalFor() = %q, want no sudo note for a path inside home", got)
+	}
+}
