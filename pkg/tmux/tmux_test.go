@@ -345,10 +345,7 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run() //nolint:errcheck // may not exist yet
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	// A program that asks for modified keys the way the chat does, and stays
-	// alive long enough to be asked about.
-	const asks = `printf '\033[>4;1m'; sleep 30`
-	if err := ctrl.CreateAppWindow("extkeys", "/tmp", "sh", nil, "-c", asks); err != nil {
+	if err := ctrl.CreateAppWindow("extkeys", "/tmp", "sleep", nil, "30"); err != nil {
 		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 
@@ -375,15 +372,27 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 		t.Errorf("extended-keys = %q after a window in an existing session, want %q", s, "on")
 	}
 
-	windowID, err := ctrl.findWindowID("extkeys")
+	// The other half: a program in one of these windows asks for modified keys
+	// and tmux takes it. Asked last, and never toggled afterwards — a pane
+	// negotiates its key mode once, when the program emits the request, and
+	// some tmux builds drop it again when the server option goes off. Checking
+	// a window created before the toggling above made this depend on which
+	// build was installed: it passed on tmux 3.7b and failed on the macOS
+	// runner's newer one, having proved nothing about opentree either way.
+	const asks = `printf '\033[>4;1m'; sleep 30`
+	if err := ctrl.CreateAppWindow("extkeys-asker", "/tmp", "sh", nil, "-c", asks); err != nil {
+		t.Fatalf("CreateAppWindow() for the asking program failed: %v", err)
+	}
+	windowID, err := ctrl.findWindowID("extkeys-asker")
 	if err != nil {
 		t.Fatalf("findWindowID() failed: %v", err)
 	}
-	// pane_key_mode reads "Ext 1" once tmux has taken the program's request.
-	// It arrives with the program rather than with the window, so it is worth
-	// a moment's wait before giving up on it.
+
+	// pane_key_mode reads "Ext 1" once tmux has taken the request. It arrives
+	// with the program rather than with the window, so it is worth a moment's
+	// wait before giving up on it.
 	var mode string
-	for range 20 {
+	for range 30 {
 		out, err := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_key_mode}").Output()
 		if err != nil {
 			t.Fatalf("reading pane_key_mode failed: %v", err)
@@ -397,7 +406,13 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if mode != "Ext 1" {
-		t.Errorf("pane key mode = %q, want %q — the program asked for modified keys and tmux did not take it", mode, "Ext 1")
+		// The server option is reported alongside, because the two failures
+		// look identical from the outside and have nothing to do with each
+		// other: opentree not setting it, and tmux not acting on it.
+		opt, _ := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output()
+		ver, _ := exec.Command("tmux", "-V").Output()
+		t.Errorf("pane key mode = %q, want %q — the program asked for modified keys and tmux did not take it\n  extended-keys = %s\n  %s",
+			mode, "Ext 1", strings.TrimSpace(string(opt)), strings.TrimSpace(string(ver)))
 	}
 }
 

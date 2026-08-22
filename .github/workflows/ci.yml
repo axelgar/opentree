@@ -104,8 +104,17 @@ jobs:
           # four, but "the image changed" should read as that, not as a broken
           # test step or — worse — a suite that quietly skipped itself.
           for tool in git tmux gh jq; do
+            # tmux answers -V and rejects --version, and printing its usage
+            # error here defeats the point of the step: an image whose tmux
+            # changed under us should say so in this line. A case rather than
+            # a && , which under the `bash -e` these steps run as is a way to
+            # end the job on the first tool that is not tmux.
+            case "$tool" in
+              tmux) flag=-V ;;
+              *)    flag=--version ;;
+            esac
             if path=$(command -v "$tool"); then
-              printf '  %-5s %s (%s)\n' "$tool" "$path" "$("$tool" --version 2>&1 | head -1)"
+              printf '  %-5s %s (%s)\n' "$tool" "$path" "$("$tool" "$flag" 2>&1 | head -1)"
             else
               echo "::error::$tool is not installed on this runner"
               fail=1
