@@ -6,7 +6,6 @@
 > publisher's well-known index, and `u` re-checking an installed skill
 > against it. Decision 9a records why that is not the marketplace
 > decision 9 refuses.
-> Companion to [ACP-PLAN.md](ACP-PLAN.md).
 > Scope: skills only. MCP is sketched at the end, not planned.
 
 ## The thing worth building

@@ -745,7 +745,22 @@ go build -o opentree ./cmd/opentree
 
 ### Architecture
 
-See [PLAN.md](PLAN.md) for detailed architecture documentation.
+`cmd/opentree` is the CLI surface; `pkg/` is where the work happens.
+
+| package | what it owns |
+| --- | --- |
+| `tui` | the dashboard: the workspace list, the Skills and Servers tabs |
+| `chat` | the conversation view, and the control socket the dashboard reaches it through |
+| `acp` | the Agent Client Protocol client — the agent subprocess and its stdio |
+| `workspace` | a workspace's lifecycle, over the four below it |
+| `worktree` | git worktrees and branches |
+| `tmux` | sessions and windows |
+| `state` | `state.json`, shared between the dashboard and every chat |
+| `github` | `gh`, for PRs, issues and CI status |
+| `bootstrap` | seeding a worktree, running its setup, and the trust gate over those commands |
+| `skills` | propagating agent skills into worktrees |
+| `config` | `opentree.toml` and the agent registry |
+| `notify`, `diag`, `ui`, `fsutil`, `gitutil` | the small shared pieces |
 
 ## License
 
