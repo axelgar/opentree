@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -15,7 +17,9 @@ import (
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
@@ -123,6 +127,53 @@ func TestStatusCheckErrMsg_LogsOnceWithoutBanner(t *testing.T) {
 	}
 	if !strings.Contains(m.errLog[0], "auth") {
 		t.Errorf("errLog[0] = %q, want to contain the failure reason", m.errLog[0])
+	}
+}
+
+// TestBranchStatusResult_KeepsTheHalfThatWorked: git ls-remote answers without
+// gh and without GitHub, and its answer used to be thrown away along with the
+// gh error. On a repo gh cannot speak for, that meant the push badge never
+// corrected itself however often the thirty-second poll ran.
+func TestBranchStatusResult_KeepsTheHalfThatWorked(t *testing.T) {
+	partial := github.BranchStatus{Pushed: true}
+	msg := branchStatusResult("feat-a", partial, errors.New("gh pr view failed: no known GitHub host"), false)
+
+	got, ok := msg.(branchStatusCheckedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want branchStatusCheckedMsg carrying the ls-remote half", msg)
+	}
+	if !got.status.Pushed {
+		t.Error("the branch was known to be pushed and the answer was discarded with the gh error")
+	}
+	if got.wsName != "feat-a" {
+		t.Errorf("wsName = %q, want the workspace that was polled", got.wsName)
+	}
+}
+
+// TestBranchStatusResult_FailedPollKeepsTheConflictBadge: gh not answering says
+// nothing about whether the branch merges cleanly, so the zero value must not
+// stand in for an answer.
+func TestBranchStatusResult_FailedPollKeepsTheConflictBadge(t *testing.T) {
+	msg := branchStatusResult("feat-a", github.BranchStatus{Pushed: true}, errors.New("gh: HTTP 401"), true)
+
+	got, ok := msg.(branchStatusCheckedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want branchStatusCheckedMsg", msg)
+	}
+	if !got.status.MergeConflicts {
+		t.Error("a poll that never reached GitHub cleared the known conflict badge")
+	}
+}
+
+// TestBranchStatusResult_NothingLearnedIsStillAnError: RemoteCheckFailed is how
+// the poll says even ls-remote came back empty-handed, and a poll that learned
+// nothing belongs in the error log rather than pretending to be an answer.
+func TestBranchStatusResult_NothingLearnedIsStillAnError(t *testing.T) {
+	nothing := github.BranchStatus{RemoteCheckFailed: true}
+	msg := branchStatusResult("feat-a", nothing, errors.New("offline"), false)
+
+	if _, ok := msg.(statusCheckErrMsg); !ok {
+		t.Fatalf("msg = %T, want statusCheckErrMsg", msg)
 	}
 }
 
@@ -559,8 +610,9 @@ func TestOpenURL_ReturnsNonNilCmd(t *testing.T) {
 }
 
 func TestOpenURL_CmdDoesNotPanicOnExec(t *testing.T) {
-	// openURLCmd uses cmd.Start() (fire-and-forget, ignores errors), so even if
-	// xdg-open/open is not available, the returned cmd must not panic.
+	// This one runs the real opener, so on a machine without xdg-open/open the
+	// start fails and the reaper waits on a process that never existed. Neither
+	// may panic; the failure comes back as a message instead.
 	cmd := openURLCmd("https://example.com")
 	defer func() {
 		if r := recover(); r != nil {
@@ -912,7 +964,7 @@ func TestDiffScrolling_JScrollsDown(t *testing.T) {
 	m := newTestModel()
 	// Build diff content with more lines than availHeight (height=40, availHeight=32)
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	m.diffViewing = true
@@ -928,7 +980,7 @@ func TestDiffScrolling_JScrollsDown(t *testing.T) {
 func TestDiffScrolling_KScrollsUp(t *testing.T) {
 	m := newTestModel()
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	m.diffViewing = true
@@ -944,7 +996,7 @@ func TestDiffScrolling_KScrollsUp(t *testing.T) {
 func TestDiffScrolling_JClampsAtMaxScroll(t *testing.T) {
 	m := newTestModel() // height=40, availHeight=32
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	m.diffViewing = true
@@ -1502,6 +1554,131 @@ func TestDeletedWorkspace_OnlyClearsFinishedNames(t *testing.T) {
 	}
 }
 
+// fanOut flattens whatever a command produced: a tea.BatchMsg is a list of
+// commands the runtime will run, so a test that wants to see all of the
+// messages has to run them itself.
+func fanOut(msg tea.Msg) []tea.Msg {
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{msg}
+	}
+	out := make([]tea.Msg, 0, len(batch))
+	for _, cmd := range batch {
+		out = append(out, cmd())
+	}
+	return out
+}
+
+// TestBatchDeleteResult_PartialFailureStillRefreshes: a batch where one delete
+// failed came back as a bare errMsg, which is the one path that does not reload
+// the list — so the workspaces that really had gone stayed on screen, still
+// spinning, until the ten-second refresh tick swept them away.
+//
+// Built from the error DeleteMultiple actually returns. An earlier version of
+// this test used an errors.Join stand-in, which is why it passed while the
+// production path did not: the real error names the successes as well, in its
+// "(deleted …)" tail, so reading names back out of the text blamed every one of
+// them and the list never refreshed at all.
+func TestBatchDeleteResult_PartialFailureStillRefreshes(t *testing.T) {
+	err := &workspace.DeleteBatchError{
+		Deleted: []string{"feat-a"},
+		Failed: []workspace.DeleteFailure{
+			{Name: "feat-b", Err: errors.New("worktree is locked")},
+			{Name: "feat-c", Err: errors.New("state.json is read-only")},
+		},
+	}
+
+	var deleted deletedWorkspaceMsg
+	var failed errMsg
+	for _, msg := range fanOut(batchDeleteResult([]string{"feat-a", "feat-b", "feat-c"}, err)) {
+		switch m := msg.(type) {
+		case deletedWorkspaceMsg:
+			deleted = m
+		case errMsg:
+			failed = m
+		}
+	}
+
+	if len(deleted.names) != 1 || deleted.names[0] != "feat-a" {
+		t.Errorf("deleted = %v, want the one workspace that went", deleted.names)
+	}
+	if failed.err == nil {
+		t.Fatal("the failures went unreported")
+	}
+	if strings.Contains(failed.err.Error(), "\n") {
+		t.Errorf("err = %q, want one line: the banner is one row tall", failed.err)
+	}
+	for _, name := range []string{"feat-b", "feat-c"} {
+		if !strings.Contains(failed.err.Error(), name) {
+			t.Errorf("err = %q, want it to name %s as not deleted", failed.err, name)
+		}
+	}
+}
+
+// A name that is a prefix of another must not be confused with it. This was a
+// real hazard while the outcome was read out of the message text; it is a
+// property of the typed error now, and the test stays as the guard on that.
+func TestBatchDeleteResult_NoNameIsBlamedForALongerOne(t *testing.T) {
+	err := &workspace.DeleteBatchError{
+		Deleted: []string{"a"},
+		Failed:  []workspace.DeleteFailure{{Name: "feat-a", Err: errors.New("worktree is locked")}},
+	}
+
+	var deleted deletedWorkspaceMsg
+	for _, msg := range fanOut(batchDeleteResult([]string{"a", "feat-a"}, err)) {
+		if m, ok := msg.(deletedWorkspaceMsg); ok {
+			deleted = m
+		}
+	}
+	if len(deleted.names) != 1 || deleted.names[0] != "a" {
+		t.Errorf("deleted = %v, want only a — feat-a is the one that failed", deleted.names)
+	}
+}
+
+// TestBatchDeleteResult_WholeBatchFailedIsJustTheError: nothing left the list,
+// so there is nothing to reload and no success to announce.
+func TestBatchDeleteResult_WholeBatchFailedIsJustTheError(t *testing.T) {
+	err := &workspace.DeleteBatchError{
+		Failed: []workspace.DeleteFailure{
+			{Name: "feat-a", Err: errors.New("worktree is locked")},
+			{Name: "feat-b", Err: errors.New("worktree is locked")},
+		},
+	}
+
+	if msg := batchDeleteResult([]string{"feat-a", "feat-b"}, err); !isErrMsg(msg) {
+		t.Fatalf("msg = %T, want a plain errMsg when nothing was deleted", msg)
+	}
+}
+
+// An error that is not the batch's own says nothing about individual
+// workspaces, so none of them may be assumed gone — announcing a deletion that
+// did not happen removes a row the user still has work in.
+func TestBatchDeleteResult_AnUntypedErrorClaimsNothing(t *testing.T) {
+	msg := batchDeleteResult([]string{"feat-a", "feat-b"}, errors.New("tmux is not installed"))
+	if !isErrMsg(msg) {
+		t.Fatalf("msg = %T, want a plain errMsg for an error that names no outcomes", msg)
+	}
+}
+
+func isErrMsg(msg tea.Msg) bool {
+	_, ok := msg.(errMsg)
+	return ok
+}
+
+// TestBatchDeleteResult_CleanBatchAnnouncesEveryName guards the common path
+// against the partial-failure reading: a nil error means all of them went.
+func TestBatchDeleteResult_CleanBatchAnnouncesEveryName(t *testing.T) {
+	msg := batchDeleteResult([]string{"feat-a", "feat-b"}, nil)
+
+	got, ok := msg.(deletedWorkspaceMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want deletedWorkspaceMsg", msg)
+	}
+	if len(got.names) != 2 {
+		t.Errorf("deleted = %v, want both names", got.names)
+	}
+}
+
 // Regression: sort modes had no tie-break, so ties reshuffled randomly on
 // every refresh (base order comes from map iteration).
 func TestSortedWorkspaces_DeterministicOnTies(t *testing.T) {
@@ -1615,6 +1792,49 @@ func TestOpenURLCmd_SuccessReports(t *testing.T) {
 	}
 	if got.url != "https://github.com/a/b/pull/7" {
 		t.Errorf("url = %q, want the opened URL", got.url)
+	}
+}
+
+// TestOpenURLCmd_ReapsTheOpener: nothing ever waited on the opener, so every
+// press of o left a zombie behind for the life of the dashboard.
+func TestOpenURLCmd_ReapsTheOpener(t *testing.T) {
+	origStart, origWait := cmdStart, cmdWait
+	t.Cleanup(func() { cmdStart, cmdWait = origStart, origWait })
+	cmdStart = func(c *exec.Cmd) error { return nil }
+	reaped := make(chan *exec.Cmd, 1)
+	cmdWait = func(c *exec.Cmd) error { reaped <- c; return nil }
+
+	if _, ok := openURLCmd("https://github.com/a/b/pull/7")().(browserOpenedMsg); !ok {
+		t.Fatal("expected the open to be reported as successful")
+	}
+
+	select {
+	case c := <-reaped:
+		if !strings.Contains(strings.Join(c.Args, " "), "pull/7") {
+			t.Errorf("reaped %v, want the opener that was just started", c.Args)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the opener was never waited on")
+	}
+}
+
+// TestOpenURLCmd_StartFailureIsNotReaped: Wait on a process that never started
+// answers nothing useful, and starting a goroutine to ask is noise.
+func TestOpenURLCmd_StartFailureIsNotReaped(t *testing.T) {
+	origStart, origWait := cmdStart, cmdWait
+	t.Cleanup(func() { cmdStart, cmdWait = origStart, origWait })
+	cmdStart = func(c *exec.Cmd) error { return fmt.Errorf("no browser") }
+	reaped := make(chan *exec.Cmd, 1)
+	cmdWait = func(c *exec.Cmd) error { reaped <- c; return nil }
+
+	if _, ok := openURLCmd("https://github.com/a/b/pull/7")().(errMsg); !ok {
+		t.Fatal("expected the failed open to be reported")
+	}
+
+	select {
+	case <-reaped:
+		t.Error("waited on an opener that never started")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -1771,7 +1991,7 @@ func TestToastSlot_ListDoesNotReflow(t *testing.T) {
 // makes bubbletea drop lines off the top.
 func TestView_HintAndToastFitShortTerminal(t *testing.T) {
 	var list []WorkspaceItem
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		list = append(list, testWSWithPR(fmt.Sprintf("ws-%d", i), "https://x/pr/1"))
 	}
 	m := newTestModel(list...)
@@ -1827,7 +2047,7 @@ func TestRemoteBranchDialog_FitsAShortTerminal(t *testing.T) {
 			m := newTestModel()
 			m.height, m.width = height, 100
 			m.creating, m.remoteBranchMode = true, true
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				m.remoteBranches = append(m.remoteBranches, fmt.Sprintf("origin/feature-%03d", i))
 			}
 			m.filteredBranches = m.remoteBranches
@@ -1950,5 +2170,112 @@ func TestPromptDialog_ShowsQueueWarning(t *testing.T) {
 	m2.promptWs = "idle"
 	if view := m2.View(); strings.Contains(view, "queued") {
 		t.Errorf("idle agent should get no queue warning\ngot: %s", view)
+	}
+}
+
+// Regression: errMsg is the shared failure of twenty-odd commands, several of
+// them slow and launched from somewhere else entirely. Any of them landing
+// while a dialog was open tore it down — and resetCreateMode wipes the input,
+// so a half-typed branch name vanished for a reason unrelated to what was
+// being typed.
+func TestErrMsg_LeavesAnOpenDialogAlone(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m.creating = true
+	m.createStep = 1
+	m.input.SetValue("feat/half-typed")
+
+	next, _ := m.Update(errMsg{errors.New("gh: could not fetch reviews")})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if !nm.creating {
+		t.Error("a background failure closed the create dialog")
+	}
+	if got := nm.input.Value(); got != "feat/half-typed" {
+		t.Errorf("input = %q, want the typed text kept", got)
+	}
+	if nm.err == nil {
+		t.Error("the error itself was dropped")
+	}
+}
+
+// Filter mode is torn down the same way, and by the same accident.
+func TestErrMsg_LeavesFilterModeAlone(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m.filtering = true
+	m.filterQuery = "alp"
+
+	next, _ := m.Update(errMsg{errors.New("could not open browser")})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if !nm.filtering || nm.filterQuery != "alp" {
+		t.Error("a background failure dropped filter mode")
+	}
+}
+
+// What errMsg must still clear: the in-flight markers, or a failed create
+// leaves the spinner running and q blocked.
+func TestErrMsg_ClearsTheInFlightMarkers(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+	m.workspaceCreating = true
+	m.workspaceDeleting = true
+	m.workspaceDeletingName = "alpha"
+
+	next, _ := m.Update(errMsg{errors.New("create failed")})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if nm.workspaceCreating || nm.workspaceDeleting || nm.workspaceDeletingName != "" {
+		t.Error("a failed operation stayed marked as in flight")
+	}
+}
+
+// Regression: the diff overlay's guard named four dialogs and missed the
+// permission and message dialogs — which the view draws above the diff while
+// the key handler routes to it, so every rune typed into a message went into a
+// diff nobody could see.
+func TestDiffLoaded_DoesNotOpenUnderAnotherDialog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*Model)
+	}{
+		{"answering a permission", func(m *Model) { m.answering = true }},
+		{"typing a message", func(m *Model) { m.prompting = true }},
+		{"filtering", func(m *Model) { m.filtering = true }},
+		{"generating PR content", func(m *Model) { m.prGenerating = true }},
+		{"deleting", func(m *Model) { m.deleting = true }},
+		{"on another tab", func(m *Model) { m.tab = tabSkills }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(testWS("alpha"))
+			tc.set(&m)
+
+			next, _ := m.Update(diffLoadedMsg{wsName: "alpha", content: "diff --git a b"})
+			nm, ok := next.(Model)
+			if !ok {
+				t.Fatal("Update did not return a Model")
+			}
+			if nm.diffViewing {
+				t.Error("the diff opened invisibly behind another dialog")
+			}
+		})
+	}
+}
+
+// And it still opens when nothing is in the way.
+func TestDiffLoaded_OpensOnAnIdleList(t *testing.T) {
+	m := newTestModel(testWS("alpha"))
+
+	next, _ := m.Update(diffLoadedMsg{wsName: "alpha", content: "diff --git a b"})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatal("Update did not return a Model")
+	}
+	if !nm.diffViewing {
+		t.Error("the diff did not open on an idle list")
 	}
 }

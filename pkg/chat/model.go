@@ -11,9 +11,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -24,6 +27,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/diag"
 	"github.com/axelgar/opentree/pkg/notify"
 )
 
@@ -49,6 +53,10 @@ type Options struct {
 	// every reading rather than only the changes: deciding what is an edge
 	// belongs to the notifier, and Update is the one method every change
 	// already passes through.
+	//
+	// It is called on the render loop, so it must return promptly and must not
+	// wait on anything a notification surface does — a banner or a bell that
+	// blocks here is a chat that stops drawing while it is raised.
 	Notify func(notify.Signal)
 
 	// Setup is the project's bootstrap phase, run before the agent is
@@ -124,17 +132,39 @@ func Run(ctx context.Context, opts Options) error {
 	var generation atomic.Int64
 	launch := func() (*acp.Client, *acp.InitializeResponse, int, error) {
 		gen := int(generation.Add(1))
+		// The launch line is recorded before it is run. A window that opens and
+		// closes again leaves nothing on screen to read, and this is the line
+		// that was wrong when it does: a binary that is not there, a path with
+		// a space in it, an argument list the adapter did not expect.
+		diag.Log("chat", "launching agent",
+			"workspace", opts.Workspace, "generation", gen, "binary", opts.acpBinary(),
+			"args", strings.Join(opts.Agent.ACPArgs(opts.Cwd), " "), "cwd", opts.Cwd)
 		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Agent.ACPArgs(opts.Cwd), opts.Cwd, handlers)
 		if err != nil {
 			// Spawn already names the command; wrapping again produced
 			// "failed to start X: start X: exec: ...".
+			diag.Log("chat", "agent did not start", "workspace", opts.Workspace, "err", err)
 			return nil, nil, gen, err
 		}
-		info, err := client.Initialize(ctx, "opentree", opts.Version)
+		// The handshake gets a deadline of its own, and not ctx's — ctx is what
+		// the agent process itself is watching, so a timeout on it would kill
+		// a healthy agent the moment the clock ran out. An adapter that
+		// accepts stdio and then never answers initialize is otherwise
+		// indistinguishable from a slow one, and the chat would wait on it for
+		// as long as the window stayed open.
+		hctx, cancelHandshake := context.WithTimeout(ctx, handshakeTimeout)
+		info, err := client.Initialize(hctx, "opentree", opts.Version)
+		cancelHandshake()
 		if err != nil {
+			// With whatever the agent printed on its way to not answering,
+			// which is usually the whole story and is otherwise readable only
+			// inside a window that may have closed by the time anyone looks.
+			diag.Log("chat", "handshake failed", "workspace", opts.Workspace,
+				"err", err, "stderr", client.Stderr())
 			_ = client.Close()
 			return nil, nil, gen, fmt.Errorf("ACP handshake failed: %w", err)
 		}
+		diag.Log("chat", "agent ready", "workspace", opts.Workspace, "generation", gen)
 		go func() {
 			<-client.Done()
 			send(agentGoneMsg{generation: gen})
@@ -146,28 +176,22 @@ func Run(ctx context.Context, opts Options) error {
 	// here: an agent started against a worktree that has not installed yet
 	// spends its first turn on a problem that has nothing to do with the task.
 	//
-	// Otherwise it starts now. A failed first launch is not fatal: the view
-	// opens in its stopped state, where restarting or installing the adapter is
-	// one key away. Returning an error here would print it to a tmux window
-	// that then closes.
-	var (
-		client *acp.Client
-		info   *acp.InitializeResponse
-		gen    int
-		err    error
-	)
-	if !opts.Setup.wanted() {
-		client, info, gen, err = launch()
-	}
-
-	m := newModel(ctx, client, info, opts, msgs)
-	m.generation = gen
+	// Otherwise it starts as the program's first command, not here. Launching
+	// synchronously meant nothing was on screen until the agent had finished
+	// its handshake — a bare tmux pane for however long that took, and forever
+	// for an adapter that accepts stdio and never answers. Worse, ctrl+c during
+	// that window reached the process as a signal rather than as a keystroke,
+	// cancelling the context the agent is started against, and [r] restart then
+	// failed with "context canceled" for the rest of the session.
+	//
+	// A failed launch is not fatal either way: the view opens in its stopped
+	// state, where restarting or installing the adapter is one key away.
+	// Returning an error here would print it to a tmux window that then closes.
+	m := newModel(ctx, nil, nil, opts, msgs)
 	m.launch = launch
 	m.send = send
 	m.setup.spec = opts.Setup
-	if err != nil {
-		m.dead, m.err = true, err
-	}
+	m.launching = !opts.Setup.wanted()
 
 	// Best-effort: a chat with no control socket still works, it is just
 	// invisible to the workspace list.
@@ -184,17 +208,55 @@ func Run(ctx context.Context, opts Options) error {
 				return Result{Reason: "chat closed"}
 			}
 		}
-		if srv, err := serve(opts.SocketPath, onCommand); err == nil {
+		srv, err := serve(opts.SocketPath, opts.Workspace, onCommand)
+		if err != nil {
+			// Worth recording precisely because it is not worth failing over:
+			// the dashboard reports no chat here, which looks exactly like a
+			// window nobody opened.
+			diag.Log("chat", "control socket unavailable",
+				"workspace", opts.Workspace, "path", opts.SocketPath, "err", err)
+		} else {
 			defer func() { _ = srv.Close() }()
 			m.publish = srv.publish
+			// Published once here so the greeting carries which opentree this
+			// is from the moment the socket answers, rather than from the first
+			// frame. serve cannot know it, and a dashboard that dialled in
+			// between would read a blank version off a chat that has one.
+			srv.publish(m.status())
 		}
 	}
+
+	prog := p(m)
+
+	// tmux sends SIGHUP when it kills a window, which is what deleting a
+	// workspace, pruning one and closing the window by hand all come down to.
+	// Go's default action for it is to terminate the process without running
+	// anything, so the teardown below never happened — and with it the agent's
+	// whole process group survived, MCP servers and tool shells and all,
+	// pointed at a worktree that had just been removed. bubbletea covers
+	// SIGINT and SIGTERM; SIGHUP is the one nobody had.
+	//
+	// signal.Notify rather than NotifyContext, and Quit rather than a cancel:
+	// ctx is what exec.CommandContext watches for the agent process, and
+	// cancelling it kills the direct child only. That orphans exactly the
+	// grandchildren the process group exists to catch, while racing the clean
+	// teardown that would have killed them.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		select {
+		case <-hup:
+			prog.Quit()
+		case <-quit:
+		}
+	}()
 
 	// Asked for around the program rather than inside it: bubbletea v1 has no
 	// name for these keys, so it has no opinion about requesting them either,
 	// and the restore has to happen after it has put the terminal back.
 	restore := extendedKeys()
-	final, err := p(m).Run()
+	final, err := prog.Run()
 	restore()
 	close(quit)
 	if fm, ok := final.(Model); ok && fm.client != nil {
@@ -207,6 +269,15 @@ func Run(ctx context.Context, opts Options) error {
 // closeTimeout bounds the goodbye. The process is killed immediately after, so
 // an agent that will not answer costs nothing worth waiting on.
 const closeTimeout = 2 * time.Second
+
+// handshakeTimeout bounds initialize, the one exchange that must complete
+// before there is a conversation at all.
+//
+// Generous, because the first run of an adapter can be a cold npm start on a
+// laptop that has been asleep. Finite, because the alternative is a window
+// that says "starting…" until somebody closes it, with nothing to distinguish
+// a slow agent from one that will never answer.
+const handshakeTimeout = 90 * time.Second
 
 // endSession tells the agent the conversation is over, for the agents that take
 // being told. Everything opentree holds is on disk by now; this is the agent's
@@ -471,6 +542,13 @@ type Model struct {
 	spinnerFrame int
 	usage        *acp.ContextUsage
 
+	// spinning is whether a tick is already on its way back. The chain sustains
+	// itself — each tick asks for the next — so whatever starts one has to know
+	// that nothing else already did. Two chains is a spinner at twice the rate
+	// and twice the renders, which is exactly what a turn drained from the queue
+	// the instant the last one ended would have produced.
+	spinning bool
+
 	// hideThoughts collapses the agent's reasoning, which is noise when you
 	// are following what it did rather than why.
 	hideThoughts bool
@@ -487,6 +565,13 @@ type Model struct {
 	// panel says so rather than offering [l] again: nothing on screen would
 	// otherwise change between pressing it and the browser opening.
 	loggingIn bool
+
+	// launching is set while the first agent is being started, before there is
+	// a client to talk to. Without it the window would show an ordinary
+	// composer with no agent behind it: overlay() has no case for a chat that
+	// has not started yet, so enter would silently discard whatever was typed
+	// (update.go's Send is inert with no session) and nothing would say why.
+	launching bool
 
 	// restarting is set between asking for a new agent and getting one. Bubble
 	// Tea runs every command on its own goroutine, so without it a second press
@@ -574,10 +659,21 @@ func (b brand) paint(s lipgloss.Style) lipgloss.Style {
 	return s.Foreground(lipgloss.Color(b.colour))
 }
 
-// adapterMissing reports whether the agent has never started, which for an
-// agent reached through an adapter is what a missing one looks like. An agent
-// that started and later died wants a restart, not an install.
-func (m Model) adapterMissing() bool { return m.client == nil }
+// adapterMissing reports whether the ACP adapter this agent is reached through
+// is not on the machine — the one failure installing it would actually fix.
+//
+// It used to ask whether there was a client, which is false of every agent that
+// has not started for any reason: an adapter that crashes on launch, one that
+// answers stdio and never completes the handshake, one that a proxy stopped
+// from reaching its API. All three were told to install what was already
+// sitting on the PATH, and the hint displaced the line that would have helped.
+//
+// Asked rather than remembered, for the reason acpBinary is: installing the
+// adapter is something that happens while this window is open, from the agent
+// list two keys away, and an answer cached at launch is stale immediately after.
+func (m Model) adapterMissing() bool {
+	return m.opts.Agent != nil && !m.opts.Agent.ACPInstalled()
+}
 
 // canLogIn reports whether logging in is a remedy for the current state, which
 // takes both an agent asking for credentials and a way to give them: a command
@@ -599,6 +695,7 @@ const (
 	overlayNone overlay = iota
 	overlayPermission
 	overlaySetup
+	overlayLaunching
 	overlayLogin
 	overlayStopped
 	overlaySettings
@@ -623,6 +720,11 @@ func (m Model) overlay() overlay {
 	// the phase that is holding it back.
 	case m.setup.active():
 		return overlaySetup
+	// Same reasoning one step later: the agent is being started and there is
+	// nothing to say to it yet, so say that rather than show a composer whose
+	// enter key does nothing.
+	case m.launching:
+		return overlayLaunching
 	// Above the stopped panel it was opened from, which is still true underneath
 	// it — an agent wanting credentials is exactly when this picker is up.
 	case m.login.open:
@@ -659,6 +761,7 @@ func init() {
 	overlayDefs = map[overlay]overlayDef{
 		overlayPermission: {Model.handlePermissionKey, Model.permissionHeight, Model.permissionView},
 		overlaySetup:      {Model.handleSetupKey, Model.setupHeight, Model.setupView},
+		overlayLaunching:  {Model.handleLaunchingKey, Model.launchingHeight, Model.launchingView},
 		overlayLogin:      {Model.handleLoginKey, Model.loginHeight, Model.loginView},
 		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
 		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
@@ -687,8 +790,13 @@ func (m Model) Init() tea.Cmd {
 	// yet to open one against. Init cannot change the model, so the phase
 	// starts by sending itself a message rather than by mutating state here.
 	start := m.startSession()
-	if m.setup.spec.wanted() {
+	switch {
+	case m.setup.spec.wanted():
 		start = func() tea.Msg { return setupBeginMsg{} }
+	case m.launching:
+		// No agent yet: the first launch is a command like any other, so the
+		// window is drawn and answering before the handshake finishes.
+		start = m.launchCmd(true)
 	}
 	return tea.Batch(waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink)
 }
@@ -865,4 +973,20 @@ func (m Model) launchCmd(keepLog bool) tea.Cmd {
 
 func spinnerTick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+// spin begins the frame ticker, unless one is already running.
+//
+// The guard is the whole point. A tick asks for the next tick, so a second
+// chain started over the top of the first never ends — both keep ticking, the
+// spinner runs at twice the rate and the log is re-rendered twice as often, for
+// the rest of the session. Both starters can reach that: the setup retry key
+// arrives while the previous run's last tick may still be in flight, and a
+// queued prompt begins its turn in the same update that ended the one before it.
+func (m Model) spin() (Model, tea.Cmd) {
+	if m.spinning {
+		return m, nil
+	}
+	m.spinning = true
+	return m, spinnerTick()
 }

@@ -264,6 +264,85 @@ func TestDeleteMultiple(t *testing.T) {
 	}
 }
 
+// A batch where one workspace refuses to go used to report one flat joined
+// error, and the caller had no way to tell which of the selected workspaces it
+// applied to: the ones that had gone stayed on screen, and the one that had not
+// was never named. The batch is not a transaction, so the successes must be
+// finished — window killed, state entry removed — and the error must say which
+// names are still there and why.
+func TestDeleteMultiple_MixedBatchNamesTheFailure(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	cfg.Worktree.BaseDir = ".opentree"
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	if _, err := svc.Create("branch-a", "main"); err != nil {
+		t.Fatalf("Create branch-a: %v", err)
+	}
+	if _, err := svc.Create("branch-b", "main"); err != nil {
+		t.Fatalf("Create branch-b: %v", err)
+	}
+
+	// A locked worktree is what this looks like in the wild: `git worktree
+	// remove --force` refuses one, so branch-a cannot go while branch-b can.
+	lock := exec.Command("git", "worktree", "lock", svc.WorktreePath("branch-a"))
+	lock.Dir = repoDir
+	if out, err := lock.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree lock: %v\n%s", err, out)
+	}
+
+	err = svc.DeleteMultiple([]string{"branch-a", "branch-b"})
+	if err == nil {
+		t.Fatal("DeleteMultiple with a locked worktree should report an error")
+	}
+
+	var batch *DeleteBatchError
+	if !errors.As(err, &batch) {
+		t.Fatalf("DeleteMultiple error is %T, want *DeleteBatchError: %v", err, err)
+	}
+	if !slices.Equal(batch.Deleted, []string{"branch-b"}) {
+		t.Errorf("batch.Deleted = %v, want [branch-b]", batch.Deleted)
+	}
+	if len(batch.Failed) != 1 || batch.Failed[0].Name != "branch-a" {
+		t.Fatalf("batch.Failed = %+v, want one failure named branch-a", batch.Failed)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "branch-a") || !strings.Contains(msg, "locked") {
+		t.Errorf("error should name branch-a and say what stopped it, got %q", msg)
+	}
+
+	// The half that worked is finished, not half-finished.
+	if _, err := svc.state.GetWorkspace("branch-b"); err == nil {
+		t.Error("branch-b's state entry survived a successful delete")
+	}
+	if dirExists(svc.WorktreePath("branch-b")) {
+		t.Error("branch-b's worktree survived a successful delete")
+	}
+	if !slices.Contains(mock.killWindowCalls, "branch-b") || !slices.Contains(mock.killWindowCalls, "branch-b:run") {
+		t.Errorf("KillWindow calls = %v, want branch-b and its server", mock.killWindowCalls)
+	}
+
+	// The half that failed is untouched, so the row stays and can be retried.
+	if _, err := svc.state.GetWorkspace("branch-a"); err != nil {
+		t.Errorf("branch-a's state entry was removed although its worktree is still there: %v", err)
+	}
+	if slices.Contains(mock.killWindowCalls, "branch-a") {
+		t.Errorf("branch-a's window was killed although its worktree is still there: %v", mock.killWindowCalls)
+	}
+	if mock.killSessionCalled {
+		t.Error("the tmux session was killed while a workspace is still there")
+	}
+}
+
 // A dev server outlives the worktree it was serving: the run window is not in
 // the workspace list, so it holds its port and a Node process while nothing on
 // screen mentions it. That is the same mess prune already means.
@@ -715,6 +794,7 @@ func TestSanitizeBranchNameInPath(t *testing.T) {
 
 	// Verify that SanitizeBranchName is applied correctly
 	path := svc.WorktreePath("feature/auth:v2")
+	//nolint:gocritic // the separator here is a leading "/", not a path to split
 	expected := filepath.Join("/repo", ".opentree", gitutil.SanitizeBranchName("feature/auth:v2"))
 	if path != expected {
 		t.Errorf("WorktreePath = %q, want %q", path, expected)
@@ -1082,5 +1162,164 @@ func TestCreate_RefusesASeedPathOutsideTheRepository(t *testing.T) {
 	}
 	if _, err := os.Stat(svc.WorktreePath("feature")); err == nil {
 		t.Error("a worktree was created despite the invalid config")
+	}
+}
+
+// ---- WS2: branch ownership and shared sessions ----
+
+// A workspace created from a remote branch that already existed locally has
+// adopted somebody else's branch. Deleting the workspace must not run
+// `git branch -D` on it — the branch was there first and may carry local-only
+// commits.
+func TestDelete_AdoptedBranchIsKept(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("borrowed", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := svc.state.Update("borrowed", func(ws *state.Workspace) error {
+		ws.AdoptedBranch = true
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if err := svc.Delete("borrowed"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "borrowed").Output()
+	if !strings.Contains(string(out), "borrowed") {
+		t.Error("an adopted branch was deleted with its workspace")
+	}
+}
+
+// The zero value has to mean "delete", because it is what every workspace
+// recorded before the field existed carries. The opposite spelling would
+// strand all of them with an undeletable branch.
+func TestDelete_CreatedBranchIsDeleted(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+
+	svc, err := newWithMock(repoDir, cfg, &mockProcessManager{})
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("ours", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := svc.Delete("ours"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "ours").Output()
+	if strings.Contains(string(out), "ours") {
+		t.Error("a branch opentree created outlived its workspace")
+	}
+}
+
+// The tmux session is named after the repository directory's base name, so two
+// clones of the same project share one. Emptying this repository must not kill
+// the session out from under the other checkout's agents.
+func TestDelete_SharedSessionIsNotKilled(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("only", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A window belonging to another clone of the same-named project.
+	mock.windows = []Window{{ID: "@9", Name: "their-work", Path: filepath.Join(t.TempDir(), "elsewhere")}}
+
+	if err := svc.Delete("only"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if mock.killSessionCalled {
+		t.Error("killed a session still holding another checkout's windows")
+	}
+}
+
+// When everything left in the session is this repository's, the session still
+// goes — that is the behaviour the shared-session guard has to preserve.
+func TestDelete_OwnSessionIsKilled(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+	if _, err := svc.Create("only", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mock.windows = []Window{{ID: "@1", Name: "shell", Path: repoDir}}
+
+	if err := svc.Delete("only"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !mock.killSessionCalled {
+		t.Error("the last workspace went and the session stayed")
+	}
+}
+
+// Prune kills run windows with no workspace behind them. Another checkout's
+// dev server looks exactly like one of those from here, and is not.
+func TestPruneServerWindows_LeavesOtherCheckoutsAlone(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	theirs := filepath.Join(t.TempDir(), "other-clone")
+	mock.windows = []Window{
+		{ID: "@1", Name: "mine:run", Path: filepath.Join(repoDir, ".opentree", "mine")},
+		{ID: "@2", Name: "theirs:run", Path: theirs},
+	}
+
+	killed := svc.pruneServerWindows()
+	if !slices.Contains(killed, "mine:run") {
+		t.Errorf("killed = %v, want this repository's orphan pruned", killed)
+	}
+	if slices.Contains(killed, "theirs:run") {
+		t.Error("pruned another checkout's dev server")
 	}
 }

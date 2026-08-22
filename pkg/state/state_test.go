@@ -1,6 +1,8 @@
 package state
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -116,20 +118,21 @@ func TestGetWorkspace_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateWorkspace(t *testing.T) {
+func TestUpdate(t *testing.T) {
 	store := newTestStore(t)
-	ws := sampleWorkspace("gamma")
 
-	if err := store.AddWorkspace(ws); err != nil {
+	if err := store.AddWorkspace(sampleWorkspace("gamma")); err != nil {
 		t.Fatalf("AddWorkspace() failed: %v", err)
 	}
 
-	ws.Status = "idle"
-	ws.PRURL = "https://github.com/example/repo/pull/1"
-	ws.PRStatus = "open"
-
-	if err := store.UpdateWorkspace(ws); err != nil {
-		t.Fatalf("UpdateWorkspace() failed: %v", err)
+	const prURL = "https://github.com/example/repo/pull/1"
+	if err := store.Update("gamma", func(ws *Workspace) error {
+		ws.Status = "idle"
+		ws.PRURL = prURL
+		ws.PRStatus = "open"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update() failed: %v", err)
 	}
 
 	got, err := store.GetWorkspace("gamma")
@@ -139,21 +142,114 @@ func TestUpdateWorkspace(t *testing.T) {
 	if got.Status != "idle" {
 		t.Errorf("Status after update = %q, want %q", got.Status, "idle")
 	}
-	if got.PRURL != ws.PRURL {
-		t.Errorf("PRURL = %q, want %q", got.PRURL, ws.PRURL)
+	if got.PRURL != prURL {
+		t.Errorf("PRURL = %q, want %q", got.PRURL, prURL)
 	}
-	if got.PRStatus != ws.PRStatus {
-		t.Errorf("PRStatus = %q, want %q", got.PRStatus, ws.PRStatus)
+	if got.PRStatus != "open" {
+		t.Errorf("PRStatus = %q, want %q", got.PRStatus, "open")
 	}
 }
 
-func TestUpdateWorkspace_NotFound(t *testing.T) {
+func TestUpdate_NotFound(t *testing.T) {
 	store := newTestStore(t)
-	ws := sampleWorkspace("ghost")
 
-	err := store.UpdateWorkspace(ws)
+	called := false
+	err := store.Update("ghost", func(*Workspace) error {
+		called = true
+		return nil
+	})
 	if err == nil {
-		t.Fatal("UpdateWorkspace() expected error for non-existent workspace, got nil")
+		t.Fatal("Update() expected error for non-existent workspace, got nil")
+	}
+	if called {
+		t.Error("Update() ran the callback for a workspace that does not exist")
+	}
+}
+
+// A callback that fails leaves the record exactly as it was — both on disk and
+// in memory. Callers use the error to abandon a change, not to half-apply it.
+func TestUpdate_CallbackErrorWritesNothing(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.AddWorkspace(sampleWorkspace("delta")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	sentinel := errors.New("no")
+	err := store.Update("delta", func(ws *Workspace) error {
+		ws.Status = "clobbered"
+		ws.ACPSessionID = "ses_x"
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Update() error = %v, want the callback's own error", err)
+	}
+
+	got, err := store.GetWorkspace("delta")
+	if err != nil {
+		t.Fatalf("GetWorkspace(): %v", err)
+	}
+	if got.Status == "clobbered" || got.ACPSessionID != "" {
+		t.Errorf("failed Update() still applied its changes: %+v", got)
+	}
+}
+
+// The defect Update exists for. The dashboard and every `opentree chat` are
+// separate processes over one state.json. Each reads the workspace, changes the
+// field it cares about, and writes. Under the whole-record write this replaced,
+// whichever wrote last put back its own stale copy of the other's field — and
+// nothing re-derives a session id or a setup hash, so it was gone for good.
+func TestUpdate_ConcurrentProcessesKeepEachOthersFields(t *testing.T) {
+	dir := t.TempDir()
+
+	a, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if err := a.AddWorkspace(sampleWorkspace("shared")); err != nil {
+		t.Fatalf("AddWorkspace(): %v", err)
+	}
+
+	// b opens the store now, so it holds a snapshot from before a's write.
+	b, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+
+	if err := a.Update("shared", func(ws *Workspace) error {
+		ws.ACPSessionID = "ses_a"
+		ws.SetupHash = "hash_a"
+		ws.Port = 3001
+		return nil
+	}); err != nil {
+		t.Fatalf("a.Update(): %v", err)
+	}
+
+	if err := b.Update("shared", func(ws *Workspace) error {
+		ws.PRURL = "https://github.com/example/repo/pull/7"
+		return nil
+	}); err != nil {
+		t.Fatalf("b.Update(): %v", err)
+	}
+
+	final, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	got, err := final.GetWorkspace("shared")
+	if err != nil {
+		t.Fatalf("GetWorkspace(): %v", err)
+	}
+	if got.ACPSessionID != "ses_a" {
+		t.Errorf("ACPSessionID = %q, want %q — b's write erased a's session", got.ACPSessionID, "ses_a")
+	}
+	if got.SetupHash != "hash_a" {
+		t.Errorf("SetupHash = %q, want %q", got.SetupHash, "hash_a")
+	}
+	if got.Port != 3001 {
+		t.Errorf("Port = %d, want 3001", got.Port)
+	}
+	if got.PRURL == "" {
+		t.Error("PRURL is empty — b's own write did not survive either")
 	}
 }
 
@@ -260,7 +356,7 @@ func TestConcurrentWriters(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, numWriters)
 
-	for i := 0; i < numWriters; i++ {
+	for i := range numWriters {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -388,7 +484,7 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			s, err := New(dir)
 			if err != nil {
 				errs <- fmt.Errorf("writer iteration %d: New() failed: %w", i, err)
@@ -406,7 +502,7 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			s, err := New(dir)
 			if err != nil {
 				errs <- fmt.Errorf("reader iteration %d: New() failed (partial/corrupt JSON?): %w", i, err)
@@ -597,9 +693,11 @@ func TestRecordSession_Persists(t *testing.T) {
 	if err := store.AddWorkspace(ws); err != nil {
 		t.Fatalf("AddWorkspace(): %v", err)
 	}
-	ws.RecordSession(ACPSession{Agent: "opencode", ID: "ses_a", Title: "the auth bug"})
-	if err := store.UpdateWorkspace(ws); err != nil {
-		t.Fatalf("UpdateWorkspace(): %v", err)
+	if err := store.Update("fix-auth", func(w *Workspace) error {
+		w.RecordSession(ACPSession{Agent: "opencode", ID: "ses_a", Title: "the auth bug"})
+		return nil
+	}); err != nil {
+		t.Fatalf("Update(): %v", err)
 	}
 
 	reopened, err := New(dir)
@@ -612,5 +710,205 @@ func TestRecordSession_Persists(t *testing.T) {
 	}
 	if len(got.ACPSessions) != 1 || got.ACPSessions[0].Title != "the auth bug" {
 		t.Errorf("ACPSessions = %+v, want the recorded conversation back", got.ACPSessions)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The file on disk: its schema, and its permissions
+// ---------------------------------------------------------------------------
+
+// writeStateFile puts raw JSON where a Store opened on dir will find it.
+func writeStateFile(t *testing.T, dir, content string, perm os.FileMode) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".opentree", "state.json")
+	if err := os.WriteFile(path, []byte(content), perm); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Regression: a newer opentree writes fields this binary has no struct field
+// for. The decoder dropped them and the next mutation rewrote the whole file,
+// so one command from an older binary left on PATH deleted them for good — and
+// a session id, a setup hash or a port has nothing to re-derive it from. The
+// three levels are all tested because the file nests: the document, a
+// workspace record, and an entry in its session ledger.
+func TestMutate_KeepsFieldsThisBinaryDoesNotKnow(t *testing.T) {
+	dir := t.TempDir()
+	path := writeStateFile(t, dir, `{
+  "version": 1,
+  "telemetry_opt_in": true,
+  "workspaces": {
+    "fix-auth": {
+      "name": "fix-auth",
+      "branch": "fix-auth",
+      "review_state": {"approved_by": "kim"},
+      "acp_sessions": [{"id": "ses_a", "model": "sonnet-9"}]
+    }
+  }
+}`, 0600)
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if err := store.Update("fix-auth", func(ws *Workspace) error {
+		ws.Port = 3001
+		return nil
+	}); err != nil {
+		t.Fatalf("Update(): %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		TelemetryOptIn bool `json:"telemetry_opt_in"`
+		Workspaces     map[string]struct {
+			Port        int `json:"port"`
+			ReviewState struct {
+				ApprovedBy string `json:"approved_by"`
+			} `json:"review_state"`
+			ACPSessions []struct {
+				ID    string `json:"id"`
+				Model string `json:"model"`
+			} `json:"acp_sessions"`
+		} `json:"workspaces"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("the rewritten file is not valid JSON (%v):\n%s", err, raw)
+	}
+
+	if !got.TelemetryOptIn {
+		t.Errorf("the document's own telemetry_opt_in was dropped:\n%s", raw)
+	}
+	ws := got.Workspaces["fix-auth"]
+	if ws.ReviewState.ApprovedBy != "kim" {
+		t.Errorf("the workspace's review_state was dropped:\n%s", raw)
+	}
+	if len(ws.ACPSessions) != 1 || ws.ACPSessions[0].Model != "sonnet-9" {
+		t.Errorf("the session's model was dropped:\n%s", raw)
+	}
+	if ws.ACPSessions[0].ID != "ses_a" {
+		t.Errorf("session id = %q, want the one that was already there", ws.ACPSessions[0].ID)
+	}
+	if ws.Port != 3001 {
+		t.Errorf("port = %d, want this binary's own write to have landed as well", ws.Port)
+	}
+}
+
+// A workspace re-added under a name that is already taken keeps whatever a
+// newer opentree wrote against it. The caller's struct was built from nothing
+// and cannot carry those fields itself.
+func TestAddWorkspace_OverwriteKeepsTheFieldsItCannotSee(t *testing.T) {
+	dir := t.TempDir()
+	path := writeStateFile(t, dir, `{"workspaces": {"alpha": {"name": "alpha", "review_state": "approved"}}}`, 0600)
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if err := store.AddWorkspace(sampleWorkspace("alpha")); err != nil {
+		t.Fatalf("AddWorkspace(): %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "review_state") {
+		t.Errorf("re-adding the workspace dropped review_state:\n%s", raw)
+	}
+}
+
+// The schema this binary speaks is stamped on every write, so a newer one can
+// tell what wrote the file. Every state.json in existence predates the field,
+// and those load as version 0 without complaint.
+func TestAtomicWrite_StampsTheSchemaOnAVersionlessFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeStateFile(t, dir, `{"workspaces": {"alpha": {"name": "alpha"}}}`, 0600)
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() on a file from before the version field: %v", err)
+	}
+	if _, err := store.GetWorkspace("alpha"); err != nil {
+		t.Fatalf("GetWorkspace(): %v", err)
+	}
+	if err := store.AddWorkspace(sampleWorkspace("beta")); err != nil {
+		t.Fatalf("AddWorkspace(): %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != stateVersion {
+		t.Errorf("version on disk = %d, want %d", got.Version, stateVersion)
+	}
+}
+
+// A schema this binary has never heard of is one whose known fields may have
+// changed meaning, so opening the file would mean writing it back mangled. It
+// is refused instead, while the opentree that wrote it can still read it — and
+// the error has to name both ways out, since a user who does not want the
+// upgrade needs the other one.
+func TestNew_RefusesAStateFileFromTheFuture(t *testing.T) {
+	dir := t.TempDir()
+	writeStateFile(t, dir, `{"version": 99, "workspaces": {}}`, 0600)
+
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("New() opened a state file written by a newer opentree")
+	}
+	for _, want := range []string{"newer opentree", "upgrade opentree", "delete it to reset"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// state.json holds session ids, PR URLs, issue titles and branch names — the
+// same class of thing as the trust file, which has always been 0600. On a
+// shared host 0644 handed all of it to every other account, and the lock beside
+// it is no use to anyone who cannot read what it guards.
+func TestAtomicWrite_TheStateFileAndItsLockArePrivate(t *testing.T) {
+	dir := t.TempDir()
+	// An 0644 file left by an older opentree: the rename installs a private
+	// one over it, so the first mutating command repairs it.
+	path := writeStateFile(t, dir, `{"workspaces": {}}`, 0644)
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if err := store.AddWorkspace(sampleWorkspace("alpha")); err != nil {
+		t.Fatalf("AddWorkspace(): %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("state.json mode = %o, want 0600", perm)
+	}
+
+	lock, err := os.Stat(filepath.Join(dir, ".opentree", "state.lock"))
+	if err != nil {
+		t.Fatalf("stat state.lock: %v", err)
+	}
+	if perm := lock.Mode().Perm(); perm&0077 != 0 {
+		t.Errorf("state.lock mode = %o, want nothing for group or other", perm)
 	}
 }

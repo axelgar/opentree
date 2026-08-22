@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -53,7 +54,7 @@ var trustShowCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("%s asks to run:\n", config.FindConfigFile())
+		fmt.Printf("%s asks to run:\n", workspaceConfigPath())
 		printCommands(ws)
 		fmt.Println()
 
@@ -99,11 +100,27 @@ func workspaceConfig() (string, config.WorkspaceConfig, error) {
 	if err != nil {
 		return "", config.WorkspaceConfig{}, err
 	}
-	cfg, err := config.Load("")
+	// The repository's config, not whatever the walk finds — the same choice
+	// chat.go and setup.go make, and for a sharper reason here. The approval
+	// is keyed on repoRoot, so approving a worktree's copy of the file records
+	// the branch's commands under the main repository's key: `opentree setup`
+	// would then read the repository's file, hash different text, and refuse
+	// again with the same "run `opentree trust`" that had just said it was
+	// approved. There was no way out of that loop from inside a worktree.
+	cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
 	if err != nil {
 		return "", config.WorkspaceConfig{}, fmt.Errorf("failed to load config: %w", err)
 	}
 	return repoRoot, cfg.Workspace, nil
+}
+
+// workspaceConfigPath is the file workspaceConfig read, for printing.
+func workspaceConfigPath() string {
+	repoRoot, err := gitutil.RepoRoot()
+	if err != nil {
+		return config.FindConfigFile()
+	}
+	return filepath.Join(repoRoot, "opentree.toml")
 }
 
 // printCommands shows the block the way it will run: setup in order, then run.

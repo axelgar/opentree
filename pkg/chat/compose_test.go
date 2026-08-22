@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -146,7 +147,7 @@ func TestComposePrompt_ImagePathBecomesAnImageBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Data is not base64: %v", err)
 	}
-	if string(data) != string(onePixelPNG) {
+	if !bytes.Equal(data, onePixelPNG) {
 		t.Errorf("decoded %d bytes, want the %d written", len(data), len(onePixelPNG))
 	}
 }
@@ -358,7 +359,7 @@ func TestMatchFiles_PrefixBeatsSubstring(t *testing.T) {
 
 func TestMatchFiles_KeepsEveryMatch(t *testing.T) {
 	var many []string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		many = append(many, "file")
 	}
 	// The palette scrolls, so matching stops filtering and keeps the lot.

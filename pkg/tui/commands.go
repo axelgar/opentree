@@ -1,8 +1,8 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -283,11 +283,59 @@ func (m Model) attachServerCmd(name string) tea.Cmd {
 
 func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.svc.DeleteMultiple(names); err != nil {
-			return errMsg{err}
-		}
+		return batchDeleteResult(names, m.svc.DeleteMultiple(names))
+	}
+}
+
+// batchDeleteResult turns DeleteMultiple's single verdict on a whole batch into
+// what the dashboard has to do about it.
+//
+// A batch that half worked used to come back as a bare errMsg, which is the one
+// path that does not refresh the list — so the workspaces that really had gone
+// stayed on screen, spinner and all, until the ten-second tick swept them away.
+// The successes are reported first so the list corrects itself, and the failure
+// follows so the banner still says what went wrong and to which of them.
+func batchDeleteResult(names []string, err error) tea.Msg {
+	if err == nil {
 		return deletedWorkspaceMsg{names: names}
 	}
+	gone := deletedDespite(err)
+	failed := func() tea.Msg { return errMsg{oneLine(err)} }
+	if len(gone) == 0 {
+		return failed()
+	}
+	return tea.Batch(func() tea.Msg { return deletedWorkspaceMsg{names: gone} }, failed)()
+}
+
+// deletedDespite is the workspaces a failed batch delete still finished, so the
+// list can drop them instead of showing rows for worktrees that have gone.
+//
+// Asked of the error rather than read out of it. DeleteMultiple returns a typed
+// error carrying the two lists, which is the only reliable way to know: the
+// first attempt at this parsed names out of the message text and treated
+// anything unmentioned as deleted — and the message names the successes too, in
+// its "(deleted a, b)" tail, so every one of them looked blamed and the list
+// never refreshed at all.
+//
+// Any other error means the batch did not report per-workspace outcomes, and
+// nothing is assumed to have gone.
+func deletedDespite(err error) []string {
+	var batch *workspace.DeleteBatchError
+	if errors.As(err, &batch) {
+		return batch.Deleted
+	}
+	return nil
+}
+
+// oneLine folds a joined error onto a single line. errors.Join separates its
+// causes with newlines and the error banner is one row tall, so a join left as
+// it is shows its first cause and silently hides every other.
+func oneLine(err error) error {
+	text := strings.TrimSpace(err.Error())
+	if !strings.Contains(text, "\n") {
+		return err
+	}
+	return errors.New(strings.Join(strings.Split(text, "\n"), "; "))
 }
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
@@ -324,9 +372,7 @@ func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
 func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, issueTitle string) (title, body string) {
 	var commits []string
 	if worktreeDir != "" {
-		cmd := exec.Command("git", "log", baseBranch+"..HEAD", "--format=%s", "--no-merges")
-		cmd.Dir = worktreeDir
-		if out, err := cmd.CombinedOutput(); err == nil {
+		if out, err := gitutil.Output(worktreeDir, "log", baseBranch+"..HEAD", "--format=%s", "--no-merges"); err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				if strings.TrimSpace(line) != "" {
 					commits = append(commits, strings.TrimSpace(line))
@@ -352,8 +398,7 @@ func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, 
 	if issueNumber > 0 {
 		fmt.Fprintf(&sb, "Closes #%d\n", issueNumber)
 	}
-	body = sb.String()
-	return
+	return title, sb.String()
 }
 
 func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {
@@ -366,14 +411,44 @@ func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {
 	}
 }
 
+// checkBranchStatusCmd asks whether the branch is on the remote and what its
+// pull request is doing. The two halves fail independently: git ls-remote needs
+// neither gh nor GitHub, so on a GitLab remote, or with a lapsed gh login, it
+// keeps answering long after the PR half stops. Discarding its answer with the
+// error is why a push badge on such a repo never corrected itself — the poll ran
+// every thirty seconds and threw away the half that worked every time.
+//
+// Exactly one message comes back either way: statusChecksInFlight counts one
+// reply per check, and a check answering twice would let the next thirty-second
+// round start on top of an unfinished one. The price is that a gh failure the
+// ls-remote half survived reaches no log, since only statusCheckErrMsg writes
+// there — worth revisiting the day branchStatusCheckedMsg can carry an error of
+// its own.
 func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bool) tea.Cmd {
+	// gh failing says nothing about whether the branch merges cleanly, so the
+	// last answer is carried forward rather than letting a zero value clear the
+	// conflict badge until the next poll that does reach GitHub.
+	knownConflicts := false
+	if i := m.workspaceIndex(wsName); i >= 0 {
+		knownConflicts = m.workspaces[i].MergeConflicts
+	}
 	return func() tea.Msg {
 		status, err := m.prMgr.GetBranchAndPRStatus(branch, repoDir, wasPushed)
-		if err != nil {
+		return branchStatusResult(wsName, status, err, knownConflicts)
+	}
+}
+
+// branchStatusResult decides how much of a failed poll is still worth having.
+// GetBranchAndPRStatus returns whatever it managed to learn alongside its error,
+// and RemoteCheckFailed is how it says the ls-remote half is not among it.
+func branchStatusResult(wsName string, status github.BranchStatus, err error, knownConflicts bool) tea.Msg {
+	if err != nil {
+		if status.RemoteCheckFailed {
 			return statusCheckErrMsg{err: err}
 		}
-		return branchStatusCheckedMsg{wsName: wsName, status: status}
+		status.MergeConflicts = knownConflicts
 	}
+	return branchStatusCheckedMsg{wsName: wsName, status: status}
 }
 
 // sendReviewsCmd hands a workspace's open PR review comments to its agent as a
@@ -391,7 +466,7 @@ func (m Model) sendReviewsCmd(ws WorkspaceItem) tea.Cmd {
 		if len(comments) == 0 {
 			return reviewsSentMsg{wsName: wsName}
 		}
-		if err := chat.Send(chat.SocketPath(repoRoot, wsName), chat.Command{
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, chat.Command{
 			Type: chat.CommandPrompt, Text: github.FormatReviewsPrompt(comments),
 		}); err != nil {
 			return errMsg{fmt.Errorf("%s: %w", wsName, err)}

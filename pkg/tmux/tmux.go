@@ -104,8 +104,19 @@ func (c *Controller) newWindow(name, workdir string, env []string, trailing ...s
 // descriptor limit is raised first so the agents behind the chat do not hit the
 // default macOS limit; exec then replaces the shell, so the pane's process is
 // the program itself.
+//
+// The command is quoted along with its arguments. It is not always a bare
+// program name: a workspace's agent window runs os.Executable(), so an opentree
+// installed under a path with a space in it — "Application Support" is the one
+// people hit — would reach the shell as a command that does not exist followed
+// by an argument nobody passed, and the window would die the moment it opened.
+//
+// Quoting is safe for the callers that hand this a shell fragment rather than a
+// path. They pass "sh" or "portless" as the command and the fragment as an
+// argument, and a POSIX shell strips quoting before it looks a command up, so
+// 'sh' and sh resolve to the same program.
 func launchLine(command string, args []string) string {
-	parts := []string{"exec", command}
+	parts := []string{"exec", shellQuote(command)}
 	for _, a := range args {
 		parts = append(parts, shellQuote(a))
 	}
@@ -190,9 +201,12 @@ func (c *Controller) ListWindows() ([]Window, error) {
 		return []Window{}, nil
 	}
 
-	// Format: window_id window_active window_name — the name is last so
-	// names containing "|" survive parsing (SplitN keeps the remainder).
-	cmd := exec.Command("tmux", "list-windows", "-t", exactSession(sessionName), "-F", "#{window_id}|#{window_active}|#{window_name}")
+	// Format: window_id window_active pane_current_path window_name — the name
+	// is last so names containing "|" survive parsing (SplitN keeps the
+	// remainder). The path is what says which checkout a window belongs to:
+	// two clones of the same project share one session, because the session is
+	// named after the directory's base name.
+	cmd := exec.Command("tmux", "list-windows", "-t", exactSession(sessionName), "-F", "#{window_id}|#{window_active}|#{pane_current_path}|#{window_name}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list windows: %w", err)
@@ -479,6 +493,11 @@ func (c *Controller) GetWindowActivity(name string) (time.Time, error) {
 	return time.Unix(sec, 0), nil
 }
 
+// SessionName is the tmux session this controller works in, exported for the
+// commands that report rather than act — a session name that is not the one you
+// expected explains a great deal, and it is derived rather than recorded.
+func (c *Controller) SessionName() string { return c.getSessionName() }
+
 // getSessionName returns the tmux session name for this repository.
 // It includes the repository directory name so multiple repos can coexist.
 func (c *Controller) getSessionName() string {
@@ -596,16 +615,19 @@ func (c *Controller) parseWindows(output string) ([]Window, error) {
 			continue
 		}
 
-		// id|active|name — name is last so names containing "|" stay intact.
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
+		// id|active|path|name — name is last so names containing "|" stay
+		// intact, which is also why the count is exact: a name with pipes in
+		// it is indistinguishable from extra fields any other way round.
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
 			continue
 		}
 
 		windows = append(windows, Window{
 			ID:     parts[0],
-			Name:   parts[2],
+			Name:   parts[3],
 			Active: parts[1] == "1",
+			Path:   parts[2],
 		})
 	}
 
@@ -617,4 +639,8 @@ type Window struct {
 	ID     string
 	Name   string
 	Active bool
+	// Path is the window's active pane's working directory, or empty when tmux
+	// did not report one. It is how a caller tells its own windows from those
+	// of another checkout sharing the session.
+	Path string
 }

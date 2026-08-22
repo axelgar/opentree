@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -178,18 +179,18 @@ func TestParseWindows(t *testing.T) {
 	}{
 		{
 			name:  "single window",
-			input: "@0|1|main",
+			input: "@0|1|/repo|main",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: true},
+				{ID: "@0", Name: "main", Active: true, Path: "/repo"},
 			},
 		},
 		{
 			name:  "multiple windows",
-			input: "@0|0|main\n@1|1|feat-auth\n@2|0|fix-bug",
+			input: "@0|0|/repo|main\n@1|1|/repo/.opentree/feat-auth|feat-auth\n@2|0|/repo/.opentree/fix-bug|fix-bug",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: false},
-				{ID: "@1", Name: "feat-auth", Active: true},
-				{ID: "@2", Name: "fix-bug", Active: false},
+				{ID: "@0", Name: "main", Active: false, Path: "/repo"},
+				{ID: "@1", Name: "feat-auth", Active: true, Path: "/repo/.opentree/feat-auth"},
+				{ID: "@2", Name: "fix-bug", Active: false, Path: "/repo/.opentree/fix-bug"},
 			},
 		},
 		{
@@ -199,33 +200,43 @@ func TestParseWindows(t *testing.T) {
 		},
 		{
 			name:  "input with empty lines",
-			input: "@0|1|main\n\n@1|0|feat",
+			input: "@0|1|/repo|main\n\n@1|0|/repo|feat",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: true},
-				{ID: "@1", Name: "feat", Active: false},
+				{ID: "@0", Name: "main", Active: true, Path: "/repo"},
+				{ID: "@1", Name: "feat", Active: false, Path: "/repo"},
 			},
 		},
 		{
 			name:  "malformed line (skipped)",
-			input: "@0|1|main\ninvalid\n@1|0|feat",
+			input: "@0|1|/repo|main\ninvalid\n@1|0|/repo|feat",
 			want: []Window{
-				{ID: "@0", Name: "main", Active: true},
-				{ID: "@1", Name: "feat", Active: false},
+				{ID: "@0", Name: "main", Active: true, Path: "/repo"},
+				{ID: "@1", Name: "feat", Active: false, Path: "/repo"},
 			},
 		},
 		{
+			// The name is the last field for exactly this reason, and it is
+			// why the field count is exact rather than a minimum.
 			name:  "window name containing pipes",
-			input: "@0|1|fix|bug|now",
+			input: "@0|1|/repo|fix|bug|now",
 			want: []Window{
-				{ID: "@0", Name: "fix|bug|now", Active: true},
+				{ID: "@0", Name: "fix|bug|now", Active: true, Path: "/repo"},
 			},
 		},
 		{
 			name:  "window name containing dots",
-			input: "@0|0|release-1.2",
+			input: "@0|0|/repo|release-1.2",
 			want: []Window{
-				{ID: "@0", Name: "release-1.2", Active: false},
+				{ID: "@0", Name: "release-1.2", Active: false, Path: "/repo"},
 			},
+		},
+		{
+			// A line from before the path was asked for. Nothing produces one
+			// today, but a short line must be dropped rather than read as a
+			// window whose name is a directory.
+			name:  "line without a path field (skipped)",
+			input: "@0|1|main",
+			want:  []Window{},
 		},
 	}
 
@@ -256,6 +267,7 @@ func TestSessionExists(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-exists")
 	sessionName := ctrl.getSessionName()
@@ -282,6 +294,7 @@ func TestCreateSession(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-create")
 	sessionName := ctrl.getSessionName()
@@ -309,28 +322,30 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
+	// The server has to exist before it can be asked about a server option:
+	// show-options does not start one, and privateServer has just handed this
+	// test an empty socket directory. Without this the probe failed with
+	// "error connecting to <socket>" and the test skipped itself on every
+	// machine and both CI runners, reporting it as an old tmux.
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "probe").CombinedOutput(); err != nil {
+		t.Fatalf("could not start a tmux server on this test's own socket: %v\n%s", err, out)
+	}
 	if _, err := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output(); err != nil {
 		t.Skip("tmux predates the extended-keys option, skipping")
 	}
 
-	// The developer's own tmux server is the one under test, since that is the
-	// one opentree talks to. Whatever it was set to is put back.
-	before, err := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output()
-	if err != nil {
-		t.Fatalf("reading extended-keys failed: %v", err)
-	}
-	defer exec.Command("tmux", "set-option", "-s", "extended-keys", strings.TrimSpace(string(before))).Run() //nolint:errcheck // best-effort cleanup
-	exec.Command("tmux", "set-option", "-s", "extended-keys", "off").Run()                                   //nolint:errcheck // the state a new machine is in
+	// extended-keys is a server option, and privateServer has given this test a
+	// server nothing else is talking to — so it can be set to what a new
+	// machine has and read back without anything else having a say.
+	exec.Command("tmux", "set-option", "-s", "extended-keys", "off").Run() //nolint:errcheck // the state a new machine is in
 
 	ctrl := New("test-opentree-extkeys")
 	sessionName := ctrl.getSessionName()
 	exec.Command("tmux", "kill-session", "-t", sessionName).Run() //nolint:errcheck // may not exist yet
 	defer exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
-	// A program that asks for modified keys the way the chat does, and stays
-	// alive long enough to be asked about.
-	const asks = `printf '\033[>4;1m'; sleep 30`
-	if err := ctrl.CreateAppWindow("extkeys", "/tmp", "sh", nil, "-c", asks); err != nil {
+	if err := ctrl.CreateAppWindow("extkeys", "/tmp", "sleep", nil, "30"); err != nil {
 		t.Fatalf("CreateAppWindow() failed: %v", err)
 	}
 
@@ -357,15 +372,27 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 		t.Errorf("extended-keys = %q after a window in an existing session, want %q", s, "on")
 	}
 
-	windowID, err := ctrl.findWindowID("extkeys")
+	// The other half: a program in one of these windows asks for modified keys
+	// and tmux takes it. Asked last, and never toggled afterwards — a pane
+	// negotiates its key mode once, when the program emits the request, and
+	// some tmux builds drop it again when the server option goes off. Checking
+	// a window created before the toggling above made this depend on which
+	// build was installed: it passed on tmux 3.7b and failed on the macOS
+	// runner's newer one, having proved nothing about opentree either way.
+	const asks = `printf '\033[>4;1m'; sleep 30`
+	if err := ctrl.CreateAppWindow("extkeys-asker", "/tmp", "sh", nil, "-c", asks); err != nil {
+		t.Fatalf("CreateAppWindow() for the asking program failed: %v", err)
+	}
+	windowID, err := ctrl.findWindowID("extkeys-asker")
 	if err != nil {
 		t.Fatalf("findWindowID() failed: %v", err)
 	}
-	// pane_key_mode reads "Ext 1" once tmux has taken the program's request.
-	// It arrives with the program rather than with the window, so it is worth
-	// a moment's wait before giving up on it.
+
+	// pane_key_mode reads "Ext 1" once tmux has taken the request. It arrives
+	// with the program rather than with the window, so it is worth a moment's
+	// wait before giving up on it.
 	var mode string
-	for range 20 {
+	for range 30 {
 		out, err := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_key_mode}").Output()
 		if err != nil {
 			t.Fatalf("reading pane_key_mode failed: %v", err)
@@ -379,7 +406,13 @@ func TestCreateAppWindow_EnablesExtendedKeys(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if mode != "Ext 1" {
-		t.Errorf("pane key mode = %q, want %q — the program asked for modified keys and tmux did not take it", mode, "Ext 1")
+		// The server option is reported alongside, because the two failures
+		// look identical from the outside and have nothing to do with each
+		// other: opentree not setting it, and tmux not acting on it.
+		opt, _ := exec.Command("tmux", "show-options", "-sv", "extended-keys").Output()
+		ver, _ := exec.Command("tmux", "-V").Output()
+		t.Errorf("pane key mode = %q, want %q — the program asked for modified keys and tmux did not take it\n  extended-keys = %s\n  %s",
+			mode, "Ext 1", strings.TrimSpace(string(opt)), strings.TrimSpace(string(ver)))
 	}
 }
 
@@ -389,6 +422,7 @@ func TestCreateAppWindow(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-window")
 	sessionName := ctrl.getSessionName()
@@ -436,6 +470,7 @@ func TestListWindows(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-list")
 	sessionName := ctrl.getSessionName()
@@ -470,6 +505,7 @@ func TestKillWindow(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-kill")
 	sessionName := ctrl.getSessionName()
@@ -512,6 +548,7 @@ func TestCreateAppWindow_QuotesArgs(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-quotes")
 	sessionName := ctrl.getSessionName()
@@ -537,10 +574,56 @@ func TestCreateAppWindow_QuotesArgs(t *testing.T) {
 	}
 }
 
+// The command is as much shell text as the arguments are, and it is not always
+// a bare program name: a workspace's agent window runs os.Executable(), so an
+// opentree living under "Application Support" reached the shell as
+// `exec /Users/x/Application Support/opentree`, which is a command that does not
+// exist plus an argument nobody passed. The window opened and died.
+//
+// The line is handed to `sh -c`, so a shell is what has to be convinced.
+func TestLaunchLine_RunsACommandWhosePathHasASpace(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Application Support")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program := filepath.Join(dir, "opentree")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf '%s' \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command("sh", "-c", launchLine(program, []string{"two words"})).Output()
+	if err != nil {
+		t.Fatalf("sh could not run the launch line: %v (%s)", err, launchLine(program, []string{"two words"}))
+	}
+	if string(out) != "two words" {
+		t.Errorf("the program saw %q, want %q", out, "two words")
+	}
+}
+
+// The two callers that pass a shell fragment pass it as an argument, never as
+// the command, so quoting the command leaves them alone: a POSIX shell strips
+// the quotes before it looks "sh" up.
+func TestLaunchLine_LeavesTheShellCallSiteAlone(t *testing.T) {
+	got := launchLine("sh", []string{"-c", "npm run dev"})
+	want := "ulimit -n 2147483646 2>/dev/null; exec 'sh' '-c' 'npm run dev'"
+	if got != want {
+		t.Errorf("launchLine = %q, want %q", got, want)
+	}
+
+	out, err := exec.Command("sh", "-c", launchLine("sh", []string{"-c", "printf ran"})).Output()
+	if err != nil {
+		t.Fatalf("sh could not run the launch line: %v", err)
+	}
+	if string(out) != "ran" {
+		t.Errorf("output = %q, want %q", out, "ran")
+	}
+}
+
 func TestSelectWindow(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-select")
 	sessionName := ctrl.getSessionName()
@@ -579,6 +662,7 @@ func TestSelectWindowNonExistent(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-select-bad")
 	sessionName := ctrl.getSessionName()
@@ -601,6 +685,7 @@ func TestAttachCmd(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-attachcmd")
 	sessionName := ctrl.getSessionName()
@@ -676,6 +761,7 @@ func TestWindowTargeting_DotsAndPrefixes(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	ctrl := New("test-opentree-target")
 	sessionName := ctrl.getSessionName()
@@ -725,6 +811,7 @@ func TestSessionExactMatch(t *testing.T) {
 	if !isTmuxAvailable() {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	privateServer(t)
 
 	longer := "test-opentree-exact-extra"
 	exec.Command("tmux", "kill-session", "-t", "="+longer).Run()
@@ -772,4 +859,35 @@ func TestReturnArgs(t *testing.T) {
 func isTmuxAvailable() bool {
 	cmd := exec.Command("tmux", "-V")
 	return cmd.Run() == nil
+}
+
+// privateServer points every tmux command this test runs at a server of its
+// own, by moving the socket tmux would otherwise share.
+//
+// It matters most for the server-scoped options — extended-keys is set with
+// -s, which is the whole tmux server rather than opentree's session — but it
+// matters for sessions too. `go test ./...` runs packages concurrently, and
+// pkg/workspace and pkg/worktree drive tmux as well: one of them killing what
+// happens to be the last session takes the server down with it, and a server
+// that restarts comes back with every -s option at its default. A test that
+// had just set one and was about to read it back would be told the truth about
+// a server it was not talking to a moment ago.
+//
+// Under /tmp rather than t.TempDir() for the reason pkg/chat keeps its own
+// sockets there: a unix socket path is capped near 104 bytes and macOS resolves
+// TMPDIR to something long enough to matter.
+//
+// It also means these tests no longer reach into the tmux server the developer
+// is sitting in, which they had been doing and putting back afterwards.
+func privateServer(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ot-tmux-")
+	if err != nil {
+		t.Fatalf("socket directory: %v", err)
+	}
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(dir)
+	})
 }

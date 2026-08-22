@@ -13,14 +13,37 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
+  # LICENSE and NOTICE ride along. goreleaser includes README and LICENSE by
+  # default, but naming the set turns that default off, so both are listed:
+  # NOTICE names third-party marks the binary renders, and it has to reach
+  # whoever received the binary rather than only whoever cloned the repository.
   - formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE
 
-brews:
-  - repository:
+homebrew_casks:
+  # A cask rather than a formula: goreleaser removed `brews` in v2.16, and for a
+  # project that ships a prebuilt binary a cask is what it was always modelling.
+  # `brew install axelgar/tap/opentree` is unchanged for anyone using it.
+  #
+  # A tap has no notion of a prerelease channel: whatever is in it is what that
+  # command gets. "auto" leaves the tap alone when the tag carries a prerelease
+  # suffix, so a v1.2.0-rc.1 does not become everyone's opentree.
+  # npm-publish.sh makes the same distinction with its dist-tag.
+  - skip_upload: "auto"
+    binaries:
+      - opentree
+    repository:
       owner: axelgar
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/axelgar/opentree"
     description: "Git worktree manager CLI"
-    install: |
-      bin.install "opentree"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/opentree"]
+          end

@@ -722,3 +722,149 @@ func TestFindConfigFile_StopsAtRepoRoot(t *testing.T) {
 		t.Errorf("FindConfigFile() = %q, want %q", got, want)
 	}
 }
+
+// A repository may say where its worktrees go, and may not say "somewhere
+// else entirely". base_dir is joined to the repo root and the result is what
+// `opentree delete` hands to os.RemoveAll, so a cloned repository asking for
+// "../.." is asking to have the directory above the clone removed.
+func TestLoadWithSources_RepoBaseDirCannotEscape(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global config in the way
+
+	for _, base := range []string{"../..", "..", "../worktrees", "/tmp/elsewhere"} {
+		t.Run(base, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "opentree.toml")
+			toml := "[worktree]\nbase_dir = \"" + base + "\"\n"
+			if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
+				t.Fatalf("WriteFile(): %v", err)
+			}
+
+			cfg, src, err := LoadWithSources(path)
+			if err != nil {
+				t.Fatalf("LoadWithSources(): %v", err)
+			}
+			if cfg.Worktree.BaseDir != Default().Worktree.BaseDir {
+				t.Errorf("BaseDir = %q, want the default %q — an escaping repo value must be dropped",
+					cfg.Worktree.BaseDir, Default().Worktree.BaseDir)
+			}
+			if src.WorktreeBaseDir == SourceRepo {
+				t.Error("source says repo for a value that was dropped")
+			}
+		})
+	}
+}
+
+// The narrowness is the point: a repository that names a directory inside
+// itself is doing something ordinary and supported.
+func TestLoadWithSources_RepoBaseDirLocalIsKept(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	for _, base := range []string{".custom", "build/worktrees"} {
+		t.Run(base, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "opentree.toml")
+			toml := "[worktree]\nbase_dir = \"" + base + "\"\n"
+			if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
+				t.Fatalf("WriteFile(): %v", err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load(): %v", err)
+			}
+			if cfg.Worktree.BaseDir != base {
+				t.Errorf("BaseDir = %q, want %q", cfg.Worktree.BaseDir, base)
+			}
+		})
+	}
+}
+
+// Regression: inside a linked worktree, the walk resolved to the worktree's
+// own checked-out opentree.toml. That file belongs to a branch, so reads got
+// whatever the branch said and `config set` edited the branch — dirtying an
+// agent's working tree and scoping the setting to it. The repository's file is
+// the only right answer, which is the choice chat.go and setup.go already make
+// by hand.
+func TestFindConfigFile_InsideALinkedWorktreeUsesTheRepoRoot(t *testing.T) {
+	if err := exec.Command("git", "--version").Run(); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init", "-q")
+	run("git", "config", "user.email", "test@example.com")
+	run("git", "config", "user.name", "Test")
+	run("git", "commit", "--allow-empty", "--no-gpg-sign", "-q", "-m", "init")
+
+	realRepo, _ := filepath.EvalSymlinks(repo)
+	repoConfig := filepath.Join(realRepo, "opentree.toml")
+	if err := os.WriteFile(repoConfig, []byte("[agent]\ncommand='project'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(repo, ".opentree", "feat-x")
+	run("git", "worktree", "add", "-q", "-b", "feat/x", wt)
+	// The branch carries its own copy, saying something else.
+	if err := os.WriteFile(filepath.Join(wt, "opentree.toml"), []byte("[agent]\ncommand='branch'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(wt)
+	if got := FindConfigFile(); got != repoConfig {
+		t.Errorf("FindConfigFile() = %q, want the repository's %q", got, repoConfig)
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if cfg.Agent.Command != "project" {
+		t.Errorf("agent.command = %q, want the project's value, not the branch's", cfg.Agent.Command)
+	}
+}
+
+// And a worktree living beside the repository rather than inside it — the
+// documented `base_dir = "../worktrees"` layout — is the sharper case: the
+// repo-root break is unreachable from there, so the walk used to climb past
+// the worktree and adopt any opentree.toml it met on the way to /.
+func TestFindConfigFile_WorktreeOutsideTheRepoDoesNotAdoptAStrayConfig(t *testing.T) {
+	if err := exec.Command("git", "--version").Run(); err != nil {
+		t.Skip("git not available")
+	}
+	outer := t.TempDir()
+	repo := filepath.Join(outer, "repo")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init", "-q")
+	run("git", "config", "user.email", "test@example.com")
+	run("git", "config", "user.name", "Test")
+	run("git", "commit", "--allow-empty", "--no-gpg-sign", "-q", "-m", "init")
+
+	// A stray config above the worktree, which is not this repository's.
+	if err := os.WriteFile(filepath.Join(outer, "opentree.toml"), []byte("[agent]\ncommand='stray'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(outer, "worktrees", "feat-x")
+	run("git", "worktree", "add", "-q", "-b", "feat/x", wt)
+
+	t.Chdir(wt)
+	realRepo, _ := filepath.EvalSymlinks(repo)
+	want := filepath.Join(realRepo, "opentree.toml")
+	if got := FindConfigFile(); got != want {
+		t.Errorf("FindConfigFile() = %q, want the repository's %q", got, want)
+	}
+}

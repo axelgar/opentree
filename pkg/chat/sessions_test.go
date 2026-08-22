@@ -113,7 +113,7 @@ func TestResumePicker_ShowsRecordedOnesWhileLoading(t *testing.T) {
 func TestResumePicker_SurvivesAFailedList(t *testing.T) {
 	m := newResumeModel()
 	next, _ := m.openSessions()
-	m, _ = applyUpdate(next.(Model), sessionsListedMsg{err: errString("method not found")})
+	m, _ = applyUpdate(next.(Model), sessionsListedMsg{err: stringError("method not found")})
 
 	if !m.sessions.open {
 		t.Fatal("the picker closed on an error it could work around")
@@ -241,6 +241,78 @@ func TestChooseSession_TheCurrentOneDoesNothing(t *testing.T) {
 	}
 }
 
+// TestSwitchSession_RecordsTheOneThatWasReopened is the ordinary case: the
+// workspace's current conversation becomes the one that was chosen, so closing
+// the window and coming back lands there rather than where it started.
+func TestSwitchSession_RecordsTheOneThatWasReopened(t *testing.T) {
+	saved := make(chan acp.SessionInfo, 4)
+	m := newResumeModel()
+	m.opts.SaveSession = func(s acp.SessionInfo) error { saved <- s; return nil }
+
+	chosen := acp.SessionInfo{SessionID: "ses_other", Title: "the auth bug"}
+	m.recordSwitch(sessionReadyMsg{id: "ses_other", resumed: true}, chosen)
+
+	select {
+	case got := <-saved:
+		if got.SessionID != "ses_other" || got.Title != "the auth bug" {
+			t.Errorf("recorded %+v, want the conversation that was chosen", got)
+		}
+	default:
+		t.Fatal("the switch was never recorded")
+	}
+}
+
+// A conversation the agent has forgotten is replaced by a brand new one, and
+// that path has already recorded the session it created. Recording again from
+// here filed the chosen conversation's title against the id of its replacement,
+// so /resume offered the same name twice pointing at two different
+// conversations — and the newer row, being the more recent, sorted on top.
+func TestSwitchSession_TheFallbackIsNotRecordedTwice(t *testing.T) {
+	var saved []acp.SessionInfo
+	m := newResumeModel()
+	m.opts.SaveSession = func(s acp.SessionInfo) error { saved = append(saved, s); return nil }
+
+	chosen := acp.SessionInfo{SessionID: "ses_gone", Title: "the auth bug"}
+	fallback := sessionReadyMsg{
+		id:   "ses_new",
+		note: "the previous conversation could not be resumed — this is a new one",
+	}
+	m.recordSwitch(fallback, chosen)
+
+	if len(saved) != 0 {
+		t.Errorf("recorded %+v, want the fresh session left to the path that made it", saved)
+	}
+}
+
+// A bookkeeping failure is not worth a conversation. Returning an error instead
+// dropped the ready message: the agent held a live session this view had no id
+// for, and every prompt typed afterwards queued for one that was never coming.
+func TestSwitchSession_ABookkeepingFailureKeepsTheConversation(t *testing.T) {
+	m := newResumeModel()
+	m.opts.SaveSession = func(acp.SessionInfo) error { return stringError("state.json is read-only") }
+
+	chosen := acp.SessionInfo{SessionID: "ses_other", Title: "the auth bug"}
+	msg := m.recordSwitch(sessionReadyMsg{id: "ses_other", resumed: true}, chosen)
+
+	ready, ok := msg.(sessionReadyMsg)
+	if !ok {
+		t.Fatalf("recordSwitch returned %T, want the session to open anyway", msg)
+	}
+	if ready.id != "ses_other" {
+		t.Errorf("id = %q, want the conversation that was opened", ready.id)
+	}
+	if !strings.Contains(ready.note, "read-only") {
+		t.Errorf("note = %q, want the failure said out loud rather than swallowed", ready.note)
+	}
+
+	// And it reaches the log, where the reader is: the conversation works, but
+	// coming back to this window later lands in the one that was left.
+	next, _ := applyUpdate(newTestModel(), ready)
+	if !strings.Contains(next.renderLog(), "read-only") {
+		t.Errorf("the note never reached the log:\n%s", next.renderLog())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Naming
 // ---------------------------------------------------------------------------
@@ -281,7 +353,7 @@ func TestNaming_HappensOncePerConversation(t *testing.T) {
 		t.Fatal("a conversation nobody has spoken to has no name yet")
 	}
 
-	m, _ = m.startTurn("first thing")
+	m, _ = m.startTurn("first thing", typedHere)
 	if !m.titled {
 		t.Error("the first prompt names the conversation")
 	}

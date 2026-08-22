@@ -75,7 +75,8 @@ ago_iso()   { date -u -v-"$1" +%Y-%m-%dT%H:%M:%SZ; }  # RFC3339 UTC, N ago
 # make_worktree <branch> <n-lines> — real worktree with committed + uncommitted
 # changes; n varies the diffstat per row so they don't all look identical.
 make_worktree() {
-  local br="$1" n="${2:-3}" dir=".opentree/$(san "$1")" i
+  local br="$1" n="${2:-3}" dir i
+  dir=".opentree/$(san "$1")"
   git worktree add --quiet -b "$br" "$dir" main
   # committed change (shows under "Committed Changes" + gives PR-gen commits)
   for i in $(seq 1 "$n"); do printf '// %s: refinement %d\n' "$br" "$i" >> "$dir/pkg/tui/helpers.go"; done
@@ -90,7 +91,8 @@ make_worktree() {
 
 # status_file <branch> <status> <mtime-touch|now> [message]
 status_file() {
-  local dir=".opentree/$(san "$1")" f
+  local dir f
+  dir=".opentree/$(san "$1")"
   f="$dir/.opentree-status.json"
   if [ -n "${4:-}" ]; then
     printf '{"status":"%s","message":"%s"}' "$2" "$4" > "$f"

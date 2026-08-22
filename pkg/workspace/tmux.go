@@ -28,7 +28,7 @@ func (t *TmuxProcessManager) ListWindows() ([]Window, error) {
 	}
 	windows := make([]Window, len(tw))
 	for i, w := range tw {
-		windows[i] = Window{ID: w.ID, Name: w.Name, Active: w.Active}
+		windows[i] = Window{ID: w.ID, Name: w.Name, Active: w.Active, Path: w.Path}
 	}
 	return windows, nil
 }

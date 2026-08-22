@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -311,10 +310,15 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 		return nil, err
 	}
 
-	// Update workspace with issue metadata
+	// Update workspace with issue metadata. Set on both the stored record and
+	// the struct being returned — the caller gets this one, not the store's.
 	ws.IssueNumber = issue.Number
 	ws.IssueTitle = issue.Title
-	if err := s.state.UpdateWorkspace(ws); err != nil {
+	if err := s.state.Update(ws.Name, func(w *state.Workspace) error {
+		w.IssueNumber = issue.Number
+		w.IssueTitle = issue.Title
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("failed to update workspace with issue metadata: %w", err)
 	}
 
@@ -348,6 +352,9 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 		Agent:        s.cfg.Agent.Command,
 		WorktreeDir:  worktreePath,
 		BranchPushed: true,
+		// The branch was already here and this workspace only checked it out.
+		// Deleting the workspace must not take it with them.
+		AdoptedBranch: !createdBranch,
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
 		_ = s.process.KillWindow(branchName)
@@ -358,13 +365,31 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	return ws, nil
 }
 
+// deletesBranch reports whether deleting this workspace should take its branch
+// with it.
+//
+// It should for a branch opentree created, which is every workspace made with
+// `opentree new` and nothing else is left holding it. It should not for one
+// this workspace adopted — the branch existed before, somebody else's work is
+// on it, and `git branch -D` does not ask.
+//
+// A workspace opentree cannot find is treated as created, which is what every
+// delete did before the distinction was recorded.
+func (s *Service) deletesBranch(name string) bool {
+	ws, err := s.state.GetWorkspace(name)
+	if err != nil {
+		return true
+	}
+	return !ws.AdoptedBranch
+}
+
 // Delete removes a workspace: removes worktree and branch, kills the tmux
 // window, and deletes state. If this was the last workspace, the tmux
 // session is also killed.
 func (s *Service) Delete(name string) error {
 	// Remove the worktree BEFORE killing the window: if removal fails
 	// (locked worktree, cwd inside it, ...) the agent session survives.
-	if err := s.worktrees.Delete(name, true); err != nil {
+	if err := s.worktrees.Delete(name, s.deletesBranch(name)); err != nil {
 		return fmt.Errorf("failed to delete worktree: %w", err)
 	}
 
@@ -380,34 +405,88 @@ func (s *Service) Delete(name string) error {
 	}
 
 	// Clean up tmux session if no workspaces remain
-	if len(s.state.ListWorkspaces()) == 0 {
-		_ = s.process.KillSession()
-	}
+	s.killSessionIfOurs()
 
 	return nil
 }
 
+// DeleteFailure is one workspace a batch delete could not remove, and why.
+type DeleteFailure struct {
+	Name string
+	Err  error
+}
+
+// DeleteBatchError reports a batch delete that only partly happened: which
+// workspaces went, which stayed, and what stopped each one that stayed.
+//
+// Deleting a batch is not a transaction and cannot be made into one — each
+// worktree is off the disk and its branch gone long before the next name is
+// reached — so "it failed" is never the whole truth about a mixed batch. A
+// caller told only that much either leaves rows on screen for workspaces that
+// no longer exist, or clears rows for workspaces that are still there. Both
+// lists are carried here so it does not have to guess, and so the message the
+// user reads names the workspaces still waiting for them.
+//
+// The joined error this replaced carried the same facts as one flat string with
+// the names buried inside it, which nothing could read back out.
+type DeleteBatchError struct {
+	// Deleted names the workspaces that went, in the order they were asked for.
+	// Their state entries have been removed and their windows killed.
+	Deleted []string
+	// Failed names the workspaces that did not, each with its own reason.
+	Failed []DeleteFailure
+}
+
+func (e *DeleteBatchError) Error() string {
+	reasons := make([]string, 0, len(e.Failed))
+	for _, f := range e.Failed {
+		reasons = append(reasons, f.Name+": "+f.Err.Error())
+	}
+	msg := "could not delete " + strings.Join(reasons, "; ")
+	if len(e.Deleted) > 0 {
+		msg += " (deleted " + strings.Join(e.Deleted, ", ") + ")"
+	}
+	return msg
+}
+
+// Unwrap keeps errors.Is and errors.As working through the batch, the way they
+// did when this was an errors.Join.
+func (e *DeleteBatchError) Unwrap() []error {
+	errs := make([]error, 0, len(e.Failed))
+	for _, f := range e.Failed {
+		errs = append(errs, f.Err)
+	}
+	return errs
+}
+
 // DeleteMultiple removes multiple workspaces in sequence. A failure on one
-// workspace doesn't abandon the rest; all errors are reported together.
+// workspace does not abandon the rest, and the rest are genuinely gone: their
+// windows are killed and their state entries removed whatever happened to their
+// neighbours. A mixed batch returns a *DeleteBatchError naming both halves.
 func (s *Service) DeleteMultiple(names []string) error {
-	var errs []error
+	batch := &DeleteBatchError{}
 	for _, name := range names {
-		if err := s.worktrees.Delete(name, true); err != nil {
-			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
+		if err := s.worktrees.Delete(name, s.deletesBranch(name)); err != nil {
+			batch.Failed = append(batch.Failed, DeleteFailure{Name: name, Err: fmt.Errorf("failed to delete worktree: %w", err)})
 			continue
 		}
 		_ = s.process.KillWindow(name)
 		_ = s.process.KillWindow(s.ServerWindow(name))
 		if err := s.state.DeleteWorkspace(name); err != nil {
-			errs = append(errs, fmt.Errorf("delete state %s: %w", name, err))
+			batch.Failed = append(batch.Failed, DeleteFailure{Name: name, Err: fmt.Errorf("failed to delete workspace state: %w", err)})
+			continue
 		}
+		batch.Deleted = append(batch.Deleted, name)
 	}
 
-	if len(s.state.ListWorkspaces()) == 0 {
-		_ = s.process.KillSession()
-	}
+	s.killSessionIfOurs()
 
-	return errors.Join(errs...)
+	// A typed nil in an error interface is not nil, and every caller here tests
+	// the result against nil.
+	if len(batch.Failed) == 0 {
+		return nil
+	}
+	return batch
 }
 
 // HasChanges reports work that would be lost by deleting the workspace:
@@ -416,7 +495,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 // A missing state entry does not skip the check — the worktree itself is inspected.
 func (s *Service) HasChanges(name string) (string, error) {
 	if _, err := os.Stat(s.WorktreePath(name)); err != nil {
-		return "", nil // no worktree on disk — nothing to lose
+		return "", nil //nolint:nilerr // no worktree on disk — nothing to lose
 	}
 
 	baseBranch := s.cfg.Worktree.DefaultBase
@@ -474,8 +553,10 @@ func (s *Service) CreatePR(name, title, body string) (string, error) {
 
 	// Best-effort: the 30s status poll self-corrects BranchPushed from
 	// ls-remote, so a failed state write must not fail a created PR.
-	ws.BranchPushed = true
-	_ = s.state.UpdateWorkspace(ws)
+	_ = s.state.Update(name, func(w *state.Workspace) error {
+		w.BranchPushed = true
+		return nil
+	})
 
 	return prURL, nil
 }
@@ -540,9 +621,78 @@ func (s *Service) pruneServerWindows() []string {
 		if !strings.HasSuffix(w.Name, tmux.RunSuffix) || live[w.Name] {
 			continue
 		}
+		// A run window belonging to another checkout looks exactly like an
+		// orphan from here — same session, same :run suffix, and no workspace
+		// in this repository's state to claim it. Its working directory is the
+		// one thing that tells them apart.
+		if !s.ownsWindow(w) {
+			continue
+		}
 		if err := s.process.KillWindow(w.Name); err == nil {
 			killed = append(killed, w.Name)
 		}
 	}
 	return killed
+}
+
+// ownsWindow reports whether a window in the session belongs to this checkout.
+//
+// The session is named after the repository directory's base name, so two
+// clones of the same project — a fork beside its upstream, a second copy for a
+// long-running branch — share one. Everything that kills by name therefore has
+// to ask this first, and a window whose working directory tmux did not report
+// is treated as this repository's: that is what every version before the
+// question existed assumed, and refusing to clean up is the worse failure.
+func (s *Service) ownsWindow(w Window) bool {
+	if w.Path == "" {
+		return true
+	}
+	// Worktrees do not have to live inside the repository — base_dir may point
+	// beside it — so both roots count.
+	return under(s.repoRoot, w.Path) ||
+		under(filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir), w.Path)
+}
+
+// under reports whether path is root or something inside it, comparing the
+// paths as the filesystem resolves them: tmux reports a pane's directory
+// resolved, while a repo root arrives as whatever the user typed.
+func under(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || filepath.IsLocal(rel)
+}
+
+// killSessionIfOurs stops the tmux session once this repository has nothing
+// left in it, and only if nothing else does either.
+//
+// Deleting the last workspace used to kill the session outright, which is
+// right when the session is this repository's and wrong when it is shared —
+// the other checkout's agents and dev servers went with it. Renaming the
+// session would fix that and break more: the name is documented, and every
+// session a user is currently attached to answers to the old one.
+func (s *Service) killSessionIfOurs() {
+	if len(s.state.ListWorkspaces()) != 0 {
+		return
+	}
+	windows, err := s.process.ListWindows()
+	if err != nil {
+		return // cannot tell; a session left behind is the harmless outcome
+	}
+	for _, w := range windows {
+		if !s.ownsWindow(w) {
+			return
+		}
+	}
+	_ = s.process.KillSession()
 }

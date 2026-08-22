@@ -80,13 +80,23 @@ func signalOf(st Status) notify.Signal {
 func (m Model) status() Status {
 	// Ordered like the chat's own overlays, so the badge in the list names the
 	// panel the window is actually showing.
-	st := Status{Workspace: m.opts.Workspace, State: StateIdle}
+	//
+	// Stamped with what this window is, as well as what it is doing: a chat
+	// outlives every upgrade, so the reader may be a newer binary than the
+	// writer and has no other way to find out.
+	st := Status{
+		Workspace: m.opts.Workspace,
+		State:     StateIdle,
+		Protocol:  ProtocolVersion,
+		Version:   m.opts.Version,
+	}
 	switch {
 	case m.perm() != nil:
 		st.State = StateAwaiting
 		st.Permission = &Permission{
-			Title:   toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
-			Options: m.perm().req.Options,
+			Title:      toolLabel(m.perm().req.ToolCall, m.opts.Cwd),
+			Options:    m.perm().req.Options,
+			ToolCallID: m.perm().req.ToolCall.ToolCallID,
 		}
 	case m.setup.active():
 		st.State = StateSettingUp
@@ -221,6 +231,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The setup phase spins for the same reason a turn does: something is
 		// running that prints nothing for minutes at a time.
 		if !m.turn && m.setup.stage != setupRunning {
+			// The chain ends here, so whatever needs one next has to be free to
+			// start a fresh one. Left set, this would be a spinner that ran for
+			// the first turn of a session and stood still for every one after.
+			m.spinning = false
 			return m, nil
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
@@ -258,6 +272,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.generation = msg.generation
 		m = m.withAgentInfo(msg.info)
 		m.dead, m.authNeed, m.err, m.restarting = false, false, nil, false
+		m.launching = false
 		m.setup.stage = setupNone
 		// The replay rebuilds the log from scratch, so drop what is on screen
 		// rather than rendering the conversation twice.
@@ -364,12 +379,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = false
 		// A restart that failed is over; r has to work again.
 		m.restarting = false
+		// A first launch that failed is over too. Left set, its panel would sit
+		// above the stopped one — which is the panel that says what went wrong
+		// and offers the restart.
+		m.launching = false
 		// An agent that would not start after the setup phase is a stopped
 		// agent, not a phase still in progress.
 		m.setup.stage = setupNone
 		if msg.fatal {
 			m.dead = true
 		}
+		// The whole failure into the log, where there is room for it. The panels
+		// that report an error have one line each and keep the first, which is
+		// the cause; an adapter that failed to start explains itself in the lines
+		// after it — acp folds its stderr into the error precisely so that
+		// explanation travels — and truncating those at the terminal's width is
+		// throwing away the only account of what went wrong. There is no client
+		// on this path, so agentOutput, which reads the live process's stderr,
+		// has nothing to say here.
+		m = m.appendNotice(errorDetail(msg.err))
 		m = m.relayout()
 		return m, nil
 	}
@@ -490,7 +518,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.turn || m.sessionID == "" {
 			return m, nil
 		}
-		return m.sent(text).startTurn(text)
+		return m.sent(text).startTurn(text, typedHere)
 	}
 
 	before := m.input.Value()
@@ -687,6 +715,17 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 		if m.perm() == nil {
 			return m, nil, Result{Reason: "nothing is waiting on permission"}
 		}
+		// Answer the question that was asked. The sender saw a permission at
+		// most one refresh tick ago; if it has since been answered here and
+		// another has taken its place, applying the answer anyway allows a
+		// tool nobody looked at.
+		//
+		// Only when the sender said which one. An empty id is a dashboard
+		// older than this chat, and refusing all of those would break remote
+		// answering entirely for anyone mid-upgrade.
+		if cmd.ToolCallID != "" && cmd.ToolCallID != m.perm().req.ToolCall.ToolCallID {
+			return m, nil, Result{Reason: "that permission has already been answered"}
+		}
 		return m.answerPerm(cmd.OptionID), nil, Result{OK: true}
 
 	case CommandInterrupt:
@@ -713,20 +752,66 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 			m = m.appendNotice("queued: " + text)
 			return m.relayout(), nil, Result{OK: true}
 		}
-		next, cmd := m.startTurn(text)
+		next, cmd := m.startTurn(text, sentRemotely)
 		return next, cmd, Result{OK: true}
 	}
-	return m, nil, Result{Reason: "unknown command " + cmd.Type}
+	return m, nil, Result{Reason: m.unknownCommandReason(cmd)}
 }
+
+// unknownCommandReason explains a command this chat has no case for.
+//
+// Which explanation is right depends on who sent it. From a peer of the same
+// age it is a command that does not exist, and naming it is all there is to
+// say. From a newer one it is this window being out of date — a chat is only
+// relaunched once it has stopped serving, so an upgraded opentree talks to
+// windows built by the binary it replaced — and "unknown command" sends
+// somebody hunting for a bug when the answer is to close the window.
+func (m Model) unknownCommandReason(cmd Command) string {
+	if cmd.Protocol > ProtocolVersion {
+		version := m.opts.Version
+		if version == "" {
+			version = "an older release"
+		}
+		return fmt.Sprintf("this chat is running opentree %s and has no %q — close the window and reopen it",
+			version, cmd.Type)
+	}
+	return "unknown command " + cmd.Type
+}
+
+// turnSource is where a prompt came from, which decides what it is allowed to
+// take with it.
+type turnSource int
+
+const (
+	// typedHere is a message from this window's own box. The images waiting
+	// beside it were pasted into that message and leave with it.
+	typedHere turnSource = iota
+
+	// sentRemotely is a prompt from the workspace list — `opentree message`, or
+	// the review sender — whether it runs the moment it arrives or waits in the
+	// queue first. It carries no attachments at all.
+	sentRemotely
+)
 
 // startTurn sends a message to the agent and records it in the log.
 //
 // Composing here rather than inside promptCmd is what keeps the two honest with
 // each other: the log shows what was sent, not what was typed, so an attachment
 // that quietly became a link says so on the line you can see.
-func (m Model) startTurn(text string) (Model, tea.Cmd) {
-	blocks, notices := m.composeTurn(text)
-	m.pending = nil
+//
+// from is whose message this is. Only a message typed here takes the pasted
+// images: a prompt that arrived over the control socket is somebody else's,
+// and attaching a half-composed screenshot to it sends an image nobody meant to
+// send while orphaning the label the user is still looking at in the box. The
+// blocks are left exactly where they were rather than handed back afterwards —
+// putting them back would resurrect attachments that had been deleted in the
+// meantime, and the labels in the message are the only record of which those
+// are.
+func (m Model) startTurn(text string, from turnSource) (Model, tea.Cmd) {
+	blocks, notices := m.composeTurn(text, from)
+	if from == typedHere {
+		m.pending = nil
+	}
 
 	cmd := m.promptCmd(blocks)
 	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks)})
@@ -744,14 +829,21 @@ func (m Model) startTurn(text string) (Model, tea.Cmd) {
 	m.turn = true
 	m.turnStart = time.Now()
 	m.err = nil
-	return m.relayout(), tea.Batch(cmd, name, spinnerTick())
+	m, tick := m.spin()
+	return m.relayout(), tea.Batch(cmd, name, tick)
 }
 
 // composeTurn is the message about to be sent, as blocks. It exists so the
 // state that feeds the composer — the pasted attachments, what this agent
 // accepts, which files git knows about — is reachable from a test without
 // executing the command that would need a live agent behind it.
-func (m Model) composeTurn(text string) ([]acp.ContentBlock, []string) {
+//
+// The attachments are one of those pieces of state, so the question of whose
+// message this is has to be asked here too: see startTurn.
+func (m Model) composeTurn(text string, from turnSource) ([]acp.ContentBlock, []string) {
+	if from != typedHere {
+		return m.composer().prompt(text, nil)
+	}
 	return m.composer().prompt(text, m.pending)
 }
 
@@ -761,13 +853,18 @@ func (m Model) composer() composer {
 }
 
 // flushQueued runs a prompt that arrived while the agent was busy or starting.
+//
+// Still somebody else's message, however long it waited: the queue only ever
+// holds what came in over the control socket, and the wait makes the case
+// stronger rather than weaker — an image pasted in the minutes since it was
+// accepted has even less to do with it.
 func (m Model) flushQueued() (tea.Model, tea.Cmd) {
 	if m.queued == "" || m.sessionID == "" || m.turn {
 		return m, nil
 	}
 	text := m.queued
 	m.queued = ""
-	return m.startTurn(text)
+	return m.startTurn(text, sentRemotely)
 }
 
 // stopped reports whether the agent is unusable until something is done about
@@ -1123,4 +1220,14 @@ func stopReasonText(reason string) string {
 		return "the agent declined to continue"
 	}
 	return reason
+}
+
+// handleLaunchingKey holds the keyboard while the first agent starts. There is
+// nothing to answer yet and nothing to cancel that leaving would not also
+// cancel, so only the way out is bound.
+func (m Model) handleLaunchingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.Back) {
+		return m, leave
+	}
+	return m, nil
 }

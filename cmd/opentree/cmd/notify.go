@@ -35,7 +35,9 @@ var notifyTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Send one of each notification",
 	Long: `Sends a blocked, a done and a stopped notification through the surfaces this
-machine is configured for.
+machine is configured for, and says whether tmux currently considers this pane
+watched — a chat in the window you are already reading stays quiet on purpose,
+which is the usual answer to "it was working, and then nothing arrived".
 
 Worth running once. macOS silently drops notifications sent by osascript until
 they have been allowed, which is otherwise a feature with no symptom and no
@@ -54,6 +56,18 @@ error — the banners simply never arrive.`,
 		if pane := notify.Pane(); pane != "" {
 			senders = append(senders, notify.Bell{})
 			fmt.Printf("tmux bell     → pane %s\n", pane)
+			// The same question a live chat asks before every notification,
+			// asked once and reported rather than obeyed: this command sends
+			// whatever the answer is, because a delivery test that suppressed
+			// itself would be indistinguishable from a broken one. It is here
+			// because suppression is invisible from the outside — a chat that
+			// notifies perfectly well and a chat you happen to be watching
+			// look exactly the same from the window that stayed silent.
+			if notify.Watched(pane) {
+				fmt.Println("watched       → yes, this window is the current one and a client is attached, so a real chat here would stay quiet")
+			} else {
+				fmt.Println("watched       → no, so a real chat here would notify")
+			}
 		} else {
 			fmt.Println("tmux bell     → not running inside tmux, so nothing rings")
 		}

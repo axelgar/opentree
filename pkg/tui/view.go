@@ -72,21 +72,37 @@ func (m Model) View() string {
 		return m.serversView()
 	}
 
-	// Adapter download confirmation. Enter on an agent whose adapter is missing
-	// means "use this agent", but 300MB is asked about rather than sprung.
+	// Adapter download confirmation, for both keys that can start one. Enter on
+	// an agent whose adapter is missing means "use this agent" and i means "get
+	// it ready for later", but 300MB off a package registry is asked about
+	// rather than sprung either way.
 	if m.agentInstallConfirm != nil {
 		agent := *m.agentInstallConfirm
 		size := ""
 		if agent.ACP.InstallSize != "" {
 			size = " (" + agent.ACP.InstallSize + ", needs node)"
 		}
-		body := fmt.Sprintf("%s\n%s",
+		// The command is spelled out in full because the verb alone is not
+		// something anyone can honestly agree to. The pinned version, the
+		// prefix that keeps this out of the user's global npm root and the
+		// refusal to run install hooks are the entire difference between this
+		// and handing npm the machine, and none of the three is visible from
+		// the word "install".
+		body := fmt.Sprintf("%s\n%s\n\n%s",
 			confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
 				agent.ACPCommand()+size+"."),
-			confirmLabelStyle.Render("It installs to "+config.ToolsDir()+"."),
+			confirmLabelStyle.Render("It writes nothing outside the prefix named here, and runs:"),
+			strings.Join(agent.ACPInstallCommand(), " "),
 		)
+		// Enter armed this with the agent it means to switch to; i armed it
+		// with nothing, and promising a switch that will not happen is worse
+		// than a shorter label.
+		verb := "install"
+		if m.agentPendingSelect != nil {
+			verb = "install and use"
+		}
 		footer := fmt.Sprintf("%s %s  •  %s %s",
-			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("install and use"),
+			confirmKeyStyle.Render("y"), confirmLabelStyle.Render(verb),
 			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
 		)
 		return m.dialogCard("Install adapter for "+agent.Name+"?", body, footer, dialogAccent)
@@ -109,7 +125,7 @@ func (m Model) View() string {
 			}
 
 			status, ready := m.readiness(agent)
-			statusSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
+			statusSt := lipgloss.NewStyle().Foreground(ui.Faint)
 			switch {
 			case ready:
 				statusSt = successStyle
@@ -235,9 +251,14 @@ func (m Model) View() string {
 		// implied: a dev server outlives the window it was started from, and
 		// one still running against a deleted worktree holds its port and
 		// prints stack traces at nobody.
-		return m.dialogCard(titleMsg,
+		body := []string{
 			confirmLabelStyle.Render("The worktree, its tmux windows — including any dev server — and all local changes will be removed."),
-			footer, dialogDanger)
+		}
+		if losses := m.deletionLosses(); len(losses) > 0 {
+			body = append(body, "")
+			body = append(body, losses...)
+		}
+		return m.dialogCard(titleMsg, strings.Join(body, "\n"), footer, dialogDanger)
 	}
 
 	// Issue creation dialog

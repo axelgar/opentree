@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/axelgar/opentree/pkg/diag"
 )
 
 // Seeding puts config where git could not. Setup is the other half: what has to
@@ -21,6 +23,15 @@ import (
 // killed outright. Short: cancelling is the user deciding to abandon this, and
 // the only work left is whatever the process does on its way out.
 const killGrace = 2 * time.Second
+
+// drainGrace is how long the last of a finished command's output is waited for
+// before the pipe is closed on it.
+//
+// The command has already exited by then, so this is only the tail still in
+// the buffer — a fraction of a second in every ordinary case. It is a deadline
+// rather than a wait because the one process that can hold the pipe open
+// indefinitely is one that will never close it.
+const drainGrace = 500 * time.Millisecond
 
 // RunSetup runs a project's setup commands in a worktree, in order, and stops
 // at the first failure — a build whose install did not finish is not worth
@@ -101,7 +112,27 @@ func runCommand(ctx context.Context, dir, command string, emit func(string)) err
 
 	err = cmd.Wait()
 	close(done)
-	<-drained // whatever it printed on the way out belongs on screen
+	if err != nil {
+		diag.Log("setup", "command failed", "dir", dir, "command", command, "err", err)
+	}
+
+	// Whatever it printed on the way out belongs on screen — but not at any
+	// price. Every descendant inherits the pipe's write end, so a process that
+	// left the group before the kill could reach it (anything that calls
+	// setsid: a daemonized dev server, nohup, a detached watcher) holds the
+	// pipe open after Wait has returned, and the read never sees EOF. That used
+	// to wedge the whole setup phase permanently: the chat sat in "running"
+	// with a cancel whose watcher goroutine had already exited, and
+	// `opentree setup` became proof against ctrl+c for the same reason.
+	//
+	// Closing the read end is what breaks the deadlock — the scanner returns,
+	// and the orphan's next write gets EPIPE rather than a reader that will
+	// never come back.
+	select {
+	case <-drained:
+	case <-ctx.Done():
+	case <-time.After(drainGrace):
+	}
 	_ = pr.Close()
 
 	// A cancelled command failed because it was cancelled, which is a different

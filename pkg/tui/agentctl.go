@@ -24,7 +24,7 @@ func readChatStatus(repoRoot, wsName string) *chat.Status {
 	if repoRoot == "" {
 		return nil
 	}
-	st, ok := chat.Query(chat.SocketPath(repoRoot, wsName))
+	st, ok := chat.Query(chat.SocketPath(repoRoot, wsName), wsName)
 	if !ok {
 		return nil
 	}
@@ -233,7 +233,7 @@ func (ws WorkspaceItem) promptHint() string {
 func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd {
 	repoRoot := m.repoRoot
 	return func() tea.Msg {
-		if err := chat.Send(chat.SocketPath(repoRoot, wsName), cmd); err != nil {
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, cmd); err != nil {
 			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
 		}
 		return agentCommandSentMsg{wsName: wsName, action: action}
@@ -318,6 +318,10 @@ func (m Model) closeAnswerDialog() Model {
 // offered, so the dialog never invents a choice the agent will not accept.
 func (m Model) handleAnswerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	options := m.answerPerm.Options
+	// The id of the permission on screen travels with the answer, so the chat
+	// can tell it apart from whichever one is waiting by the time it arrives.
+	// This dialog's view is up to one refresh tick old.
+	toolCallID := m.answerPerm.ToolCallID
 
 	switch msg.String() {
 	case "esc", "q":
@@ -334,7 +338,7 @@ func (m Model) handleAnswerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "enter":
 		wsName, optionID := m.answerWs, options[m.answerCursor].OptionID
 		return m.closeAnswerDialog(), m.sendAgentCommand(wsName, "answered", chat.Command{
-			Type: chat.CommandPermission, OptionID: optionID,
+			Type: chat.CommandPermission, OptionID: optionID, ToolCallID: toolCallID,
 		})
 	}
 
@@ -342,7 +346,7 @@ func (m Model) handleAnswerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if msg.String() == fmt.Sprint(i+1) {
 			wsName := m.answerWs
 			return m.closeAnswerDialog(), m.sendAgentCommand(wsName, "answered", chat.Command{
-				Type: chat.CommandPermission, OptionID: o.OptionID,
+				Type: chat.CommandPermission, OptionID: o.OptionID, ToolCallID: toolCallID,
 			})
 		}
 	}

@@ -153,11 +153,22 @@ func OverrideFile(spec config.SkillsSpec, repoRoot, skill string) string {
 		if err != nil {
 			continue
 		}
-		var doc map[string]map[string]State
+		// Only the overrides object is decoded, never the whole document. A real
+		// settings file keeps siblings this package knows nothing about — a
+		// "model" string, a "permissions" object of arrays — and decoding the lot
+		// into a map of maps fails on the first one that is not an object of
+		// strings. The file actually holding the override then reads as
+		// unreadable, the write lands in the first file instead, and the lower
+		// layer still saying "off" goes on winning.
+		var doc map[string]json.RawMessage
 		if err := json.Unmarshal(data, &doc); err != nil {
 			continue
 		}
-		if _, ok := doc[spec.OverridesKey][skill]; ok {
+		var overrides map[string]State
+		if err := json.Unmarshal(doc[spec.OverridesKey], &overrides); err != nil {
+			continue
+		}
+		if _, ok := overrides[skill]; ok {
 			return path
 		}
 	}

@@ -1,0 +1,44 @@
+version: 2
+
+updates:
+  # CI pins every action to a commit SHA so a moved tag cannot swap the code out
+  # underneath us. That protection is only as good as the pin is current, and a
+  # human will not remember to re-resolve eight SHAs by hand — dependabot
+  # rewrites the SHA and the `# v7.0.1` comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # The charm stack (bubbletea, bubbles, lipgloss, x/ansi) moves in lockstep
+      # and a partial bump usually will not compile.
+      charm:
+        patterns:
+          - github.com/charmbracelet/*
+          - github.com/muesli/*
+      go-deps:
+        patterns: ["*"]
+        exclude-patterns:
+          - github.com/charmbracelet/*
+          - github.com/muesli/*
+    commit-message:
+      prefix: "deps"
+
+  # The five npm packages carry no dependencies of their own; this is here for
+  # the launcher's engines field and any future dev dependency.
+  - package-ecosystem: npm
+    directory: /npm/opentree
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps"

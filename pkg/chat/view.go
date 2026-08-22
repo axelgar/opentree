@@ -560,13 +560,38 @@ func (m Model) helpView() string {
 // table wraps with the terminal, so its height is whatever it drew.
 func (m Model) helpHeight() int { return lipgloss.Height(m.helpView()) }
 
+// errorText is the failure in one line, which is all the status line and the
+// stopped panel have to give it.
+//
+// Agent stderr is folded into the error — acp folds its whole ring buffer in
+// when a client fails — and the first line is the cause. The rest is not lost
+// by being left out here: an error that arrives with more than one line is put
+// into the log whole when it is stored (see the errMsg branch of update), which
+// is the one surface with room for it and the one a reader can scroll back
+// through.
 func (m Model) errorText() string {
 	if m.err == nil {
 		return "agent unavailable"
 	}
-	// Agent stderr is folded into the error; the first line carries the cause
-	// and the rest would swamp a footer.
-	return strings.SplitN(m.err.Error(), "\n", 2)[0]
+	return firstLine(m.err.Error())
+}
+
+// errorDetail is the other half: the failure as the log should keep it, or
+// nothing at all when the panels are already showing the whole of it.
+//
+// A one-line error said in a notice under a panel that is saying the same words
+// is the message twice, so only an error with more to give earns the entry —
+// and it earns the whole of itself, first line included, because the log is
+// read on its own long after the panel it belonged to has gone.
+func errorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	if !strings.Contains(text, "\n") {
+		return ""
+	}
+	return text
 }
 
 // authHint surfaces the agent's own login instructions rather than opentree
@@ -816,14 +841,24 @@ func renderPlan(entries []acp.PlanEntry, width int) string {
 // bulleted hangs a coloured mark off the agent's first line and indents the
 // rest to clear it, so a wrapped paragraph stays one visual block instead of
 // dissolving into the tool rows around it.
+//
+// The builder is not tidiness: a long answer wraps to hundreds of rows, and
+// growing a string one row at a time copies everything written so far on each
+// of them — paid again on every frame, because the whole log is re-rendered
+// ten times a second while a turn is live.
 func (m Model) bulleted(body string) string {
 	b := m.brand()
 	lines := strings.Split(body, "\n")
-	out := b.paint(agentMarkStyle).Render(b.mark) + " " + lines[0]
+
+	var out strings.Builder
+	out.WriteString(b.paint(agentMarkStyle).Render(b.mark))
+	out.WriteString(" ")
+	out.WriteString(lines[0])
 	for _, l := range lines[1:] {
-		out += "\n  " + l
+		out.WriteString("\n  ")
+		out.WriteString(l)
 	}
-	return out
+	return out.String()
 }
 
 func (m Model) renderTool(call acp.ToolCall, width int) string {
@@ -838,14 +873,21 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 		glyph, style = ui.SpinnerFrames[m.spinnerFrame], toolRunningStyle
 	}
 
+	// Matched once and read twice: the counts that go on the row, and the lines
+	// that go under it. Each used to ask for the diff itself, and matching is
+	// O(before × after) over a region an agent can rewrite wholesale — paid
+	// twice per tool row, on every one of the ten frames a second a live turn
+	// draws.
+	changes := callDiff(call)
+
 	row := "  " + style.Render(glyph) + " " + toolTitleStyle.Render(toolLabel(call, m.opts.Cwd))
-	if added, removed := diffStat(call); added+removed > 0 {
+	if added, removed := countChanges(changes); added+removed > 0 {
 		row += " " + diffAddStyle.Render(fmt.Sprintf("+%d", added)) +
 			" " + diffRemoveStyle.Render(fmt.Sprintf("-%d", removed))
 	}
 
 	lines := []string{row}
-	diffs := renderDiffs(call, width)
+	diffs := renderChanges(changes, width)
 	lines = append(lines, diffs...)
 
 	// ponytail: a call that drew a diff has already shown what it did, and its
@@ -921,9 +963,16 @@ func unfence(s string) string {
 	return strings.Join(lines[1:], "\n")
 }
 
-// renderDiffs expands a call's changed lines into coloured ones.
+// renderDiffs expands a call's changed lines into coloured ones, for a caller
+// that has nothing else to do with the diff.
 func renderDiffs(call acp.ToolCall, width int) []string {
-	changes := callDiff(call)
+	return renderChanges(callDiff(call), width)
+}
+
+// renderChanges is the same for a caller that has already matched the diff and
+// must not be made to pay for it again — which is every tool row in the log,
+// since the row also counts what changed.
+func renderChanges(changes []change, width int) []string {
 	out := make([]string, 0, len(changes))
 	for i, ch := range changes {
 		if i == diffMaxLines {
@@ -938,8 +987,10 @@ func renderDiffs(call acp.ToolCall, width int) []string {
 	return out
 }
 
-func diffStat(call acp.ToolCall) (added, removed int) {
-	for _, ch := range callDiff(call) {
+// countChanges is the diff as a tool row reports it: how many lines the agent
+// wrote, and how many it took away.
+func countChanges(changes []change) (added, removed int) {
+	for _, ch := range changes {
 		if ch.add {
 			added++
 		} else {
@@ -1091,3 +1142,34 @@ func shortPath(path, cwd string) string {
 	}
 	return path
 }
+
+// launchingView is what a window shows between opening and having an agent.
+//
+// It exists because the alternative was an ordinary composer with nothing
+// behind it: overlay() had no case for a chat that has not started yet, so the
+// screen invited a message and enter discarded it — Send is inert without a
+// session. For an adapter that accepts stdio and never completes the handshake
+// that was the whole experience of the window.
+func (m Model) launchingView() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(permBoxStyle.Render(strings.Join(m.launchingLines(), "\n")))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("the conversation opens once the agent answers"))
+	return b.String()
+}
+
+func (m Model) launchingLines() []string {
+	name := "the agent"
+	if m.opts.Agent != nil && m.opts.Agent.Name != "" {
+		name = m.opts.Agent.Name
+	}
+	return []string{
+		noticeStyle.Render("starting " + name + "…"),
+		permKeyStyle.Render("[ctrl+c]") + " " + permLabelStyle.Render("back to opentree"),
+	}
+}
+
+// launchingHeight is the footer space the panel needs: its lines, the box
+// around them, and the hint under it.
+func (m Model) launchingHeight() int { return len(m.launchingLines()) + 4 }

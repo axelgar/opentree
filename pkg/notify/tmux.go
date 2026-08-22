@@ -52,6 +52,17 @@ func Watched(pane string) bool {
 	if err != nil {
 		return false
 	}
+	return watchedFrom(out)
+}
+
+// watchedFrom reads tmux's answer.
+//
+// Split from the call so it can be tested without a tmux, real or faked. Both
+// ways of misreading this are silent — too loose and every workspace nobody has
+// opened all day counts as watched, so no notification ever arrives; too strict
+// and the chat rings the window you are sitting in front of — and neither shows
+// up as an error, so the parse is worth pinning on its own.
+func watchedFrom(out []byte) bool {
 	active, attached, ok := strings.Cut(strings.TrimSpace(string(out)), "|")
 	// session_attached is a count of clients rather than a flag.
 	return ok && active == "1" && attached != "" && attached != "0"

@@ -60,6 +60,16 @@ sudo mv opentree /usr/local/bin/
 go install github.com/axelgar/opentree/cmd/opentree@latest
 ```
 
+### Uninstalling
+
+```bash
+opentree uninstall
+```
+
+Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
+
+It never touches a repository. The worktrees under `<repo>/.opentree` are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
+
 ## Quick Start
 
 ```bash
@@ -248,7 +258,7 @@ is queued rather than refused.
 themselves, so having the binary is the whole setup. Claude Code is reached
 through the `claude-agent-acp` adapter, which opentree installs on request into
 `~/.opentree/tools` rather than your global npm root — press `A` in the
-dashboard, pick Claude Code, and it offers the download (303MB, needs `node`).
+dashboard, pick Claude Code, and it offers the download (340MB, needs `node`).
 
 Those four are the whole list. opentree drives agents over ACP and nothing else,
 so an agent without an ACP server has no way in — if one ships support, it
@@ -639,6 +649,30 @@ opentree delete feat/add-dark-mode
 
 ## Troubleshooting
 
+### Start here: `opentree doctor`
+
+```bash
+opentree doctor
+```
+
+Prints what opentree can see — its own version, the versions of git, tmux, gh
+and node, which config file it resolved and what it says, whether this
+repository's setup commands are approved, where state and sockets live, and
+what each workspace's chat is doing. Everything it does is a read, so it is
+safe to run and safe to paste into an issue.
+
+If a problem needs reproducing rather than describing, point opentree at a log
+first:
+
+```bash
+OPENTREE_LOG=/tmp/opentree.log opentree
+```
+
+An environment variable rather than a flag, because the interesting failures
+happen inside `opentree chat`, which a tmux window starts rather than you — and
+the variable is inherited by every process opentree launches. Off by default.
+The file holds branch names, paths and session ids, and is written `0600`.
+
 ### "Error: not a git repository"
 
 opentree must be run from inside a git repository. Navigate to your project root first.
@@ -711,11 +745,30 @@ go build -o opentree ./cmd/opentree
 
 ### Architecture
 
-See [PLAN.md](PLAN.md) for detailed architecture documentation.
+`cmd/opentree` is the CLI surface; `pkg/` is where the work happens.
+
+| package | what it owns |
+| --- | --- |
+| `tui` | the dashboard: the workspace list, the Skills and Servers tabs |
+| `chat` | the conversation view, and the control socket the dashboard reaches it through |
+| `acp` | the Agent Client Protocol client — the agent subprocess and its stdio |
+| `workspace` | a workspace's lifecycle, over the four below it |
+| `worktree` | git worktrees and branches |
+| `tmux` | sessions and windows |
+| `state` | `state.json`, shared between the dashboard and every chat |
+| `github` | `gh`, for PRs, issues and CI status |
+| `bootstrap` | seeding a worktree, running its setup, and the trust gate over those commands |
+| `skills` | propagating agent skills into worktrees |
+| `config` | `opentree.toml` and the agent registry |
+| `notify`, `diag`, `ui`, `fsutil`, `gitutil` | the small shared pieces |
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## Trademarks
+
+opentree draws each agent it drives — opencode, Claude Code, GitHub Copilot and Gemini CLI — under that agent's own wordmark and brand colour, so you can see at a glance which one you are talking to. Those marks belong to their respective owners. opentree is an independent project and is not affiliated with, sponsored by or endorsed by any of them. See [NOTICE](NOTICE).
 
 ## Acknowledgments
 

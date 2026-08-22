@@ -29,6 +29,126 @@ func ghRun(dir string, args ...string) (stdout, stderr []byte, err error) {
 	return outBuf.Bytes(), errBuf.Bytes(), err
 }
 
+// hasGitHubRemote reports whether the repository in dir has a remote gh could
+// possibly serve. An empty dir means the process working directory, matching
+// ghRun.
+//
+// Asked a `pr view` in a GitLab or Bitbucket checkout, gh contacts nobody and
+// prints "none of the git remotes configured for this repository point to a
+// known GitHub host" — but only after walking its own config and host
+// resolution, and the dashboard's thirty-second status poll then pays that
+// walk on every tick for the life of the session. `git remote -v` is local and
+// costs microseconds, so the question is settled here, once, before gh is
+// asked anything.
+//
+// The answer is deliberately not memoised. A repository grows an origin the
+// moment its author runs `git remote add`, and a cached "not GitHub" would
+// leave the PR column blank until the next restart with nothing on screen to
+// explain why.
+func hasGitHubRemote(dir string) bool {
+	cmd := exec.Command("git", "remote", "-v")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		// Not a git repository, or no git at all. That is not a question about
+		// remotes, so it is not this gate's to answer — let gh speak.
+		return true
+	}
+	return anyGitHubRemote(out)
+}
+
+// anyGitHubRemote reports whether a `git remote -v` listing names a host gh
+// could serve. Every remote is considered, not just origin: gh resolves a PR
+// through whichever remote points at GitHub, and a fork checkout routinely
+// keeps origin on a mirror and upstream on github.com.
+func anyGitHubRemote(listing []byte) bool {
+	for _, line := range strings.Split(string(listing), "\n") {
+		// "origin\tgit@github.com:acme/tool.git (fetch)"
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if hostIsGitHub(remoteHost(fields[1])) {
+			return true
+		}
+	}
+	return false
+}
+
+// nonGitHubHosts are forges gh can never speak to. This is a denylist rather
+// than an allowlist of GitHub hosts because GitHub Enterprise lives at
+// whatever hostname its owner chose — github.acme.io, git.acme.io, code.acme.io
+// — and nothing in the URL tells it apart from a self-hosted GitLab at the
+// same address. An unrecognised host is therefore treated as GitHub: being
+// wrong that way costs one poll, while being wrong the other way would swallow
+// the "gh auth login --hostname" error an Enterprise user has to see.
+var nonGitHubHosts = []string{
+	"gitlab.com",
+	"bitbucket.org",
+	"codeberg.org",
+	"gitea.com",
+	"gitee.com",
+	"sr.ht",
+	"dev.azure.com",
+	"visualstudio.com",
+	"sourceforge.net",
+	"launchpad.net",
+	"git.kernel.org",
+	"savannah.gnu.org",
+}
+
+// hostIsGitHub reports whether gh could serve a remote on the given host.
+func hostIsGitHub(host string) bool {
+	if host == "" {
+		// No remote, or a bare filesystem path. Either way there is nothing
+		// for gh to resolve a PR against.
+		return false
+	}
+	if host == "github.com" || strings.HasSuffix(host, ".github.com") {
+		return true
+	}
+	for _, known := range nonGitHubHosts {
+		if host == known || strings.HasSuffix(host, "."+known) {
+			return false
+		}
+	}
+	return true
+}
+
+// remoteHost extracts the lowercased hostname from a git remote URL, covering
+// the three spellings git accepts: a scheme URL (https://host/o/r.git), an
+// scp-like address (git@host:o/r.git), and a plain filesystem path, which has
+// no host and yields "".
+func remoteHost(remoteURL string) string {
+	s := strings.TrimSpace(remoteURL)
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+len("://"):]
+		if j := strings.Index(s, "/"); j >= 0 {
+			s = s[:j]
+		}
+	} else {
+		// scp-like syntax: everything up to the first colon is [user@]host.
+		// Without a colon this is a local path, which no forge serves.
+		i := strings.Index(s, ":")
+		if i < 0 {
+			return ""
+		}
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:] // userinfo
+	}
+	if i := strings.Index(s, ":"); i >= 0 {
+		s = s[:i] // port
+	}
+	return strings.ToLower(s)
+}
+
 // ReviewComment represents a single review comment on a PR.
 // General reviews have an empty Path and zero Line.
 // Inline (code) comments have Path and Line set.
@@ -66,6 +186,11 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 	if !pm.IsInstalled() {
 		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
+	if !hasGitHubRemote("") {
+		// A repo with no GitHub remote has no PR to review, which is the same
+		// normal, silent condition prViewError already recognises further down.
+		return nil, nil
+	}
 
 	// Fetch top-level reviews and PR URL in one call.
 	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url,reviews")
@@ -76,7 +201,33 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 		return nil, nil // branch has no PR
 	}
 
-	var prData struct {
+	prURL, comments, err := decodePRReviews(output)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch unresolved inline review threads via GraphQL.
+	if prURL != "" {
+		owner, repo, prNumber, parseErr := parsePRURL(prURL)
+		if parseErr == nil {
+			inlineComments, err := pm.fetchUnresolvedThreadComments(owner, repo, prNumber)
+			if err != nil {
+				return comments, fmt.Errorf("failed to fetch inline review threads: %w", err)
+			}
+			comments = append(comments, inlineComments...)
+		}
+	}
+
+	return comments, nil
+}
+
+// decodePRReviews folds a `gh pr view --json url,reviews` payload into the PR's
+// URL and the reviews an agent can actually act on. Only CHANGES_REQUESTED
+// reviews carrying a body survive: APPROVED, DISMISSED, COMMENTED and PENDING
+// ask for nothing, and an empty body asks for nothing either — handing either
+// to an agent spends a turn to be told there was no work in it.
+func decodePRReviews(data []byte) (prURL string, comments []ReviewComment, err error) {
+	var raw struct {
 		URL     string `json:"url"`
 		Reviews []struct {
 			Author struct {
@@ -86,15 +237,10 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 			State string `json:"state"`
 		} `json:"reviews"`
 	}
-	if err := json.Unmarshal(output, &prData); err != nil {
-		return nil, fmt.Errorf("failed to parse pr reviews: %w", err)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", nil, fmt.Errorf("failed to parse pr reviews: %w", err)
 	}
-
-	var comments []ReviewComment
-
-	// Only include reviews that actively requested changes and have a body.
-	// APPROVED, DISMISSED, COMMENTED, and PENDING are all skipped.
-	for _, r := range prData.Reviews {
+	for _, r := range raw.Reviews {
 		if r.State != "CHANGES_REQUESTED" {
 			continue
 		}
@@ -108,20 +254,7 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 			State:  r.State,
 		})
 	}
-
-	// Fetch unresolved inline review threads via GraphQL.
-	if prData.URL != "" {
-		owner, repo, prNumber, parseErr := parsePRURL(prData.URL)
-		if parseErr == nil {
-			inlineComments, err := pm.fetchUnresolvedThreadComments(owner, repo, prNumber)
-			if err != nil {
-				return comments, fmt.Errorf("failed to fetch inline review threads: %w", err)
-			}
-			comments = append(comments, inlineComments...)
-		}
-	}
-
-	return comments, nil
+	return raw.URL, comments, nil
 }
 
 // graphqlUnresolvedThreadsQuery queries for unresolved PR review threads and
@@ -160,7 +293,19 @@ func (pm *PRManager) fetchUnresolvedThreadComments(owner, repo string, prNumber 
 	if err != nil {
 		return nil, fmt.Errorf("graphql query failed: %w\n%s", err, strings.TrimSpace(string(stderr)))
 	}
+	return decodeUnresolvedThreads(out)
+}
 
+// decodeUnresolvedThreads folds the GraphQL reviewThreads payload into inline
+// comments. A resolved thread has already been dealt with, and a thread whose
+// first comment is empty says nothing, so both are dropped rather than handed
+// to an agent as work.
+//
+// A comment on a line that has since moved reports line: null, which decodes to
+// zero; originalLine holds the position it was written against. Emitting zero
+// would print "file.go" with no line at all in the prompt, so the original
+// stands in.
+func decodeUnresolvedThreads(data []byte) ([]ReviewComment, error) {
 	var result struct {
 		Data struct {
 			Repository struct {
@@ -185,7 +330,7 @@ func (pm *PRManager) fetchUnresolvedThreadComments(owner, repo string, prNumber 
 			} `json:"repository"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(out, &result); err != nil {
+	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse graphql response: %w", err)
 	}
 
@@ -265,6 +410,13 @@ func (pm *PRManager) GetIssue(number int) (*Issue, error) {
 		return nil, fmt.Errorf("failed to fetch issue #%d: %w\nOutput: %s", number, err, stderr)
 	}
 
+	return decodeIssue(output)
+}
+
+// decodeIssue folds a `gh issue view --json number,title,body,labels` payload
+// into an Issue, flattening the label objects gh nests to the names callers
+// actually match on.
+func decodeIssue(data []byte) (*Issue, error) {
 	var raw struct {
 		Number int    `json:"number"`
 		Title  string `json:"title"`
@@ -273,7 +425,7 @@ func (pm *PRManager) GetIssue(number int) (*Issue, error) {
 			Name string `json:"name"`
 		} `json:"labels"`
 	}
-	if err := json.Unmarshal(output, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse issue response: %w", err)
 	}
 
@@ -330,20 +482,7 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 		return "", fmt.Errorf("not authenticated with GitHub. Run 'gh auth login'")
 	}
 
-	// Create PR
-	args := []string{"pr", "create", "--base", baseBranch, "--head", branch}
-
-	if title != "" {
-		args = append(args, "--title", title)
-	} else {
-		args = append(args, "--title", gitutil.BranchToTitle(branch))
-	}
-
-	// Always pass --body: without it, non-interactive gh (stdin is not a
-	// terminal here) fails with "must provide --title and --body".
-	args = append(args, "--body", body)
-
-	output, stderr, err := ghRun("", args...)
+	output, stderr, err := ghRun("", createPRArgs(branch, baseBranch, title, body)...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create PR: %w\nOutput: %s", err, stderr)
 	}
@@ -354,9 +493,32 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 	return prURL, nil
 }
 
+// createPRArgs assembles the `gh pr create` command line. An empty title falls
+// back to the branch name read back as a sentence, since gh would otherwise
+// prompt for one on a terminal it does not have.
+//
+// --body is always passed, empty or not: without it, non-interactive gh (stdin
+// is not a terminal here) fails with "must provide --title and --body".
+func createPRArgs(branch, baseBranch, title, body string) []string {
+	if title == "" {
+		title = gitutil.BranchToTitle(branch)
+	}
+	return []string{
+		"pr", "create",
+		"--base", baseBranch,
+		"--head", branch,
+		"--title", title,
+		"--body", body,
+	}
+}
+
 // prViewError interprets a failed `gh pr view` invocation. A branch with no
 // PR, or a repo with no GitHub remote, is a normal condition and yields nil;
 // anything else (auth expired, offline, ...) is a real error.
+//
+// The remote case is normally settled by hasGitHubRemote before gh is called
+// at all; the excuse stays here for the repo whose remote could not be read,
+// and because gh reaches this verdict by paths of its own.
 func prViewError(output []byte, err error) error {
 	out := string(output)
 	if strings.Contains(out, "no pull requests found") || strings.Contains(out, "no git remotes") {
@@ -367,8 +529,8 @@ func prViewError(output []byte, err error) error {
 
 // GetPRStatus checks if a PR exists for the given branch
 func (pm *PRManager) GetPRStatus(branch string) (string, error) {
-	if !pm.IsInstalled() {
-		return "", nil // Silently fail if gh not installed
+	if !pm.IsInstalled() || !hasGitHubRemote("") {
+		return "", nil // Silently fail if gh cannot answer for this repo
 	}
 
 	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url", "--jq", ".url")
@@ -382,7 +544,7 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 // GetFullPRStatus returns the URL and state of a PR for the given branch.
 // State is lowercased: "open", "merged", or "closed".
 func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err error) {
-	if !pm.IsInstalled() {
+	if !pm.IsInstalled() || !hasGitHubRemote("") {
 		return "", "", nil
 	}
 
@@ -391,11 +553,18 @@ func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err erro
 		return "", "", prViewError(stderr, err)
 	}
 
+	return splitURLState(output)
+}
+
+// splitURLState reads the tab-joined pair the --jq filter in GetFullPRStatus
+// produces. A PR URL cannot contain a tab, so the split is unambiguous; a line
+// without one means gh answered something other than what was asked, which is
+// worth an error rather than a half-populated status.
+func splitURLState(output []byte) (url, state string, err error) {
 	parts := strings.SplitN(strings.TrimSpace(string(output)), "\t", 2)
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("unexpected gh output: %s", output)
 	}
-
 	return parts[0], strings.ToLower(parts[1]), nil
 }
 
@@ -439,17 +608,24 @@ func deriveCIStatus(checks []rollupCheck) string {
 // GetPRCIStatus returns the combined CI check status for the PR on the given branch.
 // Returns "success", "failure", "pending", or "" if no checks exist.
 func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
-	if !pm.IsInstalled() {
+	if !pm.IsInstalled() || !hasGitHubRemote("") {
 		return "", nil
 	}
 	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "statusCheckRollup")
 	if err != nil {
 		return "", prViewError(stderr, err)
 	}
+	return decodeCIStatus(output)
+}
+
+// decodeCIStatus folds a `gh pr view --json statusCheckRollup` payload down to
+// one word. A PR with no checks configured answers null, which decodes to no
+// checks at all rather than to a failure.
+func decodeCIStatus(data []byte) (string, error) {
 	var result struct {
 		StatusCheckRollup []rollupCheck `json:"statusCheckRollup"`
 	}
-	if err := json.Unmarshal(output, &result); err != nil {
+	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("failed to parse CI status response: %w", err)
 	}
 	return deriveCIStatus(result.StatusCheckRollup), nil
@@ -489,8 +665,10 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 		}
 	}
 
-	// Fetch PR info in a single gh call if available.
-	if !pm.IsInstalled() {
+	// Fetch PR info in a single gh call if available. This runs every thirty
+	// seconds for every workspace, so both gates are cheap and local: neither
+	// gh's absence nor a non-GitHub remote may cost a round trip here.
+	if !pm.IsInstalled() || !hasGitHubRemote(repoDir) {
 		return status, nil
 	}
 	output, stderr, err := ghRun(repoDir, "pr", "view", branch, "--json", "url,state,mergeable,statusCheckRollup")
@@ -498,21 +676,48 @@ func (pm *PRManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool
 		// Partial ls-remote status is still returned alongside any real error.
 		return status, prViewError(stderr, err)
 	}
+	pr, err := decodePRSummary(output)
+	if err != nil {
+		return status, err
+	}
+	status.PRURL = pr.URL
+	status.PRState = pr.State
+	status.MergeConflicts = pr.MergeConflicts
+	status.CIStatus = pr.CIStatus
+
+	return status, nil
+}
+
+// prSummary is the half of a branch's status that only GitHub knows, as
+// distinct from the half git ls-remote answers.
+type prSummary struct {
+	URL            string
+	State          string // "open", "merged", "closed", ""
+	MergeConflicts bool
+	CIStatus       string
+}
+
+// decodePRSummary folds the combined `gh pr view --json
+// url,state,mergeable,statusCheckRollup` payload used by the status poll.
+// Mergeable is a tri-state — MERGEABLE, CONFLICTING, UNKNOWN while GitHub is
+// still computing the merge — and only CONFLICTING is reported as a conflict,
+// so a PR opened seconds ago does not flash a warning it may well retract.
+func decodePRSummary(data []byte) (prSummary, error) {
 	var raw struct {
 		URL               string        `json:"url"`
 		State             string        `json:"state"`
 		Mergeable         string        `json:"mergeable"`
 		StatusCheckRollup []rollupCheck `json:"statusCheckRollup"`
 	}
-	if err := json.Unmarshal(output, &raw); err != nil {
-		return status, fmt.Errorf("failed to parse PR status response: %w", err)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return prSummary{}, fmt.Errorf("failed to parse PR status response: %w", err)
 	}
-	status.PRURL = raw.URL
-	status.PRState = strings.ToLower(raw.State)
-	status.MergeConflicts = strings.ToUpper(raw.Mergeable) == "CONFLICTING"
-	status.CIStatus = deriveCIStatus(raw.StatusCheckRollup)
-
-	return status, nil
+	return prSummary{
+		URL:            raw.URL,
+		State:          strings.ToLower(raw.State),
+		MergeConflicts: strings.EqualFold(raw.Mergeable, "CONFLICTING"),
+		CIStatus:       deriveCIStatus(raw.StatusCheckRollup),
+	}, nil
 }
 
 // IsInstalled reports whether the gh CLI is available on PATH.

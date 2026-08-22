@@ -964,3 +964,58 @@ func TestRing_KeepsLastLines(t *testing.T) {
 		t.Errorf("ring = %q, want %q", got, "second\nthird")
 	}
 }
+
+// Regression: the agent is deliberately put in its own process group so that
+// killing it takes its children — MCP servers, tool shells — with it. But
+// exec's own cancellation calls Process.Kill(), the direct child and nothing
+// under it, so a cancelled context orphaned exactly the processes the group
+// exists to catch. Only the explicit Close() path signalled the group.
+func TestSpawn_CancelledContextKillsTheWholeGroup(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "grandchild-survived")
+	script := filepath.Join(dir, "stub-agent")
+	// The agent starts a child of its own and then waits, exactly as a real
+	// adapter holding an MCP server does.
+	body := "#!/bin/sh\nsh -c 'sleep 3; touch " + marker + "' &\nsleep 30\n"
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client, err := Spawn(ctx, script, nil, dir, Handlers{})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	time.Sleep(300 * time.Millisecond) // let the grandchild exist
+	cancel()
+
+	// Past when the grandchild would have finished, had it survived.
+	time.Sleep(4 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a cancelled context left the agent's own child running")
+	}
+}
+
+// Close's kill and Wait are not idempotent on their own: a pid is recyclable
+// and Wait may only be called once. The doc comment has always promised it is
+// safe to call more than once.
+func TestClose_IsSafeToCallTwice(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stub-agent")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Spawn(context.Background(), script, nil, dir, Handlers{})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}

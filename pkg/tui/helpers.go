@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
@@ -104,6 +106,54 @@ func (ws WorkspaceItem) actionHint() string {
 	return ""
 }
 
+// deletionLosses is one line per workspace the delete dialog is about, naming
+// the branch that goes with it and what is on it that is not anywhere else.
+//
+// Every number here has already been loaded for the row behind the dialog —
+// DiffStat and FileChanges by the refresh, UncommittedCount beside them,
+// BranchPushed by the 30s status poll — so this costs no git calls and nothing
+// async. Which matters: the TUI is the only delete path that never calls
+// HasChanges, so it was the one asking "are you sure?" while showing the least.
+//
+// Workspaces with nothing to lose contribute no line rather than a reassuring
+// one. A dialog that says "clean" four times teaches people to press y.
+func (m Model) deletionLosses() []string {
+	targets := []string{m.deleteTarget}
+	if m.deleteTarget == "" {
+		targets = targets[:0]
+		for name := range m.selected {
+			targets = append(targets, name)
+		}
+		sort.Strings(targets)
+	}
+
+	var lines []string
+	for _, name := range targets {
+		i := m.workspaceIndex(name)
+		if i < 0 {
+			continue
+		}
+		ws := m.workspaces[i]
+
+		var loss []string
+		if ws.UncommittedCount > 0 {
+			loss = append(loss, dangerStyle.Render(plural(ws.UncommittedCount, "uncommitted file")))
+		}
+		if len(ws.FileChanges) > 0 {
+			loss = append(loss, ws.renderDiffStat())
+		}
+		if !ws.BranchPushed {
+			loss = append(loss, dangerStyle.Render("never pushed"))
+		}
+		if len(loss) == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s",
+			confirmLabelStyle.Render(ws.Branch), strings.Join(loss, confirmLabelStyle.Render(" · "))))
+	}
+	return lines
+}
+
 // renderDiffStat is the change summary in a row's detail line. The raw git
 // --stat sentence (" 3 files changed, 6 insertions(+)") reads as one more grey
 // word in a grey line; counts in the palette's add/remove colours are scannable
@@ -146,9 +196,7 @@ func renderDiffLine(line string) string {
 
 // countUncommitted counts files with uncommitted changes in a worktree.
 func countUncommitted(worktreePath string) int {
-	cmd := exec.Command("git", "status", "--short")
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
+	out, err := gitutil.Output(worktreePath, "status", "--short")
 	if err != nil {
 		return 0
 	}
@@ -161,8 +209,14 @@ func countUncommitted(worktreePath string) int {
 	return count
 }
 
-// cmdStart is a variable so tests can stub the actual exec.
-var cmdStart = func(c *exec.Cmd) error { return c.Start() }
+// cmdStart and cmdWait are variables so tests can stub the actual exec.
+// cmdWait is read on the goroutine that starts the opener rather than inside
+// the reaper it spawns, so a test restoring the stub cannot race a reaper it
+// left running.
+var (
+	cmdStart = func(c *exec.Cmd) error { return c.Start() }
+	cmdWait  = func(c *exec.Cmd) error { return c.Wait() }
+)
 
 // openURLCmd opens a URL in the system default browser.
 // Only opens http/https URLs to prevent command injection.
@@ -188,6 +242,15 @@ func openURLCmd(rawURL string) tea.Cmd {
 		if err := cmdStart(cmd); err != nil {
 			return errMsg{fmt.Errorf("could not open browser: %w", err)}
 		}
+		// Reap the opener. open and xdg-open hand the URL to the desktop and
+		// exit within milliseconds, but nobody was collecting them, so each
+		// press of o left a zombie behind for as long as the dashboard ran —
+		// an afternoon spent opening pull requests is dozens of them.
+		// Process.Release is not the alternative it looks like: on Unix it
+		// drops the handle without waiting, which is how the zombie is made
+		// in the first place.
+		reap := cmdWait
+		go func() { _ = reap(cmd) }()
 		return browserOpenedMsg{url: rawURL}
 	}
 }

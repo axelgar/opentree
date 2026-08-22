@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
@@ -575,7 +576,7 @@ func TestAdapterInstall_FailureIsReported(t *testing.T) {
 	// error synchronously and returns a tea.Tick that only clears it later —
 	// executing that blocks the test for the whole timer.
 	m := newTestModel()
-	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: errStr("npm ERR!")})
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: stringError("npm ERR!")})
 
 	if m.err == nil {
 		t.Fatal("expected the install failure to surface")
@@ -587,9 +588,9 @@ func TestAdapterInstall_FailureIsReported(t *testing.T) {
 	}
 }
 
-type errStr string
+type stringError string
 
-func (e errStr) Error() string { return string(e) }
+func (e stringError) Error() string { return string(e) }
 
 // ---------------------------------------------------------------------------
 // Enter means "use this agent"
@@ -648,7 +649,7 @@ func TestEnter_AdapterMissingAsksFirst(t *testing.T) {
 		t.Errorf("agent = %q, want nothing committed until the install is agreed", m.cfg.Agent.Command)
 	}
 	view := m.View()
-	for _, want := range []string{"Install adapter", "claude-agent-acp", "303MB"} {
+	for _, want := range []string{"Install adapter", "claude-agent-acp", "340MB"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("confirmation missing %q\ngot:\n%s", want, view)
 		}
@@ -717,7 +718,7 @@ func TestInstallFailed_DoesNotSwitchAgent(t *testing.T) {
 	m, _ = applyUpdate(m, keyMsg("y"))
 	before := m.cfg.Agent.Command
 
-	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: errStr("npm ERR!")})
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp", err: stringError("npm ERR!")})
 
 	if m.cfg.Agent.Command != before {
 		t.Errorf("agent = %q, want it unchanged when the adapter never arrived", m.cfg.Agent.Command)
@@ -758,7 +759,7 @@ func TestWheel_StopsAtTheEnds(t *testing.T) {
 	if m.cursor != 0 {
 		t.Errorf("cursor = %d, want it clamped at 0", m.cursor)
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
 	}
 	if m.cursor != 1 {
@@ -790,7 +791,7 @@ func TestWheel_DiffStopsAtTheLastLine(t *testing.T) {
 	m.diffViewing = true
 	m.diffContent = strings.Repeat("a line\n", 300)
 
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
 	}
 	if got, want := m.diffScrollOffset, m.maxDiffScroll(); got != want {
@@ -988,7 +989,7 @@ func TestRemoteBranchDialog_StaysInsideTheTerminal(t *testing.T) {
 	m := newTestModel()
 	m.height, m.width = 24, 100
 	m.creating, m.remoteBranchMode = true, true
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		m.remoteBranches = append(m.remoteBranches, fmt.Sprintf("origin/feature-%03d", i))
 	}
 	m.filteredBranches = m.remoteBranches
@@ -1003,5 +1004,77 @@ func TestRemoteBranchDialog_StaysInsideTheTerminal(t *testing.T) {
 	}
 	if !strings.Contains(view, "Create Workspace from Remote Branch") {
 		t.Error("the title was pushed off the top")
+	}
+}
+
+// noAdapterAnywhere puts HOME and PATH somewhere empty, so ACPInstalled() is
+// false whatever this machine happens to have lying around.
+func noAdapterAnywhere(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+}
+
+// `i` used to fire a 300MB install off a package registry on one keystroke,
+// with no question asked and nothing said about what it was running. It now
+// arms the same confirmation enter does.
+func TestInstallKey_AsksBeforeDownloading(t *testing.T) {
+	noAdapterAnywhere(t)
+	m := pickerOn(t, agentAdapterMissing)
+
+	m, cmd := applyUpdate(m, keyMsg("i"))
+
+	if cmd != nil {
+		t.Error("nothing should be downloaded before the question is answered")
+	}
+	if m.agentInstallConfirm == nil {
+		t.Fatal("expected a confirmation before a 300MB download")
+	}
+	// i means "get it ready", not "use it": promising a switch that will not
+	// happen is worse than a shorter label.
+	if m.agentPendingSelect != nil {
+		t.Error("i should not queue an agent switch")
+	}
+	if strings.Contains(m.View(), "install and use") {
+		t.Errorf("the confirmation should not promise a switch\ngot:\n%s", m.View())
+	}
+}
+
+// Approving something specific means being shown it: the pinned version, the
+// prefix and --ignore-scripts are the whole difference between this and
+// handing npm the machine, and none of them is visible from the word install.
+func TestInstallConfirm_NamesTheCommandItWillRun(t *testing.T) {
+	noAdapterAnywhere(t)
+	m := pickerOn(t, agentAdapterMissing)
+	m.width, m.height = 320, 40
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	view := ansi.Strip(m.View())
+	claude := config.FindAgent("claude")
+	for _, want := range []string{"npm install", "--ignore-scripts", claude.ACPPackageSpec()} {
+		if !strings.Contains(view, want) {
+			t.Errorf("confirmation missing %q\ngot:\n%s", want, view)
+		}
+	}
+}
+
+// The install that i asked for must not switch agent when it lands.
+func TestInstallKey_DoesNotSwitchAgentWhenItLands(t *testing.T) {
+	noAdapterAnywhere(t)
+	m := pickerOn(t, agentAdapterMissing)
+	before := m.cfg.Agent.Command
+
+	m, _ = applyUpdate(m, keyMsg("i"))
+	m, cmd := applyUpdate(m, keyMsg("y"))
+	if cmd == nil {
+		t.Fatal("expected the install to run once agreed")
+	}
+	m, _ = applyUpdate(m, adapterInstalledMsg{adapter: "claude-agent-acp"})
+
+	if m.cfg.Agent.Command != before {
+		t.Errorf("agent = %q, want it unchanged at %q — i prepares, it does not switch", m.cfg.Agent.Command, before)
+	}
+	if strings.Contains(m.notice, "now using") {
+		t.Errorf("notice = %q, want no claim of a switch", m.notice)
 	}
 }

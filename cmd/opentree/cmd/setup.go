@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,7 +48,12 @@ skipped, without restarting a chat and tearing down a live conversation.
 		if len(args) == 0 {
 			return fmt.Errorf("which workspace? give a branch name, or --suggest to propose a config")
 		}
-		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+		// SIGHUP and SIGTERM alongside the interrupt: setup runs the project's
+		// own install commands in a process group, and the only thing that
+		// kills that group is this context being cancelled. A closed tmux
+		// window sends SIGHUP, whose default action would end opentree and
+		// leave the install running against a worktree nobody is watching.
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
 		defer stop()
 		return runSetup(ctx, args[0])
 	},
@@ -114,8 +120,11 @@ func runSetup(ctx context.Context, name string) error {
 		return err
 	}
 
-	ws.SetupAt, ws.SetupHash = time.Now(), bootstrap.Hash(commands, run)
-	if err := store.UpdateWorkspace(ws); err != nil {
+	hash := bootstrap.Hash(commands, run)
+	if err := store.Update(name, func(w *state.Workspace) error {
+		w.SetupAt, w.SetupHash = time.Now(), hash
+		return nil
+	}); err != nil {
 		return fmt.Errorf("setup finished, but recording it failed: %w", err)
 	}
 	fmt.Printf("✓ %s is set up\n", name)

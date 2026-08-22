@@ -13,6 +13,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/ui"
 )
 
@@ -94,17 +95,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateServers(msg)
 		}
 
-		// Confirming an adapter download before switching agent
+		// Confirming an adapter download, however it was asked for. Both keys
+		// that can start one arrive here, and they differ only in what happens
+		// afterwards: a pending selection means enter asked for it and the
+		// switch is waiting on the install, no pending selection means i did
+		// and the adapter is being fetched for later.
 		if m.agentInstallConfirm != nil {
 			agent := *m.agentInstallConfirm
 			switch msg.String() {
 			case "y", "Y", "enter":
 				m.agentInstallConfirm = nil
-				m.agentPendingSelect = &agent
 				m.agentSelecting = false
 				return m, m.installAdapterCmd(agent)
 			case "n", "esc", "q":
 				m.agentInstallConfirm = nil
+				m.agentPendingSelect = nil
 			}
 			return m, nil
 		}
@@ -131,8 +136,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.transientErrCmd(fmt.Sprintf(
 						"%s is not installed — install %s first", agent.Name, agent.Command))
 				case agentAdapterMissing:
-					// A download this size is asked about, not sprung.
+					// A download this size is asked about, not sprung. The
+					// selection is recorded now and honoured once the adapter
+					// lands; declining takes it back.
 					m.agentInstallConfirm = &agents[m.agentCursor]
+					m.agentPendingSelect = &agents[m.agentCursor]
 					return m, nil
 				}
 				m.agentSelecting = false
@@ -140,7 +148,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.transientErrCmd(errMsg)
 				}
 			case "i":
-				// Installing without switching to it, for preparing ahead.
+				// Installing without switching to it, for preparing ahead. It
+				// goes through the same confirmation enter does: the download
+				// is the same hundreds of megabytes off the same registry
+				// whichever key asked for it, and a keystroke away from the
+				// list is exactly where an unattended install should not be.
 				agent := agents[m.agentCursor]
 				if len(agent.ACPInstallCommand()) == 0 {
 					return m, m.transientErrCmd(fmt.Sprintf("%s needs no adapter", agent.Name))
@@ -148,8 +160,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if agent.ACPInstalled() {
 					return m, m.transientErrCmd(fmt.Sprintf("%s is already installed", agent.ACPCommand()))
 				}
-				m.agentSelecting = false
-				return m, m.installAdapterCmd(agent)
+				m.agentInstallConfirm = &agents[m.agentCursor]
+				return m, nil
 			case "esc", "q":
 				m.agentSelecting = false
 			}
@@ -651,6 +663,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reorder rows (activity changes, deletions), and a stale index
 		// would point destructive keys at whatever moved under the cursor.
 		prev := m.currentWorkspaceName()
+		// The Servers tab needs the same anchor, and needs it here: its own
+		// handler only ever sees a KeyMsg, so the ten-second refresh — the one
+		// that reorders rows — never reaches it.
+		prevServer := m.currentServerName()
 		m.workspaces = msg.workspaces
 		m.portless = msg.portless
 		m.recordChatErrors()
@@ -665,6 +681,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.cursor >= len(visible) {
 			m.cursor = max(0, len(visible)-1)
+		}
+		rows := m.serverRows()
+		if prevServer != "" {
+			for i, ws := range rows {
+				if ws.Name == prevServer {
+					m.serversTab.cursor = i
+					break
+				}
+			}
+		}
+		if m.serversTab.cursor >= len(rows) {
+			m.serversTab.cursor = max(0, len(rows)-1)
 		}
 		return m, nil
 
@@ -721,12 +749,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadWorkspacesCmd, next)
 
 	case prCreatedMsg:
-		ws, err := m.stateStore.GetWorkspace(msg.wsName)
-		if err == nil {
+		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
 			ws.PRURL = msg.prURL
 			ws.PRStatus = "open"
-			_ = m.stateStore.UpdateWorkspace(ws)
-		}
+			return nil
+		})
 		var branch, worktreeDir string
 		var wasPushed bool
 		if i := m.workspaceIndex(msg.wsName); i >= 0 {
@@ -778,12 +805,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case prStatusCheckedMsg:
-		ws, err := m.stateStore.GetWorkspace(msg.wsName)
-		if err == nil {
+		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
 			ws.PRURL = msg.prURL
 			ws.PRStatus = msg.prStatus
-			_ = m.stateStore.UpdateWorkspace(ws)
-		}
+			return nil
+		})
 		if i := m.workspaceIndex(msg.wsName); i >= 0 {
 			m.workspaces[i].PRURL = msg.prURL
 			m.workspaces[i].PRStatus = msg.prStatus
@@ -797,8 +823,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case branchStatusCheckedMsg:
 		m.statusChecksInFlight = max(0, m.statusChecksInFlight-1)
-		ws, err := m.stateStore.GetWorkspace(msg.wsName)
-		if err == nil {
+		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
 			if !msg.status.RemoteCheckFailed {
 				ws.BranchPushed = msg.status.Pushed
 				ws.RemoteDeleted = msg.status.RemoteDeleted
@@ -810,8 +835,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.status.PRState != "" {
 				ws.PRStatus = msg.status.PRState
 			}
-			_ = m.stateStore.UpdateWorkspace(ws)
-		}
+			return nil
+		})
 		if i := m.workspaceIndex(msg.wsName); i >= 0 {
 			if !msg.status.RemoteCheckFailed {
 				m.workspaces[i].BranchPushed = msg.status.Pushed
@@ -847,22 +872,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, afterExec(m.loadWorkspacesCmd)
 
 	case errMsg:
+		// Only the in-flight markers are cleared here. The dialog states are
+		// not, and used to be: errMsg is the shared failure of twenty-odd
+		// commands, several of them slow and launched from somewhere else
+		// entirely — a `gh` call for reviews, a diff on a big worktree, a
+		// browser that would not open. Any of those landing while a dialog was
+		// open tore it down, and resetCreateMode wipes the input with it, so
+		// the visible effect was the half-typed branch name vanishing for a
+		// reason that had nothing to do with what was being typed.
+		//
+		// Each dialog already ends itself on the path that opened it, so
+		// nothing here is holding them together. remoteBranchesLoadedMsg and
+		// prContentGeneratedMsg are the in-repo shape for this: a message that
+		// arrives late asks whether its own state is still current, and does
+		// nothing otherwise.
 		m.workspaceCreating = false
 		m.workspaceDeleting = false
 		m.workspaceDeletingName = ""
 		m.workspaceDeletingNames = make(map[string]bool)
-		m.resetCreateMode()
-		m.filtering = false
-		m.prGenerating = false
-		m.prCreating = false
 		m.err = msg.err
 		m.appendErrLog(msg.err.Error())
 		return m, m.scheduleErrClear()
 
 	case diffLoadedMsg:
-		// Don't pop the diff overlay over an open dialog (delete confirm,
-		// create, PR): its keys would land in the hidden dialog.
-		if m.deleting || m.creating || m.prCreating || m.agentSelecting {
+		// Don't pop the diff overlay over an open dialog: its keys would land
+		// in the hidden dialog. busyWithDialog rather than a list of four —
+		// the four missed the permission and message dialogs, which the view
+		// draws *above* the diff while the key handler routes to it, so every
+		// rune typed into a message went into a diff nobody could see. It also
+		// misses the tab: a diff that finished loading after switching to
+		// Skills or Servers sprang open on the way back.
+		//
+		// busyWithDialog deliberately omits diffViewing, so this is the right
+		// direction to call it in — the wheel consults it the other way round,
+		// scrolling an open diff before it asks about dialogs at all.
+		if m.busyWithDialog() || m.tab != tabWorkspaces {
 			return m, nil
 		}
 		m.diffViewing = true

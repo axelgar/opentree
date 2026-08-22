@@ -27,6 +27,29 @@ const (
 	commandTimeout = 2 * time.Second
 )
 
+// ProtocolVersion is the version of this socket's wire format, stamped on
+// everything that crosses it.
+//
+// It exists because the two ends of this socket are routinely different
+// binaries. A chat window is only ever relaunched when it has stopped serving
+// one — workspace.EnsureWindow starts one where there is no window, or a bare
+// shell — so after an in-place upgrade the dashboard is the new opentree and
+// every chat still open is the one it replaced, for as long as those windows
+// live. Without a number on the wire neither side can tell a peer that predates
+// a field from a peer that is broken, and the two want opposite reactions.
+//
+// Nothing refuses a peer over it, and nothing may start. A version older than
+// this one — zero included, which is what every chat built before this constant
+// publishes — is precisely the case it exists to describe; refusing those would
+// break the upgrade it is here to survive. A newer one is not refused either:
+// encoding/json drops fields it has no home for, so a status from the future
+// still parses into everything this binary knows how to read.
+//
+// Bump it when a change needs the other side to know it happened: a field one
+// end must not assume the other honours, or a command whose refusal would
+// otherwise read as a fault.
+const ProtocolVersion = 1
+
 // Status is what a chat process publishes about its session. It replaces the
 // hook-written status file for ACP agents: the chat process is holding the
 // protocol connection, so it knows exactly what the agent is doing rather than
@@ -52,13 +75,41 @@ type Status struct {
 	// to. The list copies it into opentree's error log; the chat is where it is
 	// acted on.
 	Error string `json:"error,omitempty"`
+
+	// Protocol is the wire version this chat speaks and Version is the opentree
+	// release it is running. Both travel because they answer different
+	// questions: the number is what code compares, and the release is what a row
+	// can show somebody. "This chat is running opentree 0.4.1" is a sentence
+	// that gets a window closed and reopened; a row that has quietly stopped
+	// understanding half of what the dashboard sends it is a bug report.
+	//
+	// Zero and empty mean a chat older than these fields, which is the ordinary
+	// reading for the first upgrade after they land — see ProtocolVersion.
+	Protocol int    `json:"protocol,omitempty"`
+	Version  string `json:"version,omitempty"`
 }
+
+// Behind reports whether the chat that published this status speaks an older
+// version of the protocol than the binary reading it.
+//
+// True is not a fault and not an error to raise. Every chat window that was
+// open when opentree was replaced answers yes, which is most of them for the
+// rest of the day — it is a thing for a row to say, not a reason to stop
+// reading one.
+func (s Status) Behind() bool { return s.Protocol < ProtocolVersion }
 
 // Permission is an escalation waiting on a human, mirrored so the workspace
 // list can answer it without attaching.
 type Permission struct {
 	Title   string                 `json:"title"`
 	Options []acp.PermissionOption `json:"options"`
+
+	// ToolCallID names the request this is, so an answer can be matched to the
+	// question it was given for. The list's view of a session is up to a
+	// refresh tick stale, and the answer used to be applied to whatever was at
+	// the head of the queue when it arrived — which after a tick may be a
+	// different tool asking a different thing.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // Command types the list can send back.
@@ -72,6 +123,22 @@ type Command struct {
 	Type     string `json:"type"`
 	OptionID string `json:"option_id,omitempty"`
 	Text     string `json:"text,omitempty"`
+
+	// ToolCallID is the permission this answer was given for, copied from the
+	// Permission the sender rendered.
+	//
+	// Checked only when it is set. A chat running a newer binary than the
+	// dashboard beside it — which is the normal state of things, since a chat
+	// window is never relaunched on upgrade — would otherwise refuse every
+	// remote answer it got, and the refusal would look like the dashboard
+	// being broken.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	// Protocol is the wire version the sender speaks, stamped by Send so no
+	// caller has to remember it. Read only to explain a refusal: a command a
+	// chat has no case for is an unknown command when it came from a peer of the
+	// same age, and an out-of-date window when it came from a newer one.
+	Protocol int `json:"protocol,omitempty"`
 }
 
 // Result is the chat's answer to a command. A command that arrives at a moment
@@ -89,6 +156,11 @@ type Result struct {
 // bytes. Everything opentree runs on has /tmp; it already requires tmux.
 const socketRoot = "/tmp"
 
+// socketNameMax is how much of a workspace's name a socket path can carry
+// before it has to be shortened. The limit is the ~104-byte cap on a unix
+// socket path, shared with the repo directory above it.
+const socketNameMax = 32
+
 // SocketPath is where a workspace's chat process listens.
 //
 // Sockets live outside the repo for length reasons: ".opentree/s/<branch>"
@@ -96,13 +168,25 @@ const socketRoot = "/tmp"
 // socket path limit, and the bind fails with "invalid argument". The repo is
 // identified by a hash of its root so two checkouts of the same project get
 // their own directory.
+//
+// A name too long to fit keeps its first bytes and gains a hash of the whole
+// of it. Truncating alone was not enough: two branches sharing 32 characters —
+// which is one afternoon's worth of feature/<ticket>-<description> — resolved
+// to one path, and the second chat to start would unlink the first's live
+// socket and bind over it. Prompts then ran in the wrong worktree.
+//
+// The suffix is added only when the name actually had to be shortened, so
+// every ordinary workspace keeps the exact path it has now and a chat started
+// by the previous binary stays reachable across the upgrade.
 func SocketPath(repoRoot, workspace string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(repoRoot))
 
 	name := strings.NewReplacer("/", "-", ":", "-").Replace(workspace)
-	if len(name) > 32 {
-		name = name[:32]
+	if len(name) > socketNameMax {
+		n := fnv.New32a()
+		_, _ = n.Write([]byte(name))
+		name = fmt.Sprintf("%s-%08x", name[:socketNameMax-9], n.Sum32())
 	}
 	return filepath.Join(socketRoot, fmt.Sprintf("opentree-%08x", h.Sum32()), name)
 }
@@ -122,7 +206,7 @@ type server struct {
 // hangs up. Polling beats a persistent stream here because the workspace list
 // already refreshes on a tick, and one-shot means no reconnect logic on either
 // side.
-func serve(path string, onCommand func(Command) Result) (*server, error) {
+func serve(path, workspace string, onCommand func(Command) Result) (*server, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -133,7 +217,17 @@ func serve(path string, onCommand func(Command) Result) (*server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &server{ln: ln, last: Status{State: StateStarting}}
+	// Named and versioned from the first moment, before the model has published
+	// anything. A status that cannot say whose it is cannot be checked against
+	// the workspace the caller asked about, and "starting…" is a state a chat
+	// can sit in for as long as its agent takes to answer. The release this is
+	// running is not known here and arrives with the first published status,
+	// which is the chat's first frame away.
+	s := &server{ln: ln, last: Status{
+		Workspace: workspace,
+		State:     StateStarting,
+		Protocol:  ProtocolVersion,
+	}}
 	go s.accept(onCommand)
 	return s, nil
 }
@@ -191,9 +285,24 @@ func (s *server) Close() error {
 // Client, used by the workspace list
 // ---------------------------------------------------------------------------
 
+// answersFor reports whether a greeting came from the workspace the caller
+// meant to reach.
+//
+// A status with no workspace name is accepted: that is a chat running a binary
+// from before the name was published, and a chat window survives every upgrade
+// because it is only relaunched when it has stopped serving one.
+func answersFor(st Status, workspace string) bool {
+	return st.Workspace == "" || st.Workspace == workspace
+}
+
 // Query asks a workspace's chat process what it is doing. A missing or refused
 // socket means no chat is running, which is not an error worth reporting.
-func Query(path string) (Status, bool) {
+//
+// A socket answering for a different workspace is treated the same way. Two
+// workspaces can be handed the same path — see SocketPath — and reading the
+// wrong chat's status is worse than reading none: the row would show another
+// branch's agent as its own, and every key acting on it would be aimed there.
+func Query(path, workspace string) (Status, bool) {
 	conn, err := net.DialTimeout("unix", path, dialTimeout)
 	if err != nil {
 		return Status{}, false
@@ -205,11 +314,18 @@ func Query(path string) (Status, bool) {
 	if err := json.NewDecoder(conn).Decode(&st); err != nil {
 		return Status{}, false
 	}
+	if !answersFor(st, workspace) {
+		return Status{}, false
+	}
 	return st, true
 }
 
 // Send issues one command to a workspace's chat process.
-func Send(path string, cmd Command) error {
+//
+// workspace is who the caller believes is listening, checked against the
+// greeting before anything is sent. A prompt is a thing an agent will act on
+// in a worktree, so delivering one to the wrong chat is not a display bug.
+func Send(path, workspace string, cmd Command) error {
 	conn, err := net.DialTimeout("unix", path, dialTimeout)
 	if err != nil {
 		return err
@@ -223,7 +339,14 @@ func Send(path string, cmd Command) error {
 	dec := json.NewDecoder(conn)
 	var st Status
 	_ = dec.Decode(&st) // greeting
+	if !answersFor(st, workspace) {
+		return fmt.Errorf("the chat listening for %s answers for %q", workspace, st.Workspace)
+	}
 
+	// Stamped here rather than by the caller: every sender would otherwise have
+	// to remember, and the one that forgot would look like a chat from before
+	// the field existed.
+	cmd.Protocol = ProtocolVersion
 	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
 		return err
 	}

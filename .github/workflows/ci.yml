@@ -5,32 +5,293 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # release.yml calls this workflow so a tag cannot publish something main
+  # would have rejected.
+  workflow_call:
 
+# Least privilege by default. Only the jobs that need more say so, and none
+# currently do — nothing here writes to the repo.
+permissions:
+  contents: read
+
+# A push that lands while the previous one is still building supersedes it.
+# Only cancel on pull requests: a superseded main build would leave the branch
+# with no green run at all.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every action is pinned to a commit SHA, not a tag. Tags are mutable: whoever
+# controls the action repo can repoint v5 at new code and it runs with this
+# repo's token. Dependabot keeps the pins current (.github/dependabot.yml).
 jobs:
   lint:
+    name: Lint and module hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v8
+
+      - name: Toolchain matches the go.mod pin
+        run: ./scripts/check-toolchain.sh
+
+      - name: go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy — run 'go mod tidy' and commit the result"
+            exit 1
+          fi
+
+      - name: Dependencies match their checksums
+        run: go mod verify
+
+      - name: Resolve the pinned golangci-lint version
+        id: lintver
+        run: echo "version=v$(tr -d '[:space:]' < .golangci-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
-          version: v2.12.2
-      - run: go tool govulncheck ./...
-      - name: deadcode
+          version: ${{ steps.lintver.outputs.version }}
+
+      - name: No code unreachable from the binary
         run: |
           out=$(go tool deadcode ./cmd/opentree)
           if [ -n "$out" ]; then
+            echo "::error::unreachable code — delete it or wire it up"
             echo "$out"
             exit 1
           fi
 
   test:
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One OS failing should not hide the other's result — that is the whole
+      # point of testing both.
+      fail-fast: false
+      matrix:
+        # opentree drives tmux, the clipboard and desktop notifications, and
+        # every one of those is a different implementation per platform. Testing
+        # only Linux left the entire macOS half of pkg/notify, pkg/chat and
+        # pkg/tui unexercised, on what is the more common platform for its users.
+        os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go test ./...
+
+      # Roughly a third of the suite is integration tests that shell out. If the
+      # tool is absent they skip themselves and the run is still green, so the
+      # tools are installed deliberately and their absence is checked for below.
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew list tmux >/dev/null 2>&1 || brew install tmux
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends tmux
+          fi
+
+      - name: Integration tools are present
+        run: |
+          fail=0
+          # git, tmux and gh are what the integration tests shell out to; jq
+          # renders the -json test stream below. Both runner images ship all
+          # four, but "the image changed" should read as that, not as a broken
+          # test step or — worse — a suite that quietly skipped itself.
+          for tool in git tmux gh jq; do
+            # tmux answers -V and rejects --version, and printing its usage
+            # error here defeats the point of the step: an image whose tmux
+            # changed under us should say so in this line. A case rather than
+            # a && , which under the `bash -e` these steps run as is a way to
+            # end the job on the first tool that is not tmux.
+            case "$tool" in
+              tmux) flag=-V ;;
+              *)    flag=--version ;;
+            esac
+            if path=$(command -v "$tool"); then
+              printf '  %-5s %s (%s)\n' "$tool" "$path" "$("$tool" "$flag" 2>&1 | head -1)"
+            else
+              echo "::error::$tool is not installed on this runner"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # git's own identity, not the repo's: worktree tests commit, and a runner
+      # has no global user.name.
+      - name: Configure git for the worktree tests
+        run: |
+          git config --global user.name  "opentree ci"
+          git config --global user.email "ci@opentree.invalid"
+          git config --global init.defaultBranch main
+
+      - name: Build every package
+        run: go build ./...
+
+      - name: Test
+        env:
+          # tmux integration tests create real sessions; keep them off any
+          # server a previous job left behind.
+          TMUX: ""
+          # Runners ship gh but leave it logged out, so pkg/github's tests hit
+          # their auth gate and skip — the binary-presence check above passes and
+          # the package goes untested anyway. The job's own token authenticates
+          # gh far enough for `gh auth status` and read-only PR/issue queries.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          # -race because the TUI runs bubbletea's event loop alongside ACP
+          # readers and tmux pollers. -shuffle because a suite that only passes
+          # in declaration order is a suite with hidden shared state.
+          go test ./... \
+            -race \
+            -shuffle=on \
+            -timeout=20m \
+            -covermode=atomic \
+            -coverprofile=coverage.out \
+            -json \
+            | tee test-output.json \
+            | jq -rj 'select(.Action == "output") | .Output'
+
+      - name: No test skipped for a missing tool
+        if: ${{ !cancelled() }}
+        run: ./scripts/check-skips.sh test-output.json
+
+      - name: Coverage floor
+        # One platform decides the number, or the floor has to track whichever
+        # OS happens to cover less.
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/check-coverage.sh coverage.out
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: test-results-${{ matrix.os }}
+          path: |
+            coverage.out
+            test-output.json
+          retention-days: 7
+
+  build:
+    name: Cross-compile release targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # A tag is the worst moment to discover that a GOOS-specific file does not
+      # compile. goreleaser builds these four; so does this, on every PR.
+      - name: Build all four release targets
+        run: |
+          fail=0
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*}; arch=${target#*/}
+            echo "--- $os/$arch"
+            if ! GOOS=$os GOARCH=$arch go build -o /dev/null ./cmd/opentree; then
+              echo "::error::build failed for $os/$arch"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Vet every target's platform-specific code
+        run: |
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*}; arch=${target#*/}
+            GOOS=$os GOARCH=$arch go vet ./... || exit 1
+          done
+
+      # cmd/opentree is 0% covered: command wiring is all init() and flag
+      # registration, which unit tests do not reach and cobra panics over at
+      # process start. This walks the whole command tree in the real binary.
+      - name: Smoke-test the binary
+        run: |
+          go build -o opentree ./cmd/opentree
+          ./scripts/smoke.sh ./opentree
+
+  vuln:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go tool govulncheck ./...
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks scans history, so it needs history.
+          fetch-depth: 0
+      # GitHub's own push protection already blocks known provider tokens.
+      # gitleaks adds the generic high-entropy patterns that protection does not
+      # cover — and opentree handles gh tokens and agent credentials.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-config:
+    name: Release configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Everything below is only ever exercised by a tag push, where a mistake
+      # is published and immutable. Check it on every PR instead.
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          args: check
+
+      - name: npm packages are consistent and publishable
+        run: ./scripts/check-npm-packages.sh
+
+      - name: Shell scripts are sound
+        run: |
+          # Every tracked shell script, not a hand-maintained list — the release
+          # path is mostly shell, and an unquoted variable there costs a version.
+          git ls-files '*.sh' .githooks | xargs shellcheck --severity=warning
+
+      - name: Workflows are valid
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+
+  # One job for branch protection to require. Matrix jobs get generated names
+  # that protection rules cannot match reliably, and a required check that
+  # silently stops existing is a required check that always passes.
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [lint, test, build, vuln, secrets, release-config]
+    steps:
+      - name: Every job succeeded
+        # Through env rather than interpolated into the script. These particular
+        # values are only ever success/failure/cancelled/skipped, but a `${{ }}`
+        # spliced straight into a shell body is the shape of the bug, and the
+        # shape is what gets copied into the next workflow.
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a required job did not succeed"
+              exit 1
+            fi
+          done

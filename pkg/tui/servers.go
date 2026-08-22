@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,6 +29,36 @@ import (
 // rows are the workspaces the dashboard already loaded.
 type serversTab struct {
 	cursor int
+}
+
+// serverRows is the tab's row order: every workspace, by name.
+//
+// By name and not by m.sortMode. The workspace list's sort is the user's
+// choice about the workspace list, and sorting by activity there would have
+// rows here reordering themselves as agents worked — which is the same defect
+// this fixes, arrived at deliberately. Not the filtered list either: the
+// filter query belongs to the Workspaces tab and persists across tabs, so a
+// filter typed there would silently hide servers here.
+//
+// The keys and the view both go through this. They used to index m.workspaces
+// directly, which comes from ranging a map, so the row the cursor highlighted
+// and the row s/x/r acted on could be different workspaces — and would
+// re-randomise on every ten-second refresh.
+func (m Model) serverRows() []WorkspaceItem {
+	rows := make([]WorkspaceItem, len(m.workspaces))
+	copy(rows, m.workspaces)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows
+}
+
+// currentServerName is the workspace under the Servers cursor, for re-finding
+// it after a refresh has changed what the rows are.
+func (m Model) currentServerName() string {
+	rows := m.serverRows()
+	if len(rows) == 0 || m.serversTab.cursor >= len(rows) {
+		return ""
+	}
+	return rows[m.serversTab.cursor].Name
 }
 
 // serverState is what a row says a workspace's server is doing.
@@ -78,7 +109,7 @@ func (m Model) serverURL(ws WorkspaceItem) string {
 // keyspace, so s/x/r mean start, stop and restart here without arguing with
 // what they mean on the workspace list.
 func (m Model) updateServers(msg tea.KeyMsg) (Model, tea.Cmd) {
-	rows := m.workspaces
+	rows := m.serverRows()
 	if pickerMove(msg.String(), &m.serversTab.cursor, len(rows)) {
 		return m, nil
 	}
@@ -163,7 +194,8 @@ func (m Model) serversView() string {
 		return appStyle.Render(s.String())
 	}
 
-	if len(m.workspaces) == 0 {
+	rows := m.serverRows()
+	if len(rows) == 0 {
 		s.WriteString(itemStyle.Render("No workspaces yet.") + "\n")
 		s.WriteString(diffStyle.Render("  Create one with 'n' on the Workspaces tab.") + "\n")
 		s.WriteString("\n" + m.toastLine() + "\n")
@@ -171,7 +203,7 @@ func (m Model) serversView() string {
 		return appStyle.Render(s.String())
 	}
 
-	for i, ws := range m.workspaces {
+	for i, ws := range rows {
 		s.WriteString(m.renderServerRow(ws, i == m.serversTab.cursor))
 	}
 	if note := m.portlessNote(); note != "" {

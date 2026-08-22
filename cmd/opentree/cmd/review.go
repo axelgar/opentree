@@ -52,7 +52,7 @@ workspace to have an open PR on GitHub.`,
 
 		// The chat refuses a prompt it cannot honour — mid-turn, or not running
 		// at all — so reaching here means the agent really has the comments.
-		if err := chat.Send(chat.SocketPath(repoRoot, branchName), chat.Command{
+		if err := chat.Send(chat.SocketPath(repoRoot, branchName), branchName, chat.Command{
 			Type: chat.CommandPrompt, Text: github.FormatReviewsPrompt(comments),
 		}); err != nil {
 			return fmt.Errorf("failed to send reviews to %s: %w", branchName, err)

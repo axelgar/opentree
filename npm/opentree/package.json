@@ -12,7 +12,9 @@
     "opentree": "bin/opentree"
   },
   "files": [
-    "bin/opentree"
+    "bin/opentree",
+    "LICENSE",
+    "NOTICE"
   ],
   "optionalDependencies": {
     "@axelgar/opentree-linux-x64": "0.0.0",

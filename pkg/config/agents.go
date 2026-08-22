@@ -59,6 +59,15 @@ type ACPSpec struct {
 	// separate program. Empty when the agent serves ACP itself.
 	Package string
 
+	// Version pins that package. Without it the install resolves whatever npm
+	// calls latest at the moment the user says yes, so two machines set up a
+	// fortnight apart end up on different adapters and neither user can say
+	// which — and a bad release reaches everyone who installs that day. The
+	// version belongs here instead, where raising it is a reviewed change with
+	// a commit behind it, and where the user can be shown what they are about
+	// to fetch.
+	Version string
+
 	// InstallSize is what the user is agreeing to download, stated because it
 	// is large enough to matter on a slow connection.
 	InstallSize string
@@ -190,12 +199,18 @@ var PredefinedAgents = []PredefinedAgent{
 				"  ▘▘ ▝▝",
 			}},
 		// Claude Code has no ACP mode of its own; claude-agent-acp bridges it,
-		// reusing the same login. Install with
-		// `npm i -g @agentclientprotocol/claude-agent-acp`.
+		// reusing the same login. `opentree agents setup claude` fetches it.
+		//
+		// The version is pinned rather than floating because the adapter
+		// releases often: an install that resolves `latest` changes the wire
+		// opentree talks to without anything here changing. Raising it is a
+		// deliberate edit — read the adapter's release notes, then re-run the
+		// pkg/acp tests, whose fixtures were recorded against 0.66.0.
 		ACP: ACPSpec{
 			Command:     "claude-agent-acp",
 			Package:     "@agentclientprotocol/claude-agent-acp",
-			InstallSize: "303MB",
+			Version:     "0.69.0",
+			InstallSize: "340MB",
 			AuthCommand: []string{"auth", "login"},
 		},
 		Skills: SkillsSpec{
@@ -322,8 +337,8 @@ func (a PredefinedAgent) ACPArgs(worktree string) []string {
 func FindAgent(name string) *PredefinedAgent {
 	lower := strings.ToLower(name)
 	for i := range PredefinedAgents {
-		if strings.ToLower(PredefinedAgents[i].Name) == lower ||
-			strings.ToLower(PredefinedAgents[i].Command) == lower {
+		if strings.EqualFold(PredefinedAgents[i].Name, lower) ||
+			strings.EqualFold(PredefinedAgents[i].Command, lower) {
 			return &PredefinedAgents[i]
 		}
 	}

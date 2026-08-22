@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 const (
@@ -14,9 +16,13 @@ const (
 	dialogPadding = 2
 )
 
+// The two borders a card can wear. Typed as the interface rather than as a
+// concrete colour because they are not the same kind: the accent adapts to the
+// terminal's background, and the danger red is the terminal's own palette entry
+// in whatever theme its owner chose.
 var (
-	dialogAccent = lipgloss.Color("#F4A261")
-	dialogDanger = lipgloss.Color("196")
+	dialogAccent lipgloss.TerminalColor = ui.Accent
+	dialogDanger lipgloss.TerminalColor = ui.Danger
 )
 
 // dialogCard is the one shape every takeover dialog wears: a rounded card,
@@ -27,7 +33,7 @@ var (
 // nothing like answering "delete that?".
 //
 // The delete dialog keeps its red border; everything else is the accent.
-func (m Model) dialogCard(title, body, footer string, border lipgloss.Color) string {
+func (m Model) dialogCard(title, body, footer string, border lipgloss.TerminalColor) string {
 	// A destructive card wears its border colour in the chip too: the border is
 	// two lines away from the sentence that says what will be removed.
 	chip := titleStyle
