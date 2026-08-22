@@ -52,7 +52,7 @@ jobs:
         id: lintver
         run: echo "version=v$(tr -d '[:space:]' < .golangci-version)" >> "$GITHUB_OUTPUT"
 
-      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: ${{ steps.lintver.outputs.version }}
 
@@ -238,7 +238,7 @@ jobs:
       # GitHub's own push protection already blocks known provider tokens.
       # gitleaks adds the generic high-entropy patterns that protection does not
       # cover — and opentree handles gh tokens and agent credentials.
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
