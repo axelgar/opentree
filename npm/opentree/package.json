@@ -17,7 +17,7 @@
     "NOTICE"
   ],
   "optionalDependencies": {
-    "@axelgar/opentree-linux-x64": "0.0.0",
+    "@axelgar/opentree-linux-x64": "1.0.2",
     "@axelgar/opentree-linux-arm64": "0.0.0",
     "@axelgar/opentree-darwin-x64": "0.0.0",
     "@axelgar/opentree-darwin-arm64": "0.0.0"
