@@ -150,13 +150,16 @@ jobs:
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          # The npm registry is read-through-cached; give it a moment to serve
-          # what we just wrote before declaring the release good.
-          for attempt in 1 2 3 4 5 6; do
-            if npm view "@axelgar/opentree@$VERSION" version >/dev/null 2>&1; then break; fi
-            echo "waiting for the registry to serve $VERSION (attempt $attempt)"
-            sleep 10
-          done
+          # No waiting here. npm-publish.sh does not return until the registry
+          # serves every package it published, which is the guarantee this step
+          # needs and cannot establish for itself.
+          #
+          # It used to poll for the launcher alone, for sixty seconds, and then
+          # install. That is the race that made v1.1.0 look like a failed
+          # release: the launcher was servable and its linux-x64 dependency was
+          # not, so npm skipped an optional dependency it could not resolve and
+          # the binary was simply absent. The release was fine fifteen minutes
+          # later; the report of it was not.
           tmp=$(mktemp -d)
           npm install --prefix "$tmp" "@axelgar/opentree@$VERSION"
           got=$("$tmp/node_modules/.bin/opentree" --version)
