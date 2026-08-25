@@ -40,5 +40,16 @@ updates:
     directory: /npm/opentree
     schedule:
       interval: monthly
+    # The launcher's optionalDependencies name this repo's own platform
+    # packages, pinned at 0.0.0. That is a placeholder, not a stale version:
+    # npm-publish.sh rewrites all four to the release version together, and
+    # check-npm-packages.sh then refuses to publish unless they match. To
+    # dependabot they look like ordinary dependencies, so it opens a PR per
+    # package bumping one of the four to whatever the registry serves — churn
+    # the publish overwrites anyway, and which CI cannot catch, because
+    # check-npm-packages.sh only enforces the pin when handed an expected
+    # version and CI calls it without one.
+    ignore:
+      - dependency-name: "@axelgar/opentree-*"
     commit-message:
       prefix: "deps"
