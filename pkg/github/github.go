@@ -629,6 +629,30 @@ type rollupCheck struct {
 	State      string `json:"state"`
 }
 
+// checkFailed is the one vocabulary of failure, shared between the one-word
+// rollup and the detailed fetch so the badge and the forwarded failure can
+// never disagree about what failed.
+func checkFailed(conclusion, state string) bool {
+	switch strings.ToUpper(conclusion) {
+	case "FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "STARTUP_FAILURE":
+		return true
+	}
+	switch strings.ToUpper(state) {
+	case "FAILURE", "ERROR":
+		return true
+	}
+	return false
+}
+
+// checkPassed is the other half; what is neither is still running.
+func checkPassed(conclusion, state string) bool {
+	switch strings.ToUpper(conclusion) {
+	case "SUCCESS", "NEUTRAL", "SKIPPED":
+		return true
+	}
+	return strings.EqualFold(state, "SUCCESS")
+}
+
 // deriveCIStatus folds a status rollup into "success", "failure", "pending",
 // or "" (no checks). Anything unrecognized counts as pending, never success:
 // a false green on CI is worse than a lingering yellow.
@@ -638,16 +662,10 @@ func deriveCIStatus(checks []rollupCheck) string {
 	}
 	status := "success"
 	for _, check := range checks {
-		switch strings.ToUpper(check.Conclusion) {
-		case "FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "STARTUP_FAILURE":
+		if checkFailed(check.Conclusion, check.State) {
 			return "failure"
-		case "SUCCESS", "NEUTRAL", "SKIPPED":
-			continue
 		}
-		switch strings.ToUpper(check.State) {
-		case "FAILURE", "ERROR":
-			return "failure"
-		case "SUCCESS":
+		if checkPassed(check.Conclusion, check.State) {
 			continue
 		}
 		// Not conclusively finished: in-progress/queued/waiting check runs,
