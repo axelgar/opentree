@@ -92,6 +92,16 @@ type Workspace struct {
 	// same polarity argument AdoptedBranch makes.
 	Autopilot bool `json:"autopilot,omitempty"`
 
+	// AutopilotCISha and AutopilotReviewsFp are the loop's watermarks: the
+	// head commit whose CI failure was already forwarded to the agent, and the
+	// fingerprint of the review-comment set that was. Persisted rather than
+	// held in the chat because the poll must not re-send the same failure
+	// after a window closes and reopens — and advanced only at the moment a
+	// prompt is actually sent, so a chat that dies holding one re-fetches
+	// rather than losing it.
+	AutopilotCISha     string `json:"autopilot_ci_sha,omitempty"`
+	AutopilotReviewsFp string `json:"autopilot_reviews_fp,omitempty"`
+
 	// SetupAt and SetupHash are the project's bootstrap commands, as this
 	// worktree last ran them. The hash is what earns the pair its keep: a chat
 	// starts many times per workspace — losing a window relaunches one — so

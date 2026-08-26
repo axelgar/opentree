@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/bootstrap"
+	"github.com/axelgar/opentree/pkg/diag"
 	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/ui"
 )
@@ -77,6 +79,27 @@ type Autopilot struct {
 	// Persist writes the toggle to state.json, so the next chat window starts
 	// with the answer.
 	Persist func(on bool) error
+
+	// PRURL is the workspace's PR as state.json last knew it, so a chat
+	// reopened after a publish keeps watching the PR it made. The loop's own
+	// publishes update the live copy.
+	PRURL string
+
+	// Poll asks GitHub what is new on the PR — a CI failure not yet forwarded,
+	// review comments not yet forwarded — and how to mark each as forwarded.
+	// Nil polls nothing.
+	Poll func() (*PollUpdate, error)
+}
+
+// PollUpdate is one poll's answer: at most one CI prompt and one reviews
+// prompt, each with the watermark write that marks it forwarded. The Acks run
+// only at the moment the prompt is actually sent — a chat that dies holding
+// one must re-fetch, not lose it.
+type PollUpdate struct {
+	CIPrompt      string
+	ReviewsPrompt string
+	AckCI         func() error
+	AckReviews    func() error
 }
 
 // PublishOutcome mirrors workspace.PublishOutcome without importing it: what
@@ -143,6 +166,16 @@ type autoPhase struct {
 	// dispatch's success signal.
 	published bool
 
+	// pendingCI and pendingReviews are what the poll found, waiting for the
+	// agent to be free. One coalescing slot each, latest wins: a newer CI
+	// failure supersedes an older one, and the review set is re-fetched whole.
+	// Deliberately not m.queued — a human's prompt must never be refused
+	// because the loop got there first.
+	pendingCI         string
+	pendingCIAck      func() error
+	pendingReviews    string
+	pendingReviewsAck func() error
+
 	err error
 }
 
@@ -187,6 +220,14 @@ type checkDoneMsg struct {
 // publishDoneMsg ends the publishing stage.
 type publishDoneMsg struct {
 	out PublishOutcome
+	err error
+}
+
+// autoTickMsg is the poll's clock; autoPollResultMsg is what one poll found.
+type autoTickMsg struct{}
+
+type autoPollResultMsg struct {
+	upd *PollUpdate
 	err error
 }
 
@@ -341,7 +382,108 @@ func (m Model) finishPublish(msg publishDoneMsg) (tea.Model, tea.Cmd) {
 			Detail:    msg.out.PRURL,
 		})
 	}
-	return m.relayout(), nil
+
+	// The loop has settled and there is a PR now: start watching it, and hand
+	// the agent whatever the watch already found.
+	m = m.relayout()
+	m, poll := m.startAutoPoll()
+	next, drain := m.drainAutopilot()
+	return next, tea.Batch(poll, drain)
+}
+
+// autopilotPollInterval is how often the loop asks GitHub what is new on the
+// PR. Generous on purpose: each poll is two gh calls and a GraphQL query, per
+// workspace, and CI takes minutes to say anything new anyway.
+const autopilotPollInterval = 2 * time.Minute
+
+// autoPollTick is the next beat of the poll's clock.
+func autoPollTick() tea.Cmd {
+	return tea.Tick(autopilotPollInterval, func(time.Time) tea.Msg { return autoTickMsg{} })
+}
+
+// startAutoPoll begins the tick chain if there is anything to watch and no
+// chain is already running — the same self-sustaining-chain guard the spinner
+// uses, for the same reason: two chains is polling at twice the rate forever.
+func (m Model) startAutoPoll() (Model, tea.Cmd) {
+	if m.autoPolling || !m.auto.enabled() || m.auto.spec.Poll == nil || m.auto.prURL == "" {
+		return m, nil
+	}
+	m.autoPolling = true
+	return m, autoPollTick()
+}
+
+// handleAutoTick is one beat: re-arm, and fetch unless the answer could not be
+// acted on anyway.
+func (m Model) handleAutoTick() (tea.Model, tea.Cmd) {
+	if !m.auto.enabled() || m.auto.spec.Poll == nil || m.auto.prURL == "" {
+		// The chain ends here, so whatever re-enables the loop has to be free
+		// to start a fresh one.
+		m.autoPolling = false
+		return m, nil
+	}
+	m.autoPolling = true
+	if m.turn || m.auto.active() {
+		// Mid-turn the drain would wait anyway; fetching now would only buy a
+		// staler answer. The chain keeps beating.
+		return m, autoPollTick()
+	}
+	poll := m.auto.spec.Poll
+	fetch := func() tea.Msg {
+		upd, err := poll()
+		return autoPollResultMsg{upd: upd, err: err}
+	}
+	return m, tea.Batch(fetch, autoPollTick())
+}
+
+// handleAutoPollResult folds what a poll found into the pending slots and
+// drains if nothing is in the way.
+func (m Model) handleAutoPollResult(msg autoPollResultMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		// Rate limits and offline moments retry themselves next tick; the
+		// error log is for failures somebody must act on, and this is not one.
+		diag.Log("chat", "autopilot poll failed", "workspace", m.opts.Workspace, "err", msg.err)
+	}
+	if msg.upd == nil {
+		return m, nil
+	}
+	if msg.upd.CIPrompt != "" {
+		m.auto.pendingCI, m.auto.pendingCIAck = msg.upd.CIPrompt, msg.upd.AckCI
+	}
+	if msg.upd.ReviewsPrompt != "" {
+		m.auto.pendingReviews, m.auto.pendingReviewsAck = msg.upd.ReviewsPrompt, msg.upd.AckReviews
+	}
+	return m.drainAutopilot()
+}
+
+// drainAutopilot sends one pending item to the agent, CI before reviews —
+// broken code outranks style feedback — and only when nothing outranks the
+// loop: a running turn, a pending permission, a human's queued prompt, a halt.
+// One item per turn, so each answer lands as its own conversation entry and
+// the turn it starts re-runs the check like any other.
+func (m Model) drainAutopilot() (tea.Model, tea.Cmd) {
+	if !m.auto.enabled() || m.auto.stage != autoIdle || m.turn || m.dead ||
+		m.perm() != nil || m.queued != "" || m.sessionID == "" {
+		return m, nil
+	}
+	text, ack := m.auto.pendingCI, m.auto.pendingCIAck
+	if text != "" {
+		m.auto.pendingCI, m.auto.pendingCIAck = "", nil
+	} else {
+		text, ack = m.auto.pendingReviews, m.auto.pendingReviewsAck
+		if text == "" {
+			return m, nil
+		}
+		m.auto.pendingReviews, m.auto.pendingReviewsAck = "", nil
+	}
+	// Marked forwarded at the moment of sending, not of fetching: an ack that
+	// fails only costs a duplicate later, where the reverse order would lose
+	// feedback a dying chat never delivered.
+	if ack != nil {
+		if err := ack(); err != nil {
+			m = m.appendNotice("could not record the forwarded feedback: " + err.Error())
+		}
+	}
+	return m.startTurn(text, autopilotFed)
 }
 
 // setAutopilot flips the loop on or off, persisting the answer. It is the one
@@ -377,7 +519,8 @@ func (m Model) toggleAutopilot() (tea.Model, tea.Cmd) {
 	if reason != "" {
 		next = next.appendNotice(reason)
 	}
-	return next.relayout(), nil
+	next, poll := next.startAutoPoll()
+	return next.relayout(), poll
 }
 
 // canToggleAutopilot gates the slash command on the chat being wired for it.

@@ -279,3 +279,114 @@ func TestAutopilot_StatusCarriesTheLoop(t *testing.T) {
 		t.Error("a chat with the loop off should publish no Autopilot field at all")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase B: polling and drains
+// ---------------------------------------------------------------------------
+
+func TestAutopilot_PollResultsDrainCIBeforeReviews(t *testing.T) {
+	rec := &autopilotRecorder{}
+	m := autopilotModel(rec)
+	var ackedCI, ackedReviews bool
+
+	m2, _ := applyUpdate(m, autoPollResultMsg{upd: &PollUpdate{
+		CIPrompt:      "CI is failing: TestThing",
+		ReviewsPrompt: "please rename this",
+		AckCI:         func() error { ackedCI = true; return nil },
+		AckReviews:    func() error { ackedReviews = true; return nil },
+	}})
+	m = m2
+
+	// The CI failure went first — broken code outranks style feedback — and
+	// only its watermark advanced.
+	if !m.turn {
+		t.Fatal("nothing was sent")
+	}
+	last := m.entries[len(m.entries)-1]
+	if last.text != "CI is failing: TestThing" {
+		t.Fatalf("sent %q, want the CI failure first", last.text)
+	}
+	if !ackedCI || ackedReviews {
+		t.Errorf("acks = ci:%v reviews:%v, want only the sent item marked forwarded", ackedCI, ackedReviews)
+	}
+	if m.auto.pendingReviews == "" {
+		t.Error("the reviews should still be waiting their turn")
+	}
+
+	// The reviews drain when the loop next settles — here, after a publish.
+	m.turn = false
+	m, _ = applyUpdate(m, publishDoneMsg{out: PublishOutcome{PRURL: "u"}})
+	last = m.entries[len(m.entries)-1]
+	if !m.turn || last.text != "please rename this" {
+		t.Errorf("after settling, sent %q, want the reviews", last.text)
+	}
+	if !ackedReviews {
+		t.Error("the reviews ack never ran")
+	}
+}
+
+func TestAutopilot_PendingWaitsWhileTheAgentWorks(t *testing.T) {
+	m := autopilotModel(&autopilotRecorder{})
+	m.turn = true
+
+	m, _ = applyUpdate(m, autoPollResultMsg{upd: &PollUpdate{CIPrompt: "red"}})
+	if m.auto.pendingCI != "red" {
+		t.Fatal("the finding should wait in its slot")
+	}
+	if last := m.entries; len(last) != 0 {
+		t.Error("nothing should have been sent mid-turn")
+	}
+}
+
+func TestAutopilot_PendingCoalescesLatestWins(t *testing.T) {
+	m := autopilotModel(&autopilotRecorder{})
+	m.turn = true // hold the drain so the slots are observable
+
+	m, _ = applyUpdate(m, autoPollResultMsg{upd: &PollUpdate{CIPrompt: "older failure"}})
+	m, _ = applyUpdate(m, autoPollResultMsg{upd: &PollUpdate{CIPrompt: "newer failure"}})
+	if m.auto.pendingCI != "newer failure" {
+		t.Errorf("pendingCI = %q, want the newer finding — the older one is stale news about the same PR", m.auto.pendingCI)
+	}
+}
+
+func TestAutopilot_TickChainStopsWhenTheLoopIsOff(t *testing.T) {
+	m := autopilotModel(&autopilotRecorder{})
+	m.auto.spec.Poll = func() (*PollUpdate, error) { return nil, nil }
+	m.auto.prURL = "https://github.com/acme/repo/pull/1"
+	m.autoPolling = true
+
+	m.auto.stage = autoOff
+	m2, cmd := applyUpdate(m, autoTickMsg{})
+	m = m2
+	if m.autoPolling {
+		t.Error("the chain should end with the loop off")
+	}
+	if cmd != nil {
+		t.Error("an ended chain must not re-arm")
+	}
+
+	// And whatever re-enables the loop is free to start a fresh one.
+	m.auto.stage = autoIdle
+	m, cmd = m.startAutoPoll()
+	if !m.autoPolling || cmd == nil {
+		t.Error("startAutoPoll should begin a fresh chain once conditions return")
+	}
+}
+
+func TestAutopilot_StartAutoPollNeedsAPRAndNoRunningChain(t *testing.T) {
+	m := autopilotModel(&autopilotRecorder{})
+	m.auto.spec.Poll = func() (*PollUpdate, error) { return nil, nil }
+
+	if m2, cmd := m.startAutoPoll(); cmd != nil || m2.autoPolling {
+		t.Error("no PR to watch, nothing to poll")
+	}
+
+	m.auto.prURL = "u"
+	m2, cmd := m.startAutoPoll()
+	if cmd == nil || !m2.autoPolling {
+		t.Fatal("a PR and a poller should start the chain")
+	}
+	if _, cmd := m2.startAutoPoll(); cmd != nil {
+		t.Error("a second chain must never start beside a running one")
+	}
+}

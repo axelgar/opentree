@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/diag"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/state"
@@ -189,6 +191,63 @@ func autopilotSpec(repoRoot string, store *state.Store, ws *state.Workspace) cha
 				return nil
 			})
 		},
+		PRURL: ws.PRURL,
+		Poll:  autopilotPoll(store, name),
+	}
+}
+
+// autopilotPoll is one look at the workspace's PR: a CI failure not yet
+// forwarded, review comments not yet forwarded, each with the watermark write
+// that marks it so. The watermarks live in state.json rather than the chat
+// because a reopened window must not re-send what the last one already did.
+func autopilotPoll(store *state.Store, name string) func() (*chat.PollUpdate, error) {
+	return func() (*chat.PollUpdate, error) {
+		// Re-read from disk every poll: another process — a publish, the
+		// dashboard's status poll — writes this record between beats, and the
+		// in-memory snapshot does not see it.
+		if err := store.Load(); err != nil {
+			return nil, err
+		}
+		ws, err := store.GetWorkspace(name)
+		if err != nil {
+			return nil, err
+		}
+		if ws.PRURL == "" {
+			return nil, nil
+		}
+
+		gh := github.New()
+		upd := &chat.PollUpdate{}
+
+		sha, failures, ciErr := gh.FetchFailingChecks(ws.Branch, ws.WorktreeDir)
+		if ciErr == nil && sha != "" && sha != ws.AutopilotCISha && len(failures) > 0 {
+			upd.CIPrompt = github.FormatCIPrompt(failures)
+			upd.AckCI = func() error {
+				return store.Update(name, func(w *state.Workspace) error {
+					w.AutopilotCISha = sha
+					return nil
+				})
+			}
+		}
+
+		comments, revErr := gh.FetchPRReviews(ws.Branch)
+		// The same partial-results rule as `opentree review`: top-level
+		// reviews with a failed thread fetch are still worth forwarding.
+		if revErr == nil || len(comments) > 0 {
+			if fp := github.ReviewsFingerprint(comments); fp != "" && fp != ws.AutopilotReviewsFp {
+				upd.ReviewsPrompt = github.FormatReviewsPrompt(comments)
+				upd.AckReviews = func() error {
+					return store.Update(name, func(w *state.Workspace) error {
+						w.AutopilotReviewsFp = fp
+						return nil
+					})
+				}
+			}
+		}
+
+		// Partial answers travel with the errors: what was fetched is usable,
+		// and the chat logs the rest for the next beat to retry.
+		return upd, errors.Join(ciErr, revErr)
 	}
 }
 

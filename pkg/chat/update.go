@@ -252,6 +252,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case publishDoneMsg:
 		return m.finishPublish(msg)
 
+	case autoTickMsg:
+		return m.handleAutoTick()
+
+	case autoPollResultMsg:
+		return m.handleAutoPollResult(msg)
+
 	case setupBeginMsg:
 		return m.beginSetup()
 
@@ -805,7 +811,10 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 			if reason != "" {
 				return m, nil, Result{Reason: reason}
 			}
-			return next.relayout(), nil, Result{OK: true}
+			// A PR may already exist to watch; startAutoPoll is a no-op when
+			// there is nothing to do or a chain is already beating.
+			next, poll := next.startAutoPoll()
+			return next.relayout(), poll, Result{OK: true}
 		}
 		return m, nil, Result{Reason: `autopilot takes "on" or "off"`}
 	}

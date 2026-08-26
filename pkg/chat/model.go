@@ -201,8 +201,15 @@ func Run(ctx context.Context, opts Options) error {
 	m.send = send
 	m.setup.spec = opts.Setup
 	m.auto.spec = opts.Autopilot
+	m.auto.prURL = opts.Autopilot.PRURL
 	if opts.Autopilot.Enabled && opts.Autopilot.available() {
 		m.auto.stage = autoIdle
+		// A workspace that already has a PR starts watching it now; the flag
+		// is set here, where the model can still be written, and Init issues
+		// the first tick it promises.
+		if opts.Autopilot.Poll != nil && m.auto.prURL != "" {
+			m.autoPolling = true
+		}
 	}
 	m.launching = !opts.Setup.wanted()
 
@@ -481,6 +488,10 @@ type Model struct {
 	// auto is the autopilot loop: check after each turn, feed failures back,
 	// publish on green.
 	auto autoPhase
+
+	// autoPolling is whether the poll's tick chain is already on its way back
+	// — the same guard spinning is, for the same double-chain reason.
+	autoPolling bool
 
 	generation   int
 	agentVersion string
@@ -822,7 +833,11 @@ func (m Model) Init() tea.Cmd {
 		// window is drawn and answering before the handshake finishes.
 		start = m.launchCmd(true)
 	}
-	return tea.Batch(waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink)
+	cmds := []tea.Cmd{waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink}
+	if m.autoPolling {
+		cmds = append(cmds, autoPollTick())
+	}
+	return tea.Batch(cmds...)
 }
 
 // loadFilesCmd lists the worktree's tracked files for @-mention completion.

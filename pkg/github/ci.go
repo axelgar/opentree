@@ -1,9 +1,12 @@
 package github
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -125,6 +128,29 @@ func tailBounded(s string, maxLines, maxBytes int) string {
 		}
 	}
 	return s
+}
+
+// ReviewsFingerprint identifies a set of review comments exactly, for the
+// watermark that stops the same feedback being forwarded twice. Order-blind:
+// the two fetches behind FetchPRReviews give no ordering promise, and a
+// reshuffled identical set is not new feedback.
+func ReviewsFingerprint(comments []ReviewComment) string {
+	if len(comments) == 0 {
+		return ""
+	}
+	tuples := make([]string, 0, len(comments))
+	for _, c := range comments {
+		// JSON rather than a joined string, for the reason trust hashes use
+		// it: a body may contain any delimiter this could have picked.
+		b, err := json.Marshal(c)
+		if err != nil {
+			continue
+		}
+		tuples = append(tuples, string(b))
+	}
+	sort.Strings(tuples)
+	sum := sha256.Sum256([]byte(strings.Join(tuples, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // FormatCIPrompt renders failing checks as the prompt an agent receives, the
