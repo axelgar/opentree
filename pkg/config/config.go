@@ -64,13 +64,20 @@ type WorktreeConfig struct {
 //
 // It lives in the repository's own opentree.toml rather than the global one on
 // purpose: a bootstrap sequence is a property of the project, and one kept per
-// machine drifts until nobody maintains it. That also makes setup and run
-// executable code arriving with a clone, which is why they are gated by trust
-// before they run.
+// machine drifts until nobody maintains it. That also makes setup, run and
+// check executable code arriving with a clone, which is why they are gated by
+// trust before they run.
+//
+// Check is the command autopilot runs after each agent turn to decide whether
+// the work is done — typically the same thing a contributor runs before
+// pushing (`make check`, `pnpm test`). Like run, it is one command; a project
+// whose gate is several commands already has a word for that sequence in its
+// Makefile or scripts.
 type WorkspaceConfig struct {
 	Setup []string `toml:"setup"`
 	Seed  []string `toml:"seed"`
 	Run   string   `toml:"run"`
+	Check string   `toml:"check"`
 }
 
 // TmuxConfig configures tmux behavior
@@ -110,6 +117,7 @@ type ConfigSource struct {
 	WorkspaceSetup      string
 	WorkspaceSeed       string
 	WorkspaceRun        string
+	WorkspaceCheck      string
 	TmuxSessionPrefix   string
 	GitHubAutoPush      string
 	// The notify keys have no repo source to report: LoadWithSources strips
@@ -275,6 +283,9 @@ func mergeInto(dst, src *Config) {
 	if src.Workspace.Run != "" {
 		dst.Workspace.Run = src.Workspace.Run
 	}
+	if src.Workspace.Check != "" {
+		dst.Workspace.Check = src.Workspace.Check
+	}
 	if src.Tmux.SessionPrefix != "" {
 		dst.Tmux.SessionPrefix = src.Tmux.SessionPrefix
 	}
@@ -299,6 +310,7 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 		WorkspaceSetup:      SourceDefault,
 		WorkspaceSeed:       SourceDefault,
 		WorkspaceRun:        SourceDefault,
+		WorkspaceCheck:      SourceDefault,
 		TmuxSessionPrefix:   SourceDefault,
 		GitHubAutoPush:      SourceDefault,
 		NotifyOn:            SourceDefault,
@@ -345,6 +357,13 @@ func computeSources(resolved, global, repo *Config) ConfigSource {
 	}
 	if repo != nil && repo.Workspace.Run != "" {
 		src.WorkspaceRun = SourceRepo
+	}
+
+	if global != nil && global.Workspace.Check != "" {
+		src.WorkspaceCheck = SourceGlobal
+	}
+	if repo != nil && repo.Workspace.Check != "" {
+		src.WorkspaceCheck = SourceRepo
 	}
 
 	if global != nil && global.Tmux.SessionPrefix != "" {

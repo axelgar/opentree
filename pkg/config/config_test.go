@@ -123,6 +123,7 @@ func TestLoad_WorkspaceBlock(t *testing.T) {
 setup = ["pnpm install --frozen-lockfile"]
 seed = [".env", ".npmrc"]
 run = "pnpm dev"
+check = "make check"
 `
 	path := filepath.Join(t.TempDir(), "opentree.toml")
 	if err := os.WriteFile(path, []byte(toml), 0644); err != nil {
@@ -141,6 +142,39 @@ run = "pnpm dev"
 	}
 	if cfg.Workspace.Run != "pnpm dev" {
 		t.Errorf("Workspace.Run = %q, want %q", cfg.Workspace.Run, "pnpm dev")
+	}
+	if cfg.Workspace.Check != "make check" {
+		t.Errorf("Workspace.Check = %q, want %q", cfg.Workspace.Check, "make check")
+	}
+}
+
+// check follows run through the merge: a repository's own check command beats a
+// global one, and the sources report says which layer won.
+func TestLoad_RepoCheckOverridesGlobal(t *testing.T) {
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	globalPath := filepath.Join(xdgDir, "opentree", "opentree.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte("[workspace]\ncheck = \"go test ./...\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoPath := filepath.Join(t.TempDir(), "opentree.toml")
+	if err := os.WriteFile(repoPath, []byte("[workspace]\ncheck = \"make check\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, sources, err := LoadWithSources(repoPath)
+	if err != nil {
+		t.Fatalf("LoadWithSources() failed: %v", err)
+	}
+	if cfg.Workspace.Check != "make check" {
+		t.Errorf("Workspace.Check = %q, want the repo's %q", cfg.Workspace.Check, "make check")
+	}
+	if sources.WorkspaceCheck != SourceRepo {
+		t.Errorf("sources.WorkspaceCheck = %q, want %q", sources.WorkspaceCheck, SourceRepo)
 	}
 }
 

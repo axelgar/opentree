@@ -468,7 +468,7 @@ opentree seed detach feat/add-dark-mode .env
 ```
 
 That can also happen by accident: tools that save by renaming over a file
-replace the link with an ordinary one. `opentree setup <branch> --check` reports
+replace the link with an ordinary one. `opentree setup <branch> --dry-run` reports
 which seeded files are still linked and which have quietly detached.
 
 ### Setting Up a Worktree
@@ -515,7 +515,7 @@ tearing down a live conversation:
 
 ```bash
 opentree setup feat/add-dark-mode           # re-seed, then run the commands here
-opentree setup feat/add-dark-mode --check   # report what is seeded and what has run
+opentree setup feat/add-dark-mode --dry-run # report what is seeded and what has run
 ```
 
 Both paths write the same marker, so a worktree prepared from the terminal is one

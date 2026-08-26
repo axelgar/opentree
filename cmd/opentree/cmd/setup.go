@@ -38,9 +38,9 @@ prepare again.
 Use it to repair a worktree whose install went wrong, or to run a setup you
 skipped, without restarting a chat and tearing down a live conversation.
 
-  opentree setup <branch>           re-seed, then run the setup commands
-  opentree setup <branch> --check   report what is seeded and what is not, and run nothing
-  opentree setup --suggest          read the project and propose a [workspace] block`,
+  opentree setup <branch>            re-seed, then run the setup commands
+  opentree setup <branch> --dry-run  report what is seeded and what is not, and run nothing
+  opentree setup --suggest           read the project and propose a [workspace] block`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if setupSuggest {
 			return suggestSetup()
@@ -60,8 +60,14 @@ skipped, without restarting a chat and tearing down a live conversation.
 }
 
 func init() {
-	SetupCmd.Flags().BoolVar(&setupCheck, "check", false,
+	SetupCmd.Flags().BoolVar(&setupCheck, "dry-run", false,
 		"report the worktree's seeded files and setup state, and change nothing")
+	// --check used to be this flag's name, before [workspace] check gave the
+	// word a second meaning here. Hidden rather than removed: a script written
+	// against the old name keeps working, and the help stops teaching it.
+	SetupCmd.Flags().BoolVar(&setupCheck, "check", false,
+		"deprecated alias for --dry-run")
+	_ = SetupCmd.Flags().MarkHidden("check")
 	SetupCmd.Flags().BoolVar(&setupSuggest, "suggest", false,
 		"read the project and print a [workspace] block to paste into opentree.toml")
 }
@@ -199,7 +205,7 @@ func checkSetup(repoRoot, worktreePath string, cfg *config.Config, ws *state.Wor
 	return nil
 }
 
-// checkLine keeps --check in two columns, so the states line up and the report
+// checkLine keeps --dry-run in two columns, so the states line up and the report
 // can be read down its left edge.
 func checkLine(state, text string) {
 	fmt.Printf("%-10s %s\n", state, text)

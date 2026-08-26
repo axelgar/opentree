@@ -24,7 +24,7 @@ to change it.
   opentree seed detach <branch> <path>   give this worktree its own copy
 
 Seeding itself happens when a workspace is created, and again on
-` + "`opentree setup <branch>`" + `, which also reports what is linked with --check.`,
+` + "`opentree setup <branch>`" + `, which also reports what is linked with --dry-run.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
