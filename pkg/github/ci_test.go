@@ -101,3 +101,23 @@ func TestFormatCIPrompt(t *testing.T) {
 		t.Error("no failures must format to nothing")
 	}
 }
+
+func TestReviewsFingerprint(t *testing.T) {
+	a := ReviewComment{Author: "sam", Body: "rename this", Path: "a.go", Line: 3}
+	b := ReviewComment{Author: "kai", Body: "add a test", Path: "b.go", Line: 9}
+
+	if ReviewsFingerprint(nil) != "" {
+		t.Error("no comments must fingerprint to nothing — \"\" is the never-forwarded watermark")
+	}
+	if ReviewsFingerprint([]ReviewComment{a, b}) != ReviewsFingerprint([]ReviewComment{b, a}) {
+		t.Error("a reshuffled identical set is not new feedback")
+	}
+	if ReviewsFingerprint([]ReviewComment{a}) == ReviewsFingerprint([]ReviewComment{a, b}) {
+		t.Error("a different set must fingerprint differently")
+	}
+	edited := a
+	edited.Body = "rename this, please"
+	if ReviewsFingerprint([]ReviewComment{a}) == ReviewsFingerprint([]ReviewComment{edited}) {
+		t.Error("an edited body is new feedback")
+	}
+}

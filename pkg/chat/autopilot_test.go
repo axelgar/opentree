@@ -390,3 +390,113 @@ func TestAutopilot_StartAutoPollNeedsAPRAndNoRunningChain(t *testing.T) {
 		t.Error("a second chain must never start beside a running one")
 	}
 }
+
+func TestAutopilot_SlashCommandToggles(t *testing.T) {
+	rec := &autopilotRecorder{}
+	m := autopilotModel(rec)
+
+	next, _ := m.toggleAutopilot()
+	m = next.(Model)
+	if m.auto.enabled() {
+		t.Fatal("/autopilot on an on loop should turn it off")
+	}
+	next, _ = m.toggleAutopilot()
+	m = next.(Model)
+	if !m.auto.enabled() {
+		t.Fatal("/autopilot again should turn it back on")
+	}
+	if len(rec.persisted) != 2 || rec.persisted[0] || !rec.persisted[1] {
+		t.Errorf("persisted = %v, want [false true]", rec.persisted)
+	}
+	if !m.canToggleAutopilot() {
+		t.Error("a wired chat should offer the command")
+	}
+	if newTestModel().canToggleAutopilot() {
+		t.Error("an unwired chat should not offer the command")
+	}
+}
+
+func TestAutopilot_CheckRunsForRealAndReportsItsVerdict(t *testing.T) {
+	// End-to-end through the real runner: the Batch afterTurn returns carries
+	// the command that runs `sh`, and its message is the verdict.
+	m := autopilotModel(&autopilotRecorder{})
+	m.opts.Cwd = t.TempDir()
+	m.auto.spec.Check = "echo not yet; exit 7"
+	m.turn = true
+
+	next, cmd := applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	m = next
+	if m.auto.stage != autoChecking || cmd == nil {
+		t.Fatalf("stage=%v cmd=%v, want the check started", m.auto.stage, cmd)
+	}
+	done, ok := runUntil[checkDoneMsg](t, cmd)
+	if !ok {
+		t.Fatal("the batch never produced the check's verdict")
+	}
+	if done.exitCode != 7 {
+		t.Errorf("exit = %d, want the command's own 7", done.exitCode)
+	}
+	if !strings.Contains(strings.Join(done.tail, "\n"), "not yet") {
+		t.Errorf("tail = %v, want the command's output", done.tail)
+	}
+}
+
+// runUntil executes a tea.Cmd tree until a message of type T appears.
+func runUntil[T tea.Msg](t *testing.T, cmd tea.Cmd) (T, bool) {
+	t.Helper()
+	var zero T
+	queue := []tea.Cmd{cmd}
+	for steps := 0; len(queue) > 0 && steps < 32; steps++ {
+		c := queue[0]
+		queue = queue[1:]
+		if c == nil {
+			continue
+		}
+		switch msg := c().(type) {
+		case T:
+			return msg, true
+		case tea.BatchMsg:
+			queue = append(queue, msg...)
+		case spinnerTickMsg:
+			// the spinner chain would tick forever; drop it
+		}
+	}
+	return zero, false
+}
+
+func TestCheckErrText(t *testing.T) {
+	if got := checkErrText(context.Canceled); got != "cancelled" {
+		t.Errorf("checkErrText(canceled) = %q, want the decision, not the signal", got)
+	}
+	if got := checkErrText(nil); got != "" {
+		t.Errorf("checkErrText(nil) = %q", got)
+	}
+}
+
+func TestAutopilot_TickSkipsFetchMidTurnButKeepsBeating(t *testing.T) {
+	polled := 0
+	m := autopilotModel(&autopilotRecorder{})
+	m.auto.spec.Poll = func() (*PollUpdate, error) { polled++; return nil, nil }
+	m.auto.prURL = "u"
+	m.autoPolling = true
+	m.turn = true
+
+	next, cmd := applyUpdate(m, autoTickMsg{})
+	m = next
+	if cmd == nil {
+		t.Fatal("the chain must keep beating through a turn")
+	}
+	if polled != 0 {
+		t.Error("no fetch mid-turn — the drain would wait anyway")
+	}
+
+	// Idle, the beat fetches: the batch carries the poll.
+	m.turn = false
+	_, cmd = applyUpdate(m, autoTickMsg{})
+	if _, ok := runUntil[autoPollResultMsg](t, cmd); !ok {
+		t.Fatal("an idle beat should fetch")
+	}
+	if polled != 1 {
+		t.Errorf("polled = %d, want exactly one fetch", polled)
+	}
+}
