@@ -17,6 +17,8 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **🔀 Parallel Development**: Work on multiple branches simultaneously without checkout overhead
 - **📝 Diff Viewer**: Review changes before committing
 - **🚀 PR Creation**: Create GitHub PRs directly from the TUI with auto-generated title and body
+- **✈️ Autopilot**: After each agent turn, run your check command, feed failures back, and publish the PR when it passes — per workspace, opt-in
+- **📦 Dispatch**: `opentree dispatch 42 --headless` turns an issue into a PR with nobody watching, exiting with a code a script can branch on
 - **🐛 Issue Workflow**: Create a workspace directly from a GitHub issue number
 - **✅ CI Status**: Live CI check status displayed per workspace
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
@@ -82,6 +84,7 @@ opentree
 # Or use CLI commands directly
 opentree new feat/add-auth       # Create workspace
 opentree issue 42                # Create workspace from GitHub issue #42
+opentree dispatch 42 --headless  # Issue #42 → agent → checks → PR, unattended
 opentree list                    # List all workspaces
 opentree attach feat/add-auth    # Attach to tmux window
 opentree diff feat/add-auth      # Review changes
@@ -307,6 +310,44 @@ showing the exact text.
 Without a `check` command autopilot still pushes and keeps the PR current
 after each turn — for projects whose CI is the check.
 
+**Once the PR exists, autopilot watches it.** Every two minutes the chat asks
+GitHub what is new: a failing check gets forwarded with the tail of its
+Actions log, new review comments get forwarded the way `R` sends them — each
+as its own turn, CI before reviews, the moment the agent is free. Nothing is
+sent twice: the watermarks live in `state.json`, keyed on the commit a failure
+was reported for and the fingerprint of the review set, so a new push re-arms
+CI forwarding by itself and a reopened window does not repeat its
+predecessor. `opentree ci <branch>` sends the same CI report by hand,
+autopilot or not.
+
+### Dispatch
+
+The whole pipeline in one command:
+
+```bash
+opentree dispatch 42                    # issue #42 → workspace → agent → checks → PR
+opentree dispatch "fix the login race"  # the prompt is the task
+opentree dispatch 42 --headless         # no attach: wait, print the PR URL, exit
+```
+
+Dispatch creates the workspace (branch `auto-<slug>` in prompt mode), starts
+the agent in its tmux window, switches autopilot on and sends the task. By
+default it attaches so you can watch; `--headless` waits on the chat's socket
+instead and exits with a code a script can branch on:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | the PR was published; its URL is on stdout |
+| 1 | autopilot halted (the check kept failing) or reported an error |
+| 2 | the agent stopped, or the chat became unreachable |
+| 3 | blocked on a permission only a human can answer |
+| 4 | `--timeout` (default 30m) elapsed; the workspace is still working |
+
+Every failure leaves the workspace alive — `opentree attach` picks up exactly
+where it stopped. Headless can ask nothing, so the repository's `setup` and
+`check` commands must be approved ahead of time with `opentree trust`, and a
+tmux server must be running (`tmux new-session -d` in CI).
+
 ### Notifications
 
 The cost of running four agents at once is that idleness becomes invisible: the
@@ -433,6 +474,17 @@ Fetches the open PR's review comments and sends them to the workspace's agent as
 a prompt, over the chat's control socket. The chat has to be running, but it
 doesn't have to be the window you're looking at — and if the agent is mid-turn
 the prompt is queued and runs when the turn ends, which the row's badge shows.
+
+#### Send CI Failures to the Agent
+
+```bash
+opentree ci <branch-name>
+```
+
+The dashboard's badge says CI is red; this is how the agent learns why: the
+failing checks by name, and the tail of each GitHub Actions log — where the
+test runner's summary is. Same delivery as `review`, over the control socket.
+With autopilot on, this happens by itself.
 
 #### Delete Workspace
 
