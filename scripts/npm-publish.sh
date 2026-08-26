@@ -39,6 +39,43 @@ declare -A PLATFORMS=(
 	["darwin_arm64"]="opentree-darwin-arm64"
 )
 
+# How long to wait for the registry to serve a version it has already accepted.
+#
+# Those are different events. npm takes the tarball, prints "+ name@version",
+# and may then process it asynchronously — "Your package is being processed and
+# may take a few minutes to become available". On v1.1.0 that gap was fifteen
+# minutes for one 4.7MB package, during which the version 404'd and did not
+# appear in the registry document at all.
+#
+# Generous, because the wait is npm's to spend and the alternative is a release
+# that reports success and is broken.
+REGISTRY_TIMEOUT=1800
+REGISTRY_POLL=10
+
+# wait_until_servable blocks until the registry actually serves an exact
+# version. Publishing is not the same as being installable, and everything
+# downstream of here assumes the latter.
+wait_until_servable() {
+	local pkg="$1" version="$2" waited=0
+	while true; do
+		if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
+			if [ "${waited}" -gt 0 ]; then
+				echo "    ${pkg}@${version} servable after ${waited}s"
+			fi
+			return 0
+		fi
+		if [ "${waited}" -ge "${REGISTRY_TIMEOUT}" ]; then
+			echo "::error::${pkg}@${version} was accepted by npm but the registry is still not serving it after ${REGISTRY_TIMEOUT}s" >&2
+			return 1
+		fi
+		sleep "${REGISTRY_POLL}"
+		waited=$((waited + REGISTRY_POLL))
+		if [ $((waited % 60)) -eq 0 ]; then
+			echo "    still waiting for ${pkg}@${version} (${waited}s)"
+		fi
+	done
+}
+
 # Expected `file` output per target, so a goreleaser matrix change that quietly
 # writes the same amd64 binary into every package cannot reach the registry.
 declare -A EXPECT_ARCH=(
@@ -150,9 +187,35 @@ done
 # ── Publish: platform packages first, launcher last ───────────────────────────
 # Order matters. The launcher's optionalDependencies must already resolve when
 # it goes live, or every install between the two publishes is broken.
+#
+# Publishing them first is necessary and is not sufficient, which is what
+# v1.1.0 found out. All five were published in order and the launcher went live
+# while opentree-linux-x64 was still 404 — so npm skipped an optional
+# dependency it could not resolve, said nothing about it, and every linux-x64
+# install for the next fifteen minutes got a launcher with no binary behind it.
+# The invariant this comment has always claimed is now actually waited for.
+last=$((${#TARBALLS[@]} - 1))
+
 for i in "${!TARBALLS[@]}"; do
+	if [ "${i}" -eq "${last}" ]; then
+		continue
+	fi
 	echo "  Publishing ${PKG_NAMES[$i]}@${NPM_VERSION}..."
 	npm publish "${TARBALLS[$i]}" --access public --tag "${NPM_TAG}"
 done
+
+# Waited for as a group rather than one at a time: the registry processes them
+# concurrently, so the whole wait costs about what the slowest one does.
+echo "  Waiting for the registry to serve the platform packages..."
+for i in "${!PKG_NAMES[@]}"; do
+	if [ "${i}" -eq "${last}" ]; then
+		continue
+	fi
+	wait_until_servable "${PKG_NAMES[$i]}" "${NPM_VERSION}"
+done
+
+echo "  Publishing ${PKG_NAMES[$last]}@${NPM_VERSION}..."
+npm publish "${TARBALLS[$last]}" --access public --tag "${NPM_TAG}"
+wait_until_servable "${PKG_NAMES[$last]}" "${NPM_VERSION}"
 
 echo "Done. @axelgar/opentree@${NPM_VERSION} is live on npm."
