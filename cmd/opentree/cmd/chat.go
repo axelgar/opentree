@@ -19,6 +19,7 @@ import (
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 // agentFlag names the agent to run, bypassing config lookup. The launcher
@@ -66,6 +67,7 @@ func runChat(ctx context.Context, name, version string) error {
 		return err
 	}
 
+	observe, announce := notifier(repoRoot, ws.Name)
 	return chat.Run(ctx, chat.Options{
 		Workspace:  ws.Name,
 		Cwd:        ws.WorktreeDir,
@@ -74,7 +76,9 @@ func runChat(ctx context.Context, name, version string) error {
 		SocketPath: chat.SocketPath(repoRoot, ws.Name),
 		SessionID:  resumableSession(ws, agent.Command),
 		Setup:      setupPhase(repoRoot, store, ws),
-		Notify:     notifier(repoRoot, ws.Name),
+		Autopilot:  autopilotSpec(repoRoot, store, ws),
+		Notify:     observe,
+		Announce:   announce,
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -104,12 +108,15 @@ func runChat(ctx context.Context, name, version string) error {
 // chat is handed answers, not the machinery that produced them. What it gets
 // back is one function that takes a state reading — everything about tmux
 // panes and cooldowns stays on this side of it.
-func notifier(repoRoot, workspace string) func(notify.Signal) {
+// It returns both of the watcher's mouths: Observe for state readings, and
+// Announce for the events that are not state edges — autopilot's "the PR
+// exists". Both nil for a chat that carries nothing.
+func notifier(repoRoot, workspace string) (func(notify.Signal), func(notify.Event)) {
 	// Outside tmux there is no window to carry anything out of, and whoever
 	// started this is sitting in front of it.
 	pane := notify.Pane()
 	if pane == "" {
-		return nil
+		return nil, nil
 	}
 
 	// A config that will not parse is reported by every other command that
@@ -138,9 +145,51 @@ func notifier(repoRoot, workspace string) func(notify.Signal) {
 		Watched:   func() bool { return notify.Watched(pane) },
 	})
 	if w == nil {
-		return nil
+		return nil, nil
 	}
-	return w.Observe
+	return w.Observe, w.Announce
+}
+
+// autopilotSpec is the loop this chat may run, with every question that needs
+// the repository answered here — the same division of labour setupPhase and
+// notifier follow. The chat gets the check command, whether it is approved,
+// and closures for approving, publishing and persisting the toggle; workspaces
+// and trust files stay on this side.
+func autopilotSpec(repoRoot string, store *state.Store, ws *state.Workspace) chat.Autopilot {
+	cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
+	if err != nil {
+		cfg = config.Default()
+	}
+	setup, run, check := cfg.Workspace.Setup, cfg.Workspace.Run, cfg.Workspace.Check
+	name := ws.Name
+	return chat.Autopilot{
+		Enabled: ws.Autopilot,
+		Check:   check,
+		Trusted: bootstrap.Trusted(repoRoot, setup, run, check),
+		Approve: func() error { return bootstrap.Approve(repoRoot, setup, run, check) },
+		Publish: func() (chat.PublishOutcome, error) {
+			// Constructed per publish rather than held: publishing is rare,
+			// and a service built at chat start would carry a state snapshot
+			// from before every turn that mattered.
+			svc, err := workspace.New(repoRoot, cfg)
+			if err != nil {
+				return chat.PublishOutcome{}, err
+			}
+			out, err := svc.PublishPR(name, "", "")
+			return chat.PublishOutcome{
+				PRURL:   out.PRURL,
+				Created: out.Created,
+				Pushed:  out.Pushed,
+				Skipped: out.Skipped,
+			}, err
+		},
+		Persist: func(on bool) error {
+			return store.Update(name, func(w *state.Workspace) error {
+				w.Autopilot = on
+				return nil
+			})
+		},
+	}
 }
 
 // setupPhase is the bootstrap work this chat has to do before the agent

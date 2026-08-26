@@ -77,6 +77,11 @@ func (e Event) Text() (title, body string) {
 		if e.Detail != "" {
 			body = e.Detail
 		}
+	case PRReady:
+		body = "PR ready"
+		if e.Detail != "" {
+			body += ": " + e.Detail
+		}
 	}
 	return e.Workspace, body
 }

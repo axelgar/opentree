@@ -151,6 +151,22 @@ func (w *Watcher) Observe(sig Signal) {
 	}
 }
 
+// Announce carries an event that is not a state edge — autopilot's "the PR
+// exists" — through the same filter, visibility check and cooldown Observe's
+// transitions get. It exists because not everything worth a banner is a
+// transition between session states: publishing a PR leaves the session
+// exactly as idle as it found it.
+func (w *Watcher) Announce(ev Event) {
+	if w == nil || !w.on[ev.Kind] {
+		return
+	}
+	select {
+	case w.queue <- pending{ev: ev, at: w.now()}:
+	default:
+		// Same rule as Observe: never wait on the caller's behalf.
+	}
+}
+
 // deliver is everything that happens after a transition has been judged worth
 // carrying: whether anyone is already looking, whether it was said moments ago,
 // and saying it.

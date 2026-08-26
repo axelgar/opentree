@@ -590,8 +590,8 @@ func TestLoadWithSources_NotifyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithSources() failed: %v", err)
 	}
-	if strings.Join(cfg.Notify.On, ",") != "blocked,stopped" {
-		t.Errorf("Notify.On = %v, want blocked and stopped on, done off", cfg.Notify.On)
+	if strings.Join(cfg.Notify.On, ",") != "blocked,stopped,pr_ready" {
+		t.Errorf("Notify.On = %v, want blocked, stopped and pr_ready on, done off", cfg.Notify.On)
 	}
 	if cfg.Notify.Desktop == nil || !*cfg.Notify.Desktop {
 		t.Error("desktop banners should be on by default")

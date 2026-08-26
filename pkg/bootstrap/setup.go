@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -57,6 +58,27 @@ func RunSetup(ctx context.Context, dir string, commands []string, emit func(stri
 		}
 	}
 	return nil
+}
+
+// RunCheck runs one check command the way RunSetup runs an install — merged
+// output, whole-tree kill on cancel — but reports the exit code, because the
+// caller's next move depends on it: zero publishes, nonzero goes back to the
+// agent as work.
+//
+// (0, nil) is a pass; (code, nil) is the command's own verdict; (-1, err) is
+// everything else — cancellation (ctx.Err(), as RunSetup reports it) or a
+// command that could not start at all.
+func RunCheck(ctx context.Context, dir, command string, emit func(string)) (int, error) {
+	emit("$ " + command)
+	err := runCommand(ctx, dir, command, emit)
+	if err == nil {
+		return 0, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && ctx.Err() == nil {
+		return exitErr.ExitCode(), nil
+	}
+	return -1, fmt.Errorf("%s: %w", command, err)
 }
 
 // runCommand runs one setup command to completion.

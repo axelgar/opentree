@@ -85,6 +85,13 @@ type Workspace struct {
 	// a workspace under the same name.
 	AdoptedBranch bool `json:"adopted_branch,omitempty"`
 
+	// Autopilot marks a workspace the loop drives toward a green PR: after
+	// each agent turn the check command runs, failures go back to the agent,
+	// and a pass publishes. Phrased so the zero value is every workspace
+	// written before the field existed — off, which is what they were — the
+	// same polarity argument AdoptedBranch makes.
+	Autopilot bool `json:"autopilot,omitempty"`
+
 	// SetupAt and SetupHash are the project's bootstrap commands, as this
 	// worktree last ran them. The hash is what earns the pair its keep: a chat
 	// starts many times per workspace — losing a window relaunches one — so

@@ -124,7 +124,7 @@ var configKeys = []configKey{
 	},
 	{
 		name:       "notify.on",
-		desc:       "Events worth an interruption: blocked, done, stopped",
+		desc:       "Events worth an interruption: blocked, done, stopped, pr_ready",
 		get:        func(c *config.Config) string { return formatList(c.Notify.On) },
 		source:     func(s config.ConfigSource) string { return s.NotifyOn },
 		listOf:     "event names",

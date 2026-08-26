@@ -122,6 +122,8 @@ func sampleEvent(kind notify.Kind) notify.Event {
 		ev.Detail = "go test ./..."
 	case notify.Done:
 		ev.Elapsed = 4 * time.Minute
+	case notify.PRReady:
+		ev.Detail = "https://github.com/acme/repo/pull/12"
 	}
 	return ev
 }
