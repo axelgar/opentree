@@ -527,6 +527,58 @@ func prViewError(output []byte, err error) error {
 	return fmt.Errorf("gh pr view failed: %w\nOutput: %s", err, strings.TrimSpace(out))
 }
 
+// PRInfo is what publishing needs to know about a branch's existing PR: where
+// it is, whether it is still open, which commit it currently serves, and the
+// body — the last so a caller can tell an autopilot-written description from a
+// human's before overwriting one.
+type PRInfo struct {
+	URL     string
+	State   string // lowercased: "open", "merged", "closed"
+	HeadSha string
+	Body    string
+}
+
+// FindPR looks up the pull request for a branch, or reports that there is
+// none. No PR is (nil, nil), not an error: it is the answer that makes
+// creating one the right next move, and every caller branches on it.
+func (pm *PRManager) FindPR(branch, repoDir string) (*PRInfo, error) {
+	if !pm.IsInstalled() || !hasGitHubRemote(repoDir) {
+		return nil, nil
+	}
+	output, stderr, err := ghRun(repoDir, "pr", "view", branch, "--json", "url,state,headRefOid,body")
+	if err != nil {
+		return nil, prViewError(stderr, err)
+	}
+	var raw struct {
+		URL        string `json:"url"`
+		State      string `json:"state"`
+		HeadRefOid string `json:"headRefOid"`
+		Body       string `json:"body"`
+	}
+	if err := json.Unmarshal(output, &raw); err != nil {
+		return nil, fmt.Errorf("unexpected gh pr view output: %w", err)
+	}
+	return &PRInfo{
+		URL:     raw.URL,
+		State:   strings.ToLower(raw.State),
+		HeadSha: raw.HeadRefOid,
+		Body:    raw.Body,
+	}, nil
+}
+
+// UpdatePR rewrites an existing PR's title and body. The caller decides
+// whether that is its place — FindPR's Body is what makes that call possible.
+func (pm *PRManager) UpdatePR(branch, title, body string) error {
+	if !pm.IsInstalled() {
+		return fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
+	}
+	_, stderr, err := ghRun("", "pr", "edit", branch, "--title", title, "--body", body)
+	if err != nil {
+		return fmt.Errorf("failed to update PR: %w\nOutput: %s", err, stderr)
+	}
+	return nil
+}
+
 // GetPRStatus checks if a PR exists for the given branch
 func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 	if !pm.IsInstalled() || !hasGitHubRemote("") {

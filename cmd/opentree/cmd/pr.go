@@ -12,9 +12,19 @@ import (
 
 var PrCmd = &cobra.Command{
 	Use:               "pr <branch-name>",
-	Short:             "Create a GitHub PR for a workspace",
+	Short:             "Publish a workspace as a GitHub PR: push what is missing, create or update, never duplicate",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: workspaceCompletions,
+	Long: `Publish a workspace's branch as a GitHub pull request.
+
+Publishing is a comparison first and a mutation second: the branch is pushed
+only if origin is behind, a PR is created only if none exists, and an existing
+open PR is simply brought up to date. Running it twice is safe — the second
+run says "already up to date" instead of opening a duplicate.
+
+With no --title/--body the content is generated the way the dashboard's PR
+dialog prefills it: from the issue that started the workspace, or the branch
+name, and the commits since base.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		branchName := args[0]
 		title, _ := cmd.Flags().GetString("title")
@@ -35,12 +45,21 @@ var PrCmd = &cobra.Command{
 			return err
 		}
 
-		prURL, err := svc.CreatePR(branchName, title, body)
+		out, err := svc.PublishPR(branchName, title, body)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("✓ Created PR: %s\n", prURL)
+		switch {
+		case out.Skipped != "":
+			fmt.Printf("Nothing published: %s\n", out.Skipped)
+		case out.Created:
+			fmt.Printf("✓ Created PR: %s\n", out.PRURL)
+		case out.Pushed:
+			fmt.Printf("✓ Pushed and updated PR: %s\n", out.PRURL)
+		default:
+			fmt.Printf("✓ PR already up to date: %s\n", out.PRURL)
+		}
 		return nil
 	},
 }

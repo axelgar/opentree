@@ -75,6 +75,31 @@ func ListRemoteBranches(repoRoot string, limit int) ([]string, error) {
 	return branches, nil
 }
 
+// LocalHead is the commit a worktree currently sits on.
+func LocalHead(dir string) (string, error) {
+	out, err := Output(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// RemoteHead is the commit origin serves for a branch, or "" for a branch the
+// remote has never seen. Asked of the remote itself (ls-remote) rather than
+// the local remote-tracking ref, because the question publishing needs
+// answered is what is pushed, not what was pushed as of the last fetch.
+func RemoteHead(dir, branch string) (string, error) {
+	out, err := Output(dir, "ls-remote", "--heads", "origin", branch)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], nil
+}
+
 // RepoRoot returns the root directory of the main git repository, even when
 // run from inside a linked worktree — where `--show-toplevel` would return
 // the worktree's own root, making opentree nest worktrees and read the wrong

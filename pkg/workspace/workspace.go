@@ -26,6 +26,8 @@ type GitHubManager interface {
 	IsInstalled() bool
 	GetIssue(number int) (*github.Issue, error)
 	CreatePR(branch, baseBranch, title, body string) (string, error)
+	FindPR(branch, repoDir string) (*github.PRInfo, error)
+	UpdatePR(branch, title, body string) error
 	FetchPRReviews(branch string) ([]github.ReviewComment, error)
 }
 

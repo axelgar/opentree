@@ -322,6 +322,54 @@ func TestCreatePR_URLComesFromStdoutAlone(t *testing.T) {
 	}
 }
 
+func TestFindPR_DecodesAndLowercasesState(t *testing.T) {
+	stubGH(t, `if [ "$1" = "pr" ]; then`+
+		` echo '{"url":"https://github.com/acme/tool/pull/9","state":"OPEN","headRefOid":"abc123","body":"words"}'; fi`)
+
+	pr, err := New().FindPR("feat/thing", "")
+	if err != nil {
+		t.Fatalf("FindPR: %v", err)
+	}
+	if pr == nil {
+		t.Fatal("FindPR() = nil for a branch with a PR")
+	}
+	if pr.URL != "https://github.com/acme/tool/pull/9" || pr.State != "open" ||
+		pr.HeadSha != "abc123" || pr.Body != "words" {
+		t.Errorf("FindPR() = %+v, want the decoded PR with a lowercased state", pr)
+	}
+}
+
+func TestFindPR_NoPRIsNilNotError(t *testing.T) {
+	stubGH(t, `if [ "$1" = "pr" ]; then`+
+		` echo 'no pull requests found for branch "feat/thing"' >&2; exit 1; fi`)
+
+	pr, err := New().FindPR("feat/thing", "")
+	if err != nil {
+		t.Fatalf("FindPR with no PR: %v, want nil — it is the answer that makes creating one right", err)
+	}
+	if pr != nil {
+		t.Errorf("FindPR() = %+v, want nil", pr)
+	}
+}
+
+func TestUpdatePR_PassesTitleAndBody(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "calls")
+	stubGH(t, `if [ "$1" = "pr" ]; then printf '%s\n' "$@" > `+log+`; fi`)
+
+	if err := New().UpdatePR("feat/thing", "Title", "Body."); err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("the stub was never asked to edit: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{"pr", "edit", "feat/thing", "--title", "Title", "--body", "Body."}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("gh args = %q, want %q", got, want)
+	}
+}
+
 func TestGetIssue_DecodesResponse(t *testing.T) {
 	stubGH(t, `if [ "$1" = "issue" ]; then`+
 		` echo '{"number":42,"title":"Add dark mode","body":"Too bright.","labels":[{"name":"ui"}]}'; fi`)
