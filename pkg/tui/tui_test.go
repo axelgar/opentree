@@ -2279,3 +2279,64 @@ func TestDiffLoaded_OpensOnAnIdleList(t *testing.T) {
 		t.Error("the diff did not open on an idle list")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Autopilot toggle
+// ---------------------------------------------------------------------------
+
+// The P key must land the flag in state.json even when no chat is running:
+// the flag is what the next chat window reads, and only the socket send is
+// best-effort.
+func TestAutopilotKey_TogglesAndPersists(t *testing.T) {
+	m := newTestModel(testWS("feat-x"))
+	store, err := state.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("state.New: %v", err)
+	}
+	if err := store.AddWorkspace(m.workspaces[0].Workspace); err != nil {
+		t.Fatalf("AddWorkspace: %v", err)
+	}
+	m.stateStore = store
+
+	m, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	if cmd == nil {
+		t.Fatal("P produced no command")
+	}
+	msg := cmd() // runs the store write and the (failing, tolerated) socket send
+	if _, ok := msg.(agentCommandSentMsg); !ok {
+		t.Fatalf("msg = %T, want agentCommandSentMsg — a missing chat must not fail the toggle", msg)
+	}
+
+	got, err := store.GetWorkspace("feat-x")
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if !got.Autopilot {
+		t.Error("Autopilot flag not persisted")
+	}
+}
+
+// The badge follows the persisted flag when no chat is running, and the live
+// status when one is — halted being the state that must not hide.
+func TestAutopilotBadge_FollowsFlagAndLiveState(t *testing.T) {
+	off := testWS("quiet")
+	if renderAutopilotBadge(off) != "" {
+		t.Error("a workspace with autopilot off shows no badge")
+	}
+
+	on := testWS("driven")
+	on.Autopilot = true
+	if badge := renderAutopilotBadge(on); !strings.Contains(badge, "auto") {
+		t.Errorf("badge = %q, want the auto mark from the persisted flag alone", badge)
+	}
+
+	halted := testWS("stuck")
+	halted.Autopilot = true
+	halted.ChatStatus = &chat.Status{
+		State:     chat.StateIdle,
+		Autopilot: &chat.AutopilotStatus{Enabled: true, Phase: "halted", Iteration: 5},
+	}
+	if badge := renderAutopilotBadge(halted); !strings.Contains(badge, "halted") {
+		t.Errorf("badge = %q, want the halt visible — it is the state waiting on a human", badge)
+	}
+}

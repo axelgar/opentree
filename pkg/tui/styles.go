@@ -57,6 +57,11 @@ var (
 			Background(lipgloss.Color("#0969DA")).
 			Padding(0, 1)
 
+	autopilotBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#8250DF")).
+				Padding(0, 1)
+
 	// delete confirmation styles
 	dangerStyle = lipgloss.NewStyle().
 			Foreground(ui.Danger).

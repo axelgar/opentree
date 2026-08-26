@@ -58,6 +58,7 @@ func init() {
 	rootCmd.AddCommand(cmd.DeleteCmd)
 	rootCmd.AddCommand(cmd.DiffCmd)
 	rootCmd.AddCommand(cmd.PrCmd)
+	rootCmd.AddCommand(cmd.AutoCmd)
 	rootCmd.AddCommand(cmd.IssueCmd)
 	rootCmd.AddCommand(cmd.InstallCompletionCmd)
 	rootCmd.AddCommand(cmd.UninstallCmd)

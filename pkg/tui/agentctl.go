@@ -11,6 +11,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/ui"
 )
 
@@ -61,6 +62,16 @@ func renderChatBadge(st *chat.Status) string {
 			return dangerStyle.Render("setup failed")
 		}
 		return agentWorkingStyle.Render("setting up…")
+	case chat.StateChecking:
+		label := "checking…"
+		if st.Autopilot != nil && st.Autopilot.Phase == "publishing" {
+			label = "publishing…"
+		}
+		if st.Autopilot != nil && st.Autopilot.Phase == "asking" {
+			label = "APPROVE CHECK"
+			return agentWaitingStyle.Render(label)
+		}
+		return agentWorkingStyle.Render(label)
 	case chat.StateStopped:
 		return dangerStyle.Render("agent stopped")
 	case chat.StateStarting:
@@ -230,6 +241,38 @@ func (ws WorkspaceItem) promptHint() string {
 // honour — a prompt while the agent is mid-turn, a permission already answered
 // in the window — and reporting "sent" for one of those would be a lie the user
 // only discovers by attaching and finding nothing there.
+// toggleAutopilotCmd flips a workspace's autopilot: state first, so the answer
+// survives the chat window, then the live chat, so it takes effect now. A
+// workspace with no chat running still toggles — the flag is what the next
+// window reads — and only the send is best-effort.
+func (m Model) toggleAutopilotCmd(ws WorkspaceItem) tea.Cmd {
+	on := !ws.Autopilot
+	repoRoot, store := m.repoRoot, m.stateStore
+	return func() tea.Msg {
+		if err := store.Update(ws.Name, func(w *state.Workspace) error {
+			w.Autopilot = on
+			return nil
+		}); err != nil {
+			return errMsg{fmt.Errorf("%s: %w", ws.Name, err)}
+		}
+		action := "autopilot off"
+		text := "off"
+		if on {
+			action, text = "autopilot on", "on"
+		}
+		// The running chat is told directly rather than left to notice: the
+		// flag in state.json is read at window start, and the window may have
+		// hours left in it. A chat that is not running, or predates the
+		// command, still honours the flag on its next start.
+		if err := chat.Send(chat.SocketPath(repoRoot, ws.Name), ws.Name, chat.Command{
+			Type: chat.CommandAutopilot, Text: text,
+		}); err != nil {
+			return agentCommandSentMsg{wsName: ws.Name, action: action + " (from the next chat window)"}
+		}
+		return agentCommandSentMsg{wsName: ws.Name, action: action}
+	}
+}
+
 func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd {
 	repoRoot := m.repoRoot
 	return func() tea.Msg {

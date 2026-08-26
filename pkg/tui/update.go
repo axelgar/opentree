@@ -507,6 +507,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.transientErrCmd(fmt.Sprintf("no PR for %q — create one with 'p'", ws.Name))
 			}
+		case key.Matches(msg, m.keys.Autopilot):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, m.toggleAutopilotCmd(ws)
+			}
 		case key.Matches(msg, m.keys.Review):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]

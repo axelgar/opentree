@@ -98,10 +98,12 @@ func (ws WorkspaceItem) actionHint() string {
 		return "enter attach and restart the stopped agent"
 	case ws.PRStatus == "merged":
 		return "x clean up this merged workspace"
+	case ws.ChatStatus != nil && ws.ChatStatus.Autopilot != nil && ws.ChatStatus.Autopilot.Phase == "halted":
+		return "m message resets the halted autopilot • P autopilot off"
 	case ws.PRStatus == "open":
-		return "o open PR • R send reviews • m message"
+		return "o open PR • R send reviews • m message • P autopilot"
 	case ws.UncommittedCount > 0 || (ws.DiffStat != "" && ws.DiffStat != "No changes"):
-		return "p create PR • d diff • m message"
+		return "p create PR • d diff • m message • P autopilot"
 	}
 	return ""
 }
