@@ -161,7 +161,7 @@ func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.S
 		return chat.Setup{}
 	}
 
-	commands, run := cfg.Workspace.Setup, cfg.Workspace.Run
+	commands, run, check := cfg.Workspace.Setup, cfg.Workspace.Run, cfg.Workspace.Check
 	hash := bootstrap.Hash(commands, run)
 	// Already done, by these exact commands. A chat starts many times per
 	// workspace, and running the install on each would make attaching cost a
@@ -173,8 +173,9 @@ func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.S
 	return chat.Setup{
 		Commands: commands,
 		Run:      run,
-		Trusted:  bootstrap.Trusted(repoRoot, commands, run),
-		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run) },
+		Check:    check,
+		Trusted:  bootstrap.Trusted(repoRoot, commands, run, check),
+		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run, check) },
 		Record: func() error {
 			return store.Update(ws.Name, func(w *state.Workspace) error {
 				w.SetupAt, w.SetupHash = time.Now(), hash

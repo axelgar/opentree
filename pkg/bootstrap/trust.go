@@ -15,12 +15,13 @@ import (
 
 // opentree.toml is tracked in git, which is the whole reason a bootstrap
 // sequence is worth having: a project describes how to prepare a worktree once,
-// and everyone who clones it gets that. It also means setup and run are
+// and everyone who clones it gets that. It also means setup, run and check are
 // executable code that arrives with a clone, from whoever last had commit
 // rights — so they run once this machine has said they may.
 //
-// The gate covers setup and run together. run is code from the same tracked
-// file, and gating only setup would move a hostile payload one key down.
+// The gate covers setup, run and check together. All three are code from the
+// same tracked file, and gating only setup would move a hostile payload one
+// key down.
 //
 // The record lives here, not in the repository: a repository cannot vouch for
 // itself. Approval is per machine, per repository, and per exact text — edit a
@@ -36,6 +37,7 @@ type Approval struct {
 	// opentree to read it back to them.
 	Setup []string `json:"setup,omitempty"`
 	Run   string   `json:"run,omitempty"`
+	Check string   `json:"check,omitempty"`
 }
 
 // trustFile is the on-disk shape: repository path to that repository's
@@ -60,9 +62,11 @@ func TrustPath() string {
 // it does often enough that "close enough" is not a judgement opentree should
 // make on the user's behalf.
 //
-// The same hash records what ran (state.Workspace.SetupHash) as gates whether
-// it may. One identity for one block, so the two can never disagree about
-// which version of the setup this workspace has.
+// This is the setup-ran marker (state.Workspace.SetupHash) — check is
+// deliberately not part of it, because editing the check command does not
+// change what installing means, and folding it in would re-run every
+// worktree's setup the day a project adds one. The gate itself hashes all
+// three via ApprovalHash.
 func Hash(setup []string, run string) string {
 	if setup == nil {
 		setup = []string{}
@@ -82,10 +86,36 @@ func Hash(setup []string, run string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ApprovalHash identifies what the gate is being asked to approve.
+//
+// With no check command it is exactly Hash, on purpose: every approval this
+// machine recorded before check existed keeps meaning what it meant, and a
+// repository that never adds one never re-asks. A check command widens the
+// payload to a three-field struct, whose JSON cannot collide with the
+// two-field one, so adding or editing a check is a new thing to approve.
+func ApprovalHash(setup []string, run, check string) string {
+	if check == "" {
+		return Hash(setup, run)
+	}
+	if setup == nil {
+		setup = []string{}
+	}
+	payload, err := json.Marshal(struct {
+		Setup []string `json:"setup"`
+		Run   string   `json:"run"`
+		Check string   `json:"check"`
+	}{setup, run, check})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
 // Executable reports whether the project asks to run anything at all. An empty
 // block is not a thing to trust — there is nothing in it to run.
-func Executable(setup []string, run string) bool {
-	return len(setup) > 0 || run != ""
+func Executable(setup []string, run, check string) bool {
+	return len(setup) > 0 || run != "" || check != ""
 }
 
 // Trusted reports whether this machine has approved what the project now asks
@@ -94,15 +124,15 @@ func Executable(setup []string, run string) bool {
 // Fails closed. An unreadable or corrupt trust file means "not approved", which
 // costs the user one prompt; the alternative reading of a damaged file is to
 // run whatever the repository says, which costs rather more.
-func Trusted(repoRoot string, setup []string, run string) bool {
-	if !Executable(setup, run) {
+func Trusted(repoRoot string, setup []string, run, check string) bool {
+	if !Executable(setup, run, check) {
 		return true // nothing to run, nothing to approve
 	}
 	file, err := loadTrust()
 	if err != nil {
 		return false
 	}
-	want := Hash(setup, run)
+	want := ApprovalHash(setup, run, check)
 	for _, a := range file.Repos[trustKey(repoRoot)] {
 		if a.Hash == want {
 			return true
@@ -116,9 +146,9 @@ func Trusted(repoRoot string, setup []string, run string) bool {
 // Earlier approvals for the same repository are kept. A user who approved main
 // and then a branch that edits setup has read both, and switching back should
 // not ask again about the text they already agreed to.
-func Approve(repoRoot string, setup []string, run string) error {
-	if !Executable(setup, run) {
-		return fmt.Errorf("nothing to trust: [workspace] names no setup or run command")
+func Approve(repoRoot string, setup []string, run, check string) error {
+	if !Executable(setup, run, check) {
+		return fmt.Errorf("nothing to trust: [workspace] names no setup, run or check command")
 	}
 	path := TrustPath()
 	if path == "" {
@@ -132,13 +162,14 @@ func Approve(repoRoot string, setup []string, run string) error {
 	}
 
 	key := trustKey(repoRoot)
-	hash := Hash(setup, run)
+	hash := ApprovalHash(setup, run, check)
 	kept := make([]Approval, 0, len(file.Repos[key])+1)
 	kept = append(kept, Approval{
 		Hash:       hash,
 		ApprovedAt: time.Now(),
 		Setup:      setup,
 		Run:        run,
+		Check:      check,
 	})
 	for _, a := range file.Repos[key] {
 		if a.Hash != hash {

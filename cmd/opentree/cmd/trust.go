@@ -13,8 +13,8 @@ import (
 
 var TrustCmd = &cobra.Command{
 	Use:   "trust",
-	Short: "Approve this repository's setup and run commands",
-	Long: `Approve the [workspace] setup and run commands in opentree.toml.
+	Short: "Approve this repository's setup, run and check commands",
+	Long: `Approve the [workspace] setup, run and check commands in opentree.toml.
 
 opentree.toml is tracked in git, so those commands arrive with a clone, from
 whoever last had commit rights. They run only once this machine has approved
@@ -32,7 +32,7 @@ asked.
 		if err != nil {
 			return err
 		}
-		if err := bootstrap.Approve(repoRoot, ws.Setup, ws.Run); err != nil {
+		if err := bootstrap.Approve(repoRoot, ws.Setup, ws.Run, ws.Check); err != nil {
 			return err
 		}
 		fmt.Printf("✓ Approved for %s:\n", repoRoot)
@@ -43,14 +43,14 @@ asked.
 
 var trustShowCmd = &cobra.Command{
 	Use:   "show",
-	Short: "Print this repository's setup and run commands, and whether they are approved",
+	Short: "Print this repository's setup, run and check commands, and whether they are approved",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot, ws, err := workspaceConfig()
 		if err != nil {
 			return err
 		}
-		if !bootstrap.Executable(ws.Setup, ws.Run) {
-			fmt.Println("[workspace] names no setup or run command — nothing to approve.")
+		if !bootstrap.Executable(ws.Setup, ws.Run, ws.Check) {
+			fmt.Println("[workspace] names no setup, run or check command — nothing to approve.")
 			return nil
 		}
 
@@ -58,9 +58,9 @@ var trustShowCmd = &cobra.Command{
 		printCommands(ws)
 		fmt.Println()
 
-		if bootstrap.Trusted(repoRoot, ws.Setup, ws.Run) {
+		if bootstrap.Trusted(repoRoot, ws.Setup, ws.Run, ws.Check) {
 			for _, a := range bootstrap.Approvals(repoRoot) {
-				if a.Hash == bootstrap.Hash(ws.Setup, ws.Run) {
+				if a.Hash == bootstrap.ApprovalHash(ws.Setup, ws.Run, ws.Check) {
 					fmt.Printf("Approved on this machine %s.\n", a.ApprovedAt.Format("2006-01-02 15:04"))
 					break
 				}
@@ -123,10 +123,14 @@ func workspaceConfigPath() string {
 	return filepath.Join(repoRoot, "opentree.toml")
 }
 
-// printCommands shows the block the way it will run: setup in order, then run.
+// printCommands shows the block the way it will run: setup in order, then
+// check, then run.
 func printCommands(ws config.WorkspaceConfig) {
 	for _, c := range ws.Setup {
 		fmt.Printf("  setup  %s\n", c)
+	}
+	if ws.Check != "" {
+		fmt.Printf("  check  %s\n", ws.Check)
 	}
 	if ws.Run != "" {
 		fmt.Printf("  run    %s\n", ws.Run)

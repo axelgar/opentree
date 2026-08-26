@@ -116,7 +116,7 @@ func runSetup(ctx context.Context, name string) error {
 	// Nothing here can ask. The chat is where the question is put, because that
 	// is where somebody is looking; a command run from a script or a CI job has
 	// to be answered ahead of time.
-	if !bootstrap.Trusted(repoRoot, commands, run) {
+	if !bootstrap.Trusted(repoRoot, commands, run, cfg.Workspace.Check) {
 		return fmt.Errorf("this repository's setup commands are not approved on this machine — run `opentree trust` to see and approve them")
 	}
 
@@ -199,7 +199,7 @@ func checkSetup(repoRoot, worktreePath string, cfg *config.Config, ws *state.Wor
 	default:
 		checkLine("setup", "ran "+ws.SetupAt.Format("2006-01-02 15:04"))
 	}
-	if !bootstrap.Trusted(repoRoot, commands, run) {
+	if !bootstrap.Trusted(repoRoot, commands, run, cfg.Workspace.Check) {
 		checkLine("trust", "not approved on this machine — `opentree trust`")
 	}
 	return nil
