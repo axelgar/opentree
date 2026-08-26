@@ -453,12 +453,12 @@ func runUntil[T tea.Msg](t *testing.T, cmd tea.Cmd) (T, bool) {
 			continue
 		}
 		switch msg := c().(type) {
-		case T:
-			return msg, true
 		case tea.BatchMsg:
 			queue = append(queue, msg...)
 		case spinnerTickMsg:
 			// the spinner chain would tick forever; drop it
+		case T:
+			return msg, true
 		}
 	}
 	return zero, false
