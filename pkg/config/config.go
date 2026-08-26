@@ -99,8 +99,8 @@ type GitHubConfig struct {
 // There is no version of "this repository would like to send you desktop
 // banners" that is a reasonable thing for a clone to be able to say.
 type NotifyConfig struct {
-	// On is the events worth an interruption: "blocked", "done", "stopped".
-	// An empty list switches notifications off entirely.
+	// On is the events worth an interruption: "blocked", "done", "stopped",
+	// "pr_ready". An empty list switches notifications off entirely.
 	On []string `toml:"on"`
 
 	// Desktop is whether to raise an OS banner as well as the tmux bell. A

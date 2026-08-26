@@ -359,7 +359,7 @@ func TestConfigLongHelp_DocumentsEveryKey(t *testing.T) {
 			t.Errorf("`opentree config --help` never mentions %s", k.name)
 		}
 	}
-	if !strings.Contains(ConfigCmd.Long, "notify.on              Events worth an interruption: blocked, done, stopped — global only, edit the file") {
+	if !strings.Contains(ConfigCmd.Long, "notify.on              Events worth an interruption: blocked, done, stopped, pr_ready — global only, edit the file") {
 		t.Errorf("the key block lost its alignment or its restrictions:\n%s", ConfigCmd.Long)
 	}
 }
