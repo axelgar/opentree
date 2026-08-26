@@ -2298,7 +2298,7 @@ func TestAutopilotKey_TogglesAndPersists(t *testing.T) {
 	}
 	m.stateStore = store
 
-	m, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	_, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
 	if cmd == nil {
 		t.Fatal("P produced no command")
 	}
