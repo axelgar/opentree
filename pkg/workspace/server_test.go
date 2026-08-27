@@ -32,7 +32,7 @@ func serverService(t *testing.T, run string) (*Service, *mockProcessManager) {
 		t.Fatalf("Create: %v", err)
 	}
 	if run != "" {
-		if err := bootstrap.Approve(repoDir, cfg.Workspace.Setup, run); err != nil {
+		if err := bootstrap.Approve(repoDir, cfg.Workspace.Setup, run, cfg.Workspace.Check); err != nil {
 			t.Fatalf("Approve: %v", err)
 		}
 	}

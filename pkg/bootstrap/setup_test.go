@@ -47,6 +47,50 @@ func TestRunSetup_RunsInOrderInTheWorktree(t *testing.T) {
 	}
 }
 
+func TestRunCheck_ReportsTheExitCode(t *testing.T) {
+	dir := t.TempDir()
+	var lines []string
+
+	code, err := RunCheck(context.Background(), dir, "echo checking; exit 3", collect(&lines))
+	if err != nil {
+		t.Fatalf("RunCheck: %v — a command's own verdict is a code, not an error", err)
+	}
+	if code != 3 {
+		t.Errorf("exit code = %d, want 3", code)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "$ echo checking; exit 3") || !strings.Contains(joined, "checking") {
+		t.Errorf("output = %q, want the announced command and its output", joined)
+	}
+
+	lines = nil
+	code, err = RunCheck(context.Background(), dir, "true", collect(&lines))
+	if err != nil || code != 0 {
+		t.Errorf("RunCheck(true) = (%d, %v), want (0, nil)", code, err)
+	}
+}
+
+func TestRunCheck_CancelledIsAnErrorNotAVerdict(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	code, err := RunCheck(ctx, dir, "sleep 30", collect(&[]string{}))
+	if err == nil {
+		t.Fatal("RunCheck reported a verdict for a check that was cancelled")
+	}
+	if code != -1 {
+		t.Errorf("exit code = %d, want -1 — a killed check did not fail, it never finished", code)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("cancellation took %v, the process group was not killed", elapsed)
+	}
+}
+
 // A build whose install did not finish is not worth starting.
 func TestRunSetup_StopsAtTheFirstFailure(t *testing.T) {
 	dir := t.TempDir()

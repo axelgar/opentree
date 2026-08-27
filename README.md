@@ -17,6 +17,8 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **🔀 Parallel Development**: Work on multiple branches simultaneously without checkout overhead
 - **📝 Diff Viewer**: Review changes before committing
 - **🚀 PR Creation**: Create GitHub PRs directly from the TUI with auto-generated title and body
+- **✈️ Autopilot**: After each agent turn, run your check command, feed failures back, and publish the PR when it passes — per workspace, opt-in
+- **📦 Dispatch**: `opentree dispatch 42 --headless` turns an issue into a PR with nobody watching, exiting with a code a script can branch on
 - **🐛 Issue Workflow**: Create a workspace directly from a GitHub issue number
 - **✅ CI Status**: Live CI check status displayed per workspace
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
@@ -82,6 +84,7 @@ opentree
 # Or use CLI commands directly
 opentree new feat/add-auth       # Create workspace
 opentree issue 42                # Create workspace from GitHub issue #42
+opentree dispatch 42 --headless  # Issue #42 → agent → checks → PR, unattended
 opentree list                    # List all workspaces
 opentree attach feat/add-auth    # Attach to tmux window
 opentree diff feat/add-auth      # Review changes
@@ -116,6 +119,7 @@ opentree
 - `o` - Open PR in browser
 - `x` - Delete selected workspace (shows diff confirmation if uncommitted changes)
 - `R` - Send the workspace's open PR review comments to its agent
+- `P` - Switch the workspace's autopilot on or off
 - `w` - Start or stop the workspace's dev server
 - `b` - Jump to the workspace that has been waiting longest on a permission (press again to cycle)
 - `space` - Toggle multi-select on current workspace
@@ -264,6 +268,86 @@ Those four are the whole list. opentree drives agents over ACP and nothing else,
 so an agent without an ACP server has no way in — if one ships support, it
 becomes a single registry entry and everything above applies to it unchanged.
 
+### Autopilot
+
+The dashboard shows everything, but without autopilot you are still the event
+loop: watch the badge, forward the failure, press `p`. Autopilot closes the
+loop per workspace — when a turn ends, the project's check command decides
+whether the work is done:
+
+```toml
+[workspace]
+check = "make test"        # the same thing a contributor runs before pushing
+```
+
+- The check runs in the worktree, streaming into the chat log. A failure goes
+  back to the agent as the next prompt — the tail of the output, where the
+  test runner's summary is — and the loop repeats.
+- A pass publishes: push what origin is missing, then create the PR with a
+  generated title and body, or bring the existing one up to date. Never a
+  duplicate — if the agent already pushed or opened the PR itself, publishing
+  notices and stands down.
+- You get a `pr_ready` notification when the PR exists, through the same
+  surfaces as `blocked`.
+
+Switch it per workspace: `P` in the dashboard, `/autopilot` in the chat, or
+
+```bash
+opentree auto feat/add-dark-mode on    # off; bare reports where the loop stands
+```
+
+The row shows `auto` while the loop owns a workspace, and `checking…` /
+`publishing…` while it works.
+
+Autopilot knows when to stand down. A cancelled or refused turn never triggers
+the check. Your queued message always runs first, and any message from you
+resets the loop. Five autopilot-fed turns without a green check and it halts —
+the row says `auto · halted`, the error log says why, and your next message
+starts it again. `check` is executable code from a tracked file, so it sits
+behind the same trust gate as `setup` and `run`: the first run asks, once,
+showing the exact text.
+
+Without a `check` command autopilot still pushes and keeps the PR current
+after each turn — for projects whose CI is the check.
+
+**Once the PR exists, autopilot watches it.** Every two minutes the chat asks
+GitHub what is new: a failing check gets forwarded with the tail of its
+Actions log, new review comments get forwarded the way `R` sends them — each
+as its own turn, CI before reviews, the moment the agent is free. Nothing is
+sent twice: the watermarks live in `state.json`, keyed on the commit a failure
+was reported for and the fingerprint of the review set, so a new push re-arms
+CI forwarding by itself and a reopened window does not repeat its
+predecessor. `opentree ci <branch>` sends the same CI report by hand,
+autopilot or not.
+
+### Dispatch
+
+The whole pipeline in one command:
+
+```bash
+opentree dispatch 42                    # issue #42 → workspace → agent → checks → PR
+opentree dispatch "fix the login race"  # the prompt is the task
+opentree dispatch 42 --headless         # no attach: wait, print the PR URL, exit
+```
+
+Dispatch creates the workspace (branch `auto-<slug>` in prompt mode), starts
+the agent in its tmux window, switches autopilot on and sends the task. By
+default it attaches so you can watch; `--headless` waits on the chat's socket
+instead and exits with a code a script can branch on:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | the PR was published; its URL is on stdout |
+| 1 | autopilot halted (the check kept failing) or reported an error |
+| 2 | the agent stopped, or the chat became unreachable |
+| 3 | blocked on a permission only a human can answer |
+| 4 | `--timeout` (default 30m) elapsed; the workspace is still working |
+
+Every failure leaves the workspace alive — `opentree attach` picks up exactly
+where it stopped. Headless can ask nothing, so the repository's `setup` and
+`check` commands must be approved ahead of time with `opentree trust`, and a
+tmux server must be running (`tmux new-session -d` in CI).
+
 ### Notifications
 
 The cost of running four agents at once is that idleness becomes invisible: the
@@ -276,6 +360,7 @@ when it starts needing you:
 | `blocked` | the agent stopped to ask for a permission |
 | `done` | a turn finished |
 | `stopped` | the agent died, failed to start, or its setup commands failed |
+| `pr_ready` | autopilot opened or updated a pull request |
 
 Two surfaces. In tmux the window's own bell rings, which tmux renders as an
 inverted window name in the status bar until you select that window — no
@@ -298,13 +383,14 @@ until they have been allowed, which is otherwise a feature with no symptom.
 
 ```toml
 [notify]
-on      = ["blocked", "stopped"]   # add "done"; [] switches everything off
-desktop = true                     # false: tmux bell only
+on      = ["blocked", "stopped", "pr_ready"]   # add "done"; [] switches everything off
+desktop = true                                 # false: tmux bell only
 ```
 
-`blocked` and `stopped` are on by default and `done` is off, because four agents
-finishing turns is a banner every ninety seconds — and a notifier you mute is a
-notifier you deleted.
+`blocked`, `stopped` and `pr_ready` are on by default and `done` is off,
+because four agents finishing turns is a banner every ninety seconds — and a
+notifier you mute is a notifier you deleted. `pr_ready` cannot spam: it fires
+only from autopilot, which is opt-in, and only when a publish moved something.
 
 This section is read from `~/.config/opentree/opentree.toml` only. A repository's
 own `opentree.toml` may configure how the project is built; how you like to be
@@ -387,7 +473,18 @@ opentree review <branch-name>
 Fetches the open PR's review comments and sends them to the workspace's agent as
 a prompt, over the chat's control socket. The chat has to be running, but it
 doesn't have to be the window you're looking at — and if the agent is mid-turn
-the command says so rather than reporting a send that went nowhere.
+the prompt is queued and runs when the turn ends, which the row's badge shows.
+
+#### Send CI Failures to the Agent
+
+```bash
+opentree ci <branch-name>
+```
+
+The dashboard's badge says CI is red; this is how the agent learns why: the
+failing checks by name, and the tail of each GitHub Actions log — where the
+test runner's summary is. Same delivery as `review`, over the control socket.
+With autopilot on, this happens by itself.
 
 #### Delete Workspace
 
@@ -424,6 +521,7 @@ command = "opencode"          # Agent to run: "opencode", "claude", "copilot" or
 seed  = [".env", ".npmrc"]                  # Untracked files to link into each new worktree
 setup = ["pnpm install --frozen-lockfile"]  # Commands run before the agent starts
 run   = "pnpm dev"                          # Dev server, started on demand, PORT exported
+check = "pnpm test"                         # What autopilot runs after each agent turn
 
 [tmux]
 session_prefix = "opentree"   # Prefix for the tmux session name
@@ -468,7 +566,7 @@ opentree seed detach feat/add-dark-mode .env
 ```
 
 That can also happen by accident: tools that save by renaming over a file
-replace the link with an ordinary one. `opentree setup <branch> --check` reports
+replace the link with an ordinary one. `opentree setup <branch> --dry-run` reports
 which seeded files are still linked and which have quietly detached.
 
 ### Setting Up a Worktree
@@ -515,7 +613,7 @@ tearing down a live conversation:
 
 ```bash
 opentree setup feat/add-dark-mode           # re-seed, then run the commands here
-opentree setup feat/add-dark-mode --check   # report what is seeded and what has run
+opentree setup feat/add-dark-mode --dry-run # report what is seeded and what has run
 ```
 
 Both paths write the same marker, so a worktree prepared from the terminal is one

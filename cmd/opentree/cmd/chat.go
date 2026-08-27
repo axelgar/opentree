@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,9 +17,11 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/diag"
+	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/notify"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 )
 
 // agentFlag names the agent to run, bypassing config lookup. The launcher
@@ -66,6 +69,7 @@ func runChat(ctx context.Context, name, version string) error {
 		return err
 	}
 
+	observe, announce := notifier(repoRoot, ws.Name)
 	return chat.Run(ctx, chat.Options{
 		Workspace:  ws.Name,
 		Cwd:        ws.WorktreeDir,
@@ -74,7 +78,9 @@ func runChat(ctx context.Context, name, version string) error {
 		SocketPath: chat.SocketPath(repoRoot, ws.Name),
 		SessionID:  resumableSession(ws, agent.Command),
 		Setup:      setupPhase(repoRoot, store, ws),
-		Notify:     notifier(repoRoot, ws.Name),
+		Autopilot:  autopilotSpec(repoRoot, store, ws),
+		Notify:     observe,
+		Announce:   announce,
 
 		KnownSessions: knownSessions(ws, agent.Command),
 		SaveSession: func(s acp.SessionInfo) error {
@@ -104,12 +110,15 @@ func runChat(ctx context.Context, name, version string) error {
 // chat is handed answers, not the machinery that produced them. What it gets
 // back is one function that takes a state reading — everything about tmux
 // panes and cooldowns stays on this side of it.
-func notifier(repoRoot, workspace string) func(notify.Signal) {
+// It returns both of the watcher's mouths: Observe for state readings, and
+// Announce for the events that are not state edges — autopilot's "the PR
+// exists". Both nil for a chat that carries nothing.
+func notifier(repoRoot, workspace string) (func(notify.Signal), func(notify.Event)) {
 	// Outside tmux there is no window to carry anything out of, and whoever
 	// started this is sitting in front of it.
 	pane := notify.Pane()
 	if pane == "" {
-		return nil
+		return nil, nil
 	}
 
 	// A config that will not parse is reported by every other command that
@@ -138,9 +147,108 @@ func notifier(repoRoot, workspace string) func(notify.Signal) {
 		Watched:   func() bool { return notify.Watched(pane) },
 	})
 	if w == nil {
-		return nil
+		return nil, nil
 	}
-	return w.Observe
+	return w.Observe, w.Announce
+}
+
+// autopilotSpec is the loop this chat may run, with every question that needs
+// the repository answered here — the same division of labour setupPhase and
+// notifier follow. The chat gets the check command, whether it is approved,
+// and closures for approving, publishing and persisting the toggle; workspaces
+// and trust files stay on this side.
+func autopilotSpec(repoRoot string, store *state.Store, ws *state.Workspace) chat.Autopilot {
+	cfg, err := config.Load(filepath.Join(repoRoot, "opentree.toml"))
+	if err != nil {
+		cfg = config.Default()
+	}
+	setup, run, check := cfg.Workspace.Setup, cfg.Workspace.Run, cfg.Workspace.Check
+	name := ws.Name
+	return chat.Autopilot{
+		Enabled: ws.Autopilot,
+		Check:   check,
+		Trusted: bootstrap.Trusted(repoRoot, setup, run, check),
+		Approve: func() error { return bootstrap.Approve(repoRoot, setup, run, check) },
+		Publish: func() (chat.PublishOutcome, error) {
+			// Constructed per publish rather than held: publishing is rare,
+			// and a service built at chat start would carry a state snapshot
+			// from before every turn that mattered.
+			svc, err := workspace.New(repoRoot, cfg)
+			if err != nil {
+				return chat.PublishOutcome{}, err
+			}
+			out, err := svc.PublishPR(name, "", "")
+			return chat.PublishOutcome{
+				PRURL:   out.PRURL,
+				Created: out.Created,
+				Pushed:  out.Pushed,
+				Skipped: out.Skipped,
+			}, err
+		},
+		Persist: func(on bool) error {
+			return store.Update(name, func(w *state.Workspace) error {
+				w.Autopilot = on
+				return nil
+			})
+		},
+		PRURL: ws.PRURL,
+		Poll:  autopilotPoll(store, name),
+	}
+}
+
+// autopilotPoll is one look at the workspace's PR: a CI failure not yet
+// forwarded, review comments not yet forwarded, each with the watermark write
+// that marks it so. The watermarks live in state.json rather than the chat
+// because a reopened window must not re-send what the last one already did.
+func autopilotPoll(store *state.Store, name string) func() (*chat.PollUpdate, error) {
+	return func() (*chat.PollUpdate, error) {
+		// Re-read from disk every poll: another process — a publish, the
+		// dashboard's status poll — writes this record between beats, and the
+		// in-memory snapshot does not see it.
+		if err := store.Load(); err != nil {
+			return nil, err
+		}
+		ws, err := store.GetWorkspace(name)
+		if err != nil {
+			return nil, err
+		}
+		if ws.PRURL == "" {
+			return nil, nil
+		}
+
+		gh := github.New()
+		upd := &chat.PollUpdate{}
+
+		sha, failures, ciErr := gh.FetchFailingChecks(ws.Branch, ws.WorktreeDir)
+		if ciErr == nil && sha != "" && sha != ws.AutopilotCISha && len(failures) > 0 {
+			upd.CIPrompt = github.FormatCIPrompt(failures)
+			upd.AckCI = func() error {
+				return store.Update(name, func(w *state.Workspace) error {
+					w.AutopilotCISha = sha
+					return nil
+				})
+			}
+		}
+
+		comments, revErr := gh.FetchPRReviews(ws.Branch)
+		// The same partial-results rule as `opentree review`: top-level
+		// reviews with a failed thread fetch are still worth forwarding.
+		if revErr == nil || len(comments) > 0 {
+			if fp := github.ReviewsFingerprint(comments); fp != "" && fp != ws.AutopilotReviewsFp {
+				upd.ReviewsPrompt = github.FormatReviewsPrompt(comments)
+				upd.AckReviews = func() error {
+					return store.Update(name, func(w *state.Workspace) error {
+						w.AutopilotReviewsFp = fp
+						return nil
+					})
+				}
+			}
+		}
+
+		// Partial answers travel with the errors: what was fetched is usable,
+		// and the chat logs the rest for the next beat to retry.
+		return upd, errors.Join(ciErr, revErr)
+	}
 }
 
 // setupPhase is the bootstrap work this chat has to do before the agent
@@ -161,7 +269,7 @@ func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.S
 		return chat.Setup{}
 	}
 
-	commands, run := cfg.Workspace.Setup, cfg.Workspace.Run
+	commands, run, check := cfg.Workspace.Setup, cfg.Workspace.Run, cfg.Workspace.Check
 	hash := bootstrap.Hash(commands, run)
 	// Already done, by these exact commands. A chat starts many times per
 	// workspace, and running the install on each would make attaching cost a
@@ -173,8 +281,9 @@ func setupPhase(repoRoot string, store *state.Store, ws *state.Workspace) chat.S
 	return chat.Setup{
 		Commands: commands,
 		Run:      run,
-		Trusted:  bootstrap.Trusted(repoRoot, commands, run),
-		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run) },
+		Check:    check,
+		Trusted:  bootstrap.Trusted(repoRoot, commands, run, check),
+		Approve:  func() error { return bootstrap.Approve(repoRoot, commands, run, check) },
 		Record: func() error {
 			return store.Update(ws.Name, func(w *state.Workspace) error {
 				w.SetupAt, w.SetupHash = time.Now(), hash

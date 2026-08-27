@@ -37,20 +37,25 @@ const (
 type Kind string
 
 const (
-	Blocked Kind = "blocked" // the agent stopped to ask a human
-	Done    Kind = "done"    // a turn finished
-	Stopped Kind = "stopped" // the agent died, failed to start, or its setup failed
+	Blocked Kind = "blocked"  // the agent stopped to ask a human
+	Done    Kind = "done"     // a turn finished
+	Stopped Kind = "stopped"  // the agent died, failed to start, or its setup failed
+	PRReady Kind = "pr_ready" // autopilot opened or updated a pull request
 )
 
 // Kinds is every event there is, in the order that reads as a lifecycle.
-var Kinds = []Kind{Blocked, Done, Stopped}
+var Kinds = []Kind{Blocked, Done, Stopped, PRReady}
 
 // Default is what is on when nothing has said otherwise. Something that needs a
 // human is worth an interruption and an agent that has stopped is worth
 // knowing; a finished turn is worth seeing when you get back. Four agents
 // finishing turns is a banner every ninety seconds, and a notifier you mute is
 // a notifier you deleted.
-func Default() []string { return []string{string(Blocked), string(Stopped)} }
+//
+// pr_ready is on because it cannot spam: it fires only from autopilot, which
+// is opt-in per workspace, and only when a publish moved something — and "your
+// PR is ready" is the entire payoff of switching the loop on.
+func Default() []string { return []string{string(Blocked), string(Stopped), string(PRReady)} }
 
 // Signal is one reading of a session. Detail is whatever the state has to say
 // for itself — the escalation's title when blocked, the failure when stopped —

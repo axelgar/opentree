@@ -3,27 +3,30 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up      key.Binding
-	Down    key.Binding
-	New     key.Binding
-	Issue   key.Binding
-	Remote  key.Binding
-	Enter   key.Binding
-	Diff    key.Binding
-	PR      key.Binding
-	Open    key.Binding
-	Review  key.Binding
-	Delete  key.Binding
-	Select  key.Binding
-	Filter  key.Binding
-	Sort    key.Binding
-	Agent   key.Binding
-	Answer  key.Binding
-	Stop    key.Binding
-	Msg     key.Binding
-	Server  key.Binding
-	Blocked key.Binding
-	ErrLog  key.Binding
+	Up     key.Binding
+	Down   key.Binding
+	New    key.Binding
+	Issue  key.Binding
+	Remote key.Binding
+	Enter  key.Binding
+	Diff   key.Binding
+	PR     key.Binding
+	Open   key.Binding
+	Review key.Binding
+	// Autopilot pairs with PR the way Review does: p publishes once by hand,
+	// P keeps publishing until the PR is green.
+	Autopilot key.Binding
+	Delete    key.Binding
+	Select    key.Binding
+	Filter    key.Binding
+	Sort      key.Binding
+	Agent     key.Binding
+	Answer    key.Binding
+	Stop      key.Binding
+	Msg       key.Binding
+	Server    key.Binding
+	Blocked   key.Binding
+	ErrLog    key.Binding
 	// CopyErrLog is only ever consulted inside the error log, which swallows
 	// every other key. That is why it can share a letter with Stop without
 	// either becoming ambiguous — the log is modal, and the list is not
@@ -44,7 +47,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
-		{k.Diff, k.PR, k.Open, k.Review, k.Select, k.Delete},
+		{k.Diff, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
 		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
 		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
@@ -90,6 +93,10 @@ var keys = keyMap{
 	Review: key.NewBinding(
 		key.WithKeys("R"),
 		key.WithHelp("R", "send reviews to agent"),
+	),
+	Autopilot: key.NewBinding(
+		key.WithKeys("P"),
+		key.WithHelp("P", "autopilot on/off"),
 	),
 	Delete: key.NewBinding(
 		key.WithKeys("x"),

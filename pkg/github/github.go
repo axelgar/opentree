@@ -527,6 +527,58 @@ func prViewError(output []byte, err error) error {
 	return fmt.Errorf("gh pr view failed: %w\nOutput: %s", err, strings.TrimSpace(out))
 }
 
+// PRInfo is what publishing needs to know about a branch's existing PR: where
+// it is, whether it is still open, which commit it currently serves, and the
+// body — the last so a caller can tell an autopilot-written description from a
+// human's before overwriting one.
+type PRInfo struct {
+	URL     string
+	State   string // lowercased: "open", "merged", "closed"
+	HeadSha string
+	Body    string
+}
+
+// FindPR looks up the pull request for a branch, or reports that there is
+// none. No PR is (nil, nil), not an error: it is the answer that makes
+// creating one the right next move, and every caller branches on it.
+func (pm *PRManager) FindPR(branch, repoDir string) (*PRInfo, error) {
+	if !pm.IsInstalled() || !hasGitHubRemote(repoDir) {
+		return nil, nil
+	}
+	output, stderr, err := ghRun(repoDir, "pr", "view", branch, "--json", "url,state,headRefOid,body")
+	if err != nil {
+		return nil, prViewError(stderr, err)
+	}
+	var raw struct {
+		URL        string `json:"url"`
+		State      string `json:"state"`
+		HeadRefOid string `json:"headRefOid"`
+		Body       string `json:"body"`
+	}
+	if err := json.Unmarshal(output, &raw); err != nil {
+		return nil, fmt.Errorf("unexpected gh pr view output: %w", err)
+	}
+	return &PRInfo{
+		URL:     raw.URL,
+		State:   strings.ToLower(raw.State),
+		HeadSha: raw.HeadRefOid,
+		Body:    raw.Body,
+	}, nil
+}
+
+// UpdatePR rewrites an existing PR's title and body. The caller decides
+// whether that is its place — FindPR's Body is what makes that call possible.
+func (pm *PRManager) UpdatePR(branch, title, body string) error {
+	if !pm.IsInstalled() {
+		return fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
+	}
+	_, stderr, err := ghRun("", "pr", "edit", branch, "--title", title, "--body", body)
+	if err != nil {
+		return fmt.Errorf("failed to update PR: %w\nOutput: %s", err, stderr)
+	}
+	return nil
+}
+
 // GetPRStatus checks if a PR exists for the given branch
 func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 	if !pm.IsInstalled() || !hasGitHubRemote("") {
@@ -577,6 +629,30 @@ type rollupCheck struct {
 	State      string `json:"state"`
 }
 
+// checkFailed is the one vocabulary of failure, shared between the one-word
+// rollup and the detailed fetch so the badge and the forwarded failure can
+// never disagree about what failed.
+func checkFailed(conclusion, state string) bool {
+	switch strings.ToUpper(conclusion) {
+	case "FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "STARTUP_FAILURE":
+		return true
+	}
+	switch strings.ToUpper(state) {
+	case "FAILURE", "ERROR":
+		return true
+	}
+	return false
+}
+
+// checkPassed is the other half; what is neither is still running.
+func checkPassed(conclusion, state string) bool {
+	switch strings.ToUpper(conclusion) {
+	case "SUCCESS", "NEUTRAL", "SKIPPED":
+		return true
+	}
+	return strings.EqualFold(state, "SUCCESS")
+}
+
 // deriveCIStatus folds a status rollup into "success", "failure", "pending",
 // or "" (no checks). Anything unrecognized counts as pending, never success:
 // a false green on CI is worse than a lingering yellow.
@@ -586,16 +662,10 @@ func deriveCIStatus(checks []rollupCheck) string {
 	}
 	status := "success"
 	for _, check := range checks {
-		switch strings.ToUpper(check.Conclusion) {
-		case "FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "STARTUP_FAILURE":
+		if checkFailed(check.Conclusion, check.State) {
 			return "failure"
-		case "SUCCESS", "NEUTRAL", "SKIPPED":
-			continue
 		}
-		switch strings.ToUpper(check.State) {
-		case "FAILURE", "ERROR":
-			return "failure"
-		case "SUCCESS":
+		if checkPassed(check.Conclusion, check.State) {
 			continue
 		}
 		// Not conclusively finished: in-progress/queued/waiting check runs,

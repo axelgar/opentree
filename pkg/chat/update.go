@@ -66,6 +66,14 @@ func signalOf(st Status) notify.Signal {
 		return notify.Signal{State: notify.StateBlocked, Detail: title}
 	case st.State == StateSettingUp && st.Error != "":
 		return notify.Signal{State: notify.StateStopped, Detail: st.Error}
+	// The approval question is a human question, and blocked is the signal
+	// humans have turned on; a running check or publish reads as working, so
+	// done fires once when the whole loop settles rather than in the gap
+	// between the turn ending and the check starting.
+	case st.State == StateChecking && st.Autopilot != nil && st.Autopilot.Phase == "asking":
+		return notify.Signal{State: notify.StateBlocked, Detail: "approve the check command"}
+	case st.State == StateChecking:
+		return notify.Signal{State: notify.StateWorking}
 	case st.State == StateStopped:
 		return notify.Signal{State: notify.StateStopped}
 	case st.State == StateWorking:
@@ -108,10 +116,35 @@ func (m Model) status() Status {
 		}
 	case m.dead || m.authNeed:
 		st.State = StateStopped
+	case m.auto.active():
+		st.State = StateChecking
 	case m.turn:
 		st.State = StateWorking
 	case m.sessionID == "":
 		st.State = StateStarting
+	}
+
+	if m.auto.enabled() {
+		st.Autopilot = &AutopilotStatus{
+			Enabled:   m.auto.enabled(),
+			Phase:     autopilotPhaseName(m.auto.stage),
+			Iteration: m.auto.iterations,
+			PRURL:     m.auto.prURL,
+		}
+		if m.auto.published {
+			st.Autopilot.Outcome = "published"
+		}
+		// The loop's failures travel the same road setup's do: into the error
+		// log of a dashboard whose window this may never be.
+		if st.Error == "" {
+			switch {
+			case m.auto.stage == autoHalted:
+				st.Error = fmt.Sprintf("%s: autopilot halted — the check is still failing after %d attempts",
+					m.opts.Workspace, m.auto.iterations)
+			case m.auto.err != nil:
+				st.Error = m.opts.Workspace + ": autopilot: " + m.auto.err.Error()
+			}
+		}
 	}
 
 	if m.queued != "" {
@@ -207,7 +240,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.appendNotice(turnSummary(msg.resp, elapsed))
 		m = m.relayout()
-		return m.flushQueued()
+		return m.afterTurn(msg.resp)
+
+	case checkOutputMsg:
+		m = m.appendSetupLine(msg.line)
+		return m.relayout(), waitForMsg(m.msgs)
+
+	case checkDoneMsg:
+		return m.finishCheck(msg)
+
+	case publishDoneMsg:
+		return m.finishPublish(msg)
+
+	case autoTickMsg:
+		return m.handleAutoTick()
+
+	case autoPollResultMsg:
+		return m.handleAutoPollResult(msg)
 
 	case setupBeginMsg:
 		return m.beginSetup()
@@ -229,8 +278,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinnerTickMsg:
 		// The setup phase spins for the same reason a turn does: something is
-		// running that prints nothing for minutes at a time.
-		if !m.turn && m.setup.stage != setupRunning {
+		// running that prints nothing for minutes at a time. So does a check.
+		if !m.turn && m.setup.stage != setupRunning && !m.auto.running() {
 			// The chain ends here, so whatever needs one next has to be free to
 			// start a fresh one. Left set, this would be a spinner that ran for
 			// the first turn of a session and stood still for every one after.
@@ -754,6 +803,20 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 		}
 		next, cmd := m.startTurn(text, sentRemotely)
 		return next, cmd, Result{OK: true}
+
+	case CommandAutopilot:
+		switch cmd.Text {
+		case "on", "off":
+			next, reason := m.setAutopilot(cmd.Text == "on")
+			if reason != "" {
+				return m, nil, Result{Reason: reason}
+			}
+			// A PR may already exist to watch; startAutoPoll is a no-op when
+			// there is nothing to do or a chain is already beating.
+			next, poll := next.startAutoPoll()
+			return next.relayout(), poll, Result{OK: true}
+		}
+		return m, nil, Result{Reason: `autopilot takes "on" or "off"`}
 	}
 	return m, nil, Result{Reason: m.unknownCommandReason(cmd)}
 }
@@ -791,6 +854,12 @@ const (
 	// the review sender — whether it runs the moment it arrives or waits in the
 	// queue first. It carries no attachments at all.
 	sentRemotely
+
+	// autopilotFed is the loop's own feedback: a failed check's output, or a
+	// forwarded CI failure or review. No attachments, and — unlike the two
+	// above — it does not reset the loop's iteration count, which is the whole
+	// mechanism by which the loop notices it is going in circles.
+	autopilotFed
 )
 
 // startTurn sends a message to the agent and records it in the log.
@@ -811,6 +880,15 @@ func (m Model) startTurn(text string, from turnSource) (Model, tea.Cmd) {
 	blocks, notices := m.composeTurn(text, from)
 	if from == typedHere {
 		m.pending = nil
+	}
+
+	// A human's message is a new task: the loop's failure count starts over,
+	// and a halt — which exists to wait for exactly this — lifts.
+	if from != autopilotFed {
+		m.auto.iterations = 0
+		if m.auto.stage == autoHalted {
+			m.auto.stage = autoIdle
+		}
 	}
 
 	cmd := m.promptCmd(blocks)

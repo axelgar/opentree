@@ -23,6 +23,7 @@ const (
 	StateStopped   = "stopped"
 	StateStarting  = "starting"
 	StateSettingUp = "setting_up"
+	StateChecking  = "checking"
 	dialTimeout    = 300 * time.Millisecond
 	commandTimeout = 2 * time.Second
 )
@@ -48,7 +49,11 @@ const (
 // Bump it when a change needs the other side to know it happened: a field one
 // end must not assume the other honours, or a command whose refusal would
 // otherwise read as a fault.
-const ProtocolVersion = 1
+//
+// 2: the autopilot command and the Autopilot status field. A dashboard that
+// sends "autopilot" to a version-1 window gets a refusal that names the
+// upgrade rather than a bug.
+const ProtocolVersion = 2
 
 // Status is what a chat process publishes about its session. It replaces the
 // hook-written status file for ACP agents: the chat process is holding the
@@ -87,6 +92,31 @@ type Status struct {
 	// reading for the first upgrade after they land — see ProtocolVersion.
 	Protocol int    `json:"protocol,omitempty"`
 	Version  string `json:"version,omitempty"`
+
+	// Autopilot is the loop's state, present only when it is on. Nil from a
+	// chat where it is off — and from every chat built before the field, which
+	// reads the same and should.
+	Autopilot *AutopilotStatus `json:"autopilot,omitempty"`
+}
+
+// AutopilotStatus is the loop as the dashboard and dispatch read it.
+type AutopilotStatus struct {
+	Enabled bool `json:"enabled"`
+
+	// Phase is where the loop is: "idle", "asking", "checking", "publishing",
+	// "halted".
+	Phase string `json:"phase,omitempty"`
+
+	// Iteration counts consecutive autopilot-fed turns since the last human
+	// prompt, which is what "halted" is measured against.
+	Iteration int `json:"iteration,omitempty"`
+
+	// PRURL is the PR the loop last published, once there is one.
+	PRURL string `json:"pr_url,omitempty"`
+
+	// Outcome is "published" once a publish has succeeded in this chat's
+	// lifetime. It is how a headless dispatch knows it is done.
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // Behind reports whether the chat that published this status speaks an older
@@ -117,6 +147,9 @@ const (
 	CommandPermission = "permission"
 	CommandInterrupt  = "interrupt"
 	CommandPrompt     = "prompt"
+
+	// CommandAutopilot flips the loop, Text carrying "on" or "off".
+	CommandAutopilot = "autopilot"
 )
 
 type Command struct {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -58,12 +59,15 @@ func init() {
 	rootCmd.AddCommand(cmd.DeleteCmd)
 	rootCmd.AddCommand(cmd.DiffCmd)
 	rootCmd.AddCommand(cmd.PrCmd)
+	rootCmd.AddCommand(cmd.AutoCmd)
+	rootCmd.AddCommand(cmd.DispatchCmd)
 	rootCmd.AddCommand(cmd.IssueCmd)
 	rootCmd.AddCommand(cmd.InstallCompletionCmd)
 	rootCmd.AddCommand(cmd.UninstallCmd)
 	rootCmd.AddCommand(cmd.ConfigCmd)
 	rootCmd.AddCommand(cmd.AgentsCmd)
 	rootCmd.AddCommand(cmd.ReviewCmd)
+	rootCmd.AddCommand(cmd.CICmd)
 	rootCmd.AddCommand(cmd.PruneCmd)
 	rootCmd.AddCommand(cmd.TrustCmd)
 	rootCmd.AddCommand(cmd.SetupCmd)
@@ -84,6 +88,12 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		// dispatch --headless promises codes a script can branch on; every
+		// other failure keeps the generic 1.
+		var coded cmd.ExitCodeError
+		if errors.As(err, &coded) {
+			os.Exit(coded.Code)
+		}
 		os.Exit(1)
 	}
 }

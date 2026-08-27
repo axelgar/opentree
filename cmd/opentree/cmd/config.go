@@ -98,6 +98,16 @@ var configKeys = []configKey{
 		source: func(s config.ConfigSource) string { return s.WorkspaceRun },
 	},
 	{
+		// The same one-string argument as workspace.run, and the same trust
+		// consequence: writing it does not approve it — the gate hashes the
+		// exact text, so autopilot asks about the new command before its first
+		// run even though you typed it yourself.
+		name:   "workspace.check",
+		desc:   "Command autopilot runs after each agent turn to judge the work",
+		get:    func(c *config.Config) string { return c.Workspace.Check },
+		source: func(s config.ConfigSource) string { return s.WorkspaceCheck },
+	},
+	{
 		name:   "tmux.session_prefix",
 		desc:   "Prefix for tmux session names",
 		get:    func(c *config.Config) string { return c.Tmux.SessionPrefix },
@@ -114,7 +124,7 @@ var configKeys = []configKey{
 	},
 	{
 		name:       "notify.on",
-		desc:       "Events worth an interruption: blocked, done, stopped",
+		desc:       "Events worth an interruption: blocked, done, stopped, pr_ready",
 		get:        func(c *config.Config) string { return formatList(c.Notify.On) },
 		source:     func(s config.ConfigSource) string { return s.NotifyOn },
 		listOf:     "event names",

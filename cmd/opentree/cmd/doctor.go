@@ -116,11 +116,11 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 			}
 
 			section("trust")
-			commands, run := cfg.Workspace.Setup, cfg.Workspace.Run
+			commands, run, check := cfg.Workspace.Setup, cfg.Workspace.Run, cfg.Workspace.Check
 			switch {
-			case !bootstrap.Executable(commands, run):
-				line("status", "nothing to approve — [workspace] names no setup or run command")
-			case bootstrap.Trusted(repoRoot, commands, run):
+			case !bootstrap.Executable(commands, run, check):
+				line("status", "nothing to approve — [workspace] names no setup, run or check command")
+			case bootstrap.Trusted(repoRoot, commands, run, check):
 				line("status", "approved on this machine")
 			default:
 				line("status", "NOT approved — run `opentree trust` (setup will refuse until then)")

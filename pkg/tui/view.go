@@ -452,6 +452,10 @@ func (m Model) View() string {
 				title += "  " + badge
 			}
 
+			if badge := renderAutopilotBadge(ws); badge != "" {
+				title += "  " + badge
+			}
+
 			// The agent working here cannot see the repository's own skills, and
 			// nothing else about the row would say so.
 			if len(ws.MissingSkills) > 0 {
@@ -725,6 +729,26 @@ func (m Model) sortedWorkspaces() []WorkspaceItem {
 		})
 	}
 	return ws
+}
+
+// renderAutopilotBadge marks a workspace the loop is driving. The persisted
+// flag decides whether the badge exists at all — a chat that is not running
+// still shows the workspace as one autopilot owns — and the live status, when
+// there is one, adds the state a glance wants: halted is the one that needs a
+// human.
+func renderAutopilotBadge(ws WorkspaceItem) string {
+	on := ws.Autopilot
+	st := ws.ChatStatus
+	if st != nil && st.Autopilot != nil {
+		on = st.Autopilot.Enabled
+	}
+	if !on {
+		return ""
+	}
+	if st != nil && st.Autopilot != nil && st.Autopilot.Phase == "halted" {
+		return dangerStyle.Render("auto · halted")
+	}
+	return autopilotBadgeStyle.Render("auto")
 }
 
 func renderCIBadge(ci string) string {

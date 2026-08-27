@@ -71,6 +71,12 @@ type mockGitHubManager struct {
 	fetchReviewsResult []github.ReviewComment
 	fetchReviewsErr    error
 	createPRResult     string
+	findPRResult       *github.PRInfo
+	findPRErr          error
+
+	// What PublishPR actually did, for asserting the safeguards.
+	createPRCalls []string // "title\x00body"
+	updatePRCalls []string // "title\x00body"
 }
 
 func (m *mockGitHubManager) IsInstalled() bool { return true }
@@ -78,10 +84,18 @@ func (m *mockGitHubManager) GetIssue(number int) (*github.Issue, error) {
 	return nil, errors.New("not implemented")
 }
 func (m *mockGitHubManager) CreatePR(branch, baseBranch, title, body string) (string, error) {
+	m.createPRCalls = append(m.createPRCalls, title+"\x00"+body)
 	if m.createPRResult != "" {
 		return m.createPRResult, nil
 	}
 	return "", errors.New("not implemented")
+}
+func (m *mockGitHubManager) FindPR(branch, repoDir string) (*github.PRInfo, error) {
+	return m.findPRResult, m.findPRErr
+}
+func (m *mockGitHubManager) UpdatePR(branch, title, body string) error {
+	m.updatePRCalls = append(m.updatePRCalls, title+"\x00"+body)
+	return nil
 }
 func (m *mockGitHubManager) FetchPRReviews(branch string) ([]github.ReviewComment, error) {
 	return m.fetchReviewsResult, m.fetchReviewsErr

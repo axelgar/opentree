@@ -40,6 +40,11 @@ type Setup struct {
 	// a payload one key down.
 	Run string
 
+	// Check is the command autopilot runs after each agent turn. Shown for the
+	// same reason Run is: approving the block approves it, and an approval that
+	// mentioned only the install would understate what it allows.
+	Check string
+
 	// Trusted is whether this machine has already approved these commands.
 	// False puts the approval question on screen before anything runs.
 	Trusted bool
@@ -263,10 +268,13 @@ func (m Model) setupLines() []string {
 		for _, c := range m.setup.spec.Commands {
 			lines = append(lines, noticeStyle.Render(ui.Truncate("  setup  "+c, width)))
 		}
+		if check := m.setup.spec.Check; check != "" {
+			// Shown because approving covers it: the check command is code from
+			// the same tracked file, and an approval that mentioned only the
+			// install would understate what it allows. Same for run below.
+			lines = append(lines, noticeStyle.Render(ui.Truncate("  check  "+check, width)))
+		}
 		if run := m.setup.spec.Run; run != "" {
-			// Shown because approving covers it: the dev server command is code
-			// from the same tracked file, and an approval that mentioned only
-			// the install would understate what it allows.
 			lines = append(lines, noticeStyle.Render(ui.Truncate("  run    "+run, width)))
 		}
 		lines = append(lines, helpStyle.Render("from opentree.toml, which arrives with a clone"))

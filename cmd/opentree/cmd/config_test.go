@@ -168,7 +168,7 @@ func TestGetConfigValue_ReadsEverySetting(t *testing.T) {
 	cfg := &config.Config{
 		Agent:     config.AgentConfig{Command: "opencode"},
 		Worktree:  config.WorktreeConfig{BaseDir: ".opentree", DefaultBase: "main"},
-		Workspace: config.WorkspaceConfig{Setup: []string{"npm ci"}, Seed: []string{".env"}, Run: "npm run dev"},
+		Workspace: config.WorkspaceConfig{Setup: []string{"npm ci"}, Seed: []string{".env"}, Run: "npm run dev", Check: "npm test"},
 		Tmux:      config.TmuxConfig{SessionPrefix: "ot"},
 		GitHub:    config.GitHubConfig{AutoPush: &autoPush},
 		Notify:    config.NotifyConfig{On: []string{"blocked"}, Desktop: &desktop},
@@ -181,6 +181,7 @@ func TestGetConfigValue_ReadsEverySetting(t *testing.T) {
 		"workspace.setup":       `["npm ci"]`,
 		"workspace.seed":        `[".env"]`,
 		"workspace.run":         "npm run dev",
+		"workspace.check":       "npm test",
 		"tmux.session_prefix":   "ot",
 		"github.auto_push":      "true",
 		"notify.on":             `["blocked"]`,
@@ -358,7 +359,7 @@ func TestConfigLongHelp_DocumentsEveryKey(t *testing.T) {
 			t.Errorf("`opentree config --help` never mentions %s", k.name)
 		}
 	}
-	if !strings.Contains(ConfigCmd.Long, "notify.on              Events worth an interruption: blocked, done, stopped — global only, edit the file") {
+	if !strings.Contains(ConfigCmd.Long, "notify.on              Events worth an interruption: blocked, done, stopped, pr_ready — global only, edit the file") {
 		t.Errorf("the key block lost its alignment or its restrictions:\n%s", ConfigCmd.Long)
 	}
 }

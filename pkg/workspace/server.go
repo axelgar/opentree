@@ -57,7 +57,7 @@ func (s *Service) StartServer(name string) (int, error) {
 	// payload move one key down. Nothing here can ask — the question belongs on
 	// a screen somebody is looking at — so an unapproved command is refused
 	// with the way to approve it.
-	if !bootstrap.Trusted(s.repoRoot, s.cfg.Workspace.Setup, run) {
+	if !bootstrap.Trusted(s.repoRoot, s.cfg.Workspace.Setup, run, s.cfg.Workspace.Check) {
 		return 0, fmt.Errorf("this repository's run command is not approved on this machine — run `opentree trust`")
 	}
 	if s.ServerRunning(name) {

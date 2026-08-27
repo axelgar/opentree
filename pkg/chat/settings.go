@@ -173,6 +173,11 @@ var clientCommandTable = []struct {
 	desc:      "what the agent printed outside the conversation",
 	available: Model.canShowOutput,
 	run:       Model.showOutput,
+}, {
+	name:      "autopilot",
+	desc:      "toggle the check-and-publish loop for this workspace",
+	available: Model.canToggleAutopilot,
+	run:       Model.toggleAutopilot,
 }}
 
 // clientCommandList is opentree's own slash commands, in the order the palette

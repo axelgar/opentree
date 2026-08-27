@@ -364,41 +364,9 @@ func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
 	base := m.baseOr(ws.BaseBranch)
 	return func() tea.Msg {
-		title, body := generatePRContent(ws.Branch, base, ws.WorktreeDir, ws.IssueNumber, ws.IssueTitle)
+		title, body := workspace.GeneratePRContent(ws.WorktreeDir, ws.Branch, base, ws.IssueNumber, ws.IssueTitle)
 		return prContentGeneratedMsg{wsName: ws.Name, title: title, body: body}
 	}
-}
-
-func generatePRContent(branch, baseBranch, worktreeDir string, issueNumber int, issueTitle string) (title, body string) {
-	var commits []string
-	if worktreeDir != "" {
-		if out, err := gitutil.Output(worktreeDir, "log", baseBranch+"..HEAD", "--format=%s", "--no-merges"); err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				if strings.TrimSpace(line) != "" {
-					commits = append(commits, strings.TrimSpace(line))
-				}
-			}
-		}
-	}
-
-	if issueTitle != "" {
-		title = issueTitle
-	} else {
-		title = gitutil.BranchToTitle(branch)
-	}
-
-	var sb strings.Builder
-	if len(commits) > 0 {
-		sb.WriteString("## Changes\n\n")
-		for _, c := range commits {
-			sb.WriteString("- " + c + "\n")
-		}
-		sb.WriteString("\n")
-	}
-	if issueNumber > 0 {
-		fmt.Fprintf(&sb, "Closes #%d\n", issueNumber)
-	}
-	return title, sb.String()
 }
 
 func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {

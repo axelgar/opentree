@@ -63,6 +63,15 @@ type Options struct {
 	// connected. The zero value is a chat with nothing to prepare.
 	Setup Setup
 
+	// Autopilot is the loop that drives this workspace toward a green PR. The
+	// zero value is a chat the loop is not wired into at all.
+	Autopilot Autopilot
+
+	// Announce carries an event that is not a state edge — autopilot's "the
+	// PR exists" — to the same surfaces Notify feeds. Nil announces nothing.
+	// Same contract as Notify: called on the render loop, must not block.
+	Announce func(notify.Event)
+
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
@@ -191,6 +200,17 @@ func Run(ctx context.Context, opts Options) error {
 	m.launch = launch
 	m.send = send
 	m.setup.spec = opts.Setup
+	m.auto.spec = opts.Autopilot
+	m.auto.prURL = opts.Autopilot.PRURL
+	if opts.Autopilot.Enabled && opts.Autopilot.available() {
+		m.auto.stage = autoIdle
+		// A workspace that already has a PR starts watching it now; the flag
+		// is set here, where the model can still be written, and Init issues
+		// the first tick it promises.
+		if opts.Autopilot.Poll != nil && m.auto.prURL != "" {
+			m.autoPolling = true
+		}
+	}
 	m.launching = !opts.Setup.wanted()
 
 	// Best-effort: a chat with no control socket still works, it is just
@@ -465,6 +485,14 @@ type Model struct {
 	// ready and the agent has been started.
 	setup setupPhase
 
+	// auto is the autopilot loop: check after each turn, feed failures back,
+	// publish on green.
+	auto autoPhase
+
+	// autoPolling is whether the poll's tick chain is already on its way back
+	// — the same guard spinning is, for the same double-chain reason.
+	autoPolling bool
+
 	generation   int
 	agentVersion string
 	authMethods  []acp.AuthMethod
@@ -695,6 +723,7 @@ const (
 	overlayNone overlay = iota
 	overlayPermission
 	overlaySetup
+	overlayAutopilot
 	overlayLaunching
 	overlayLogin
 	overlayStopped
@@ -731,6 +760,11 @@ func (m Model) overlay() overlay {
 		return overlayLogin
 	case m.stopped():
 		return overlayStopped
+	// The loop's own panels: an approval question, or a check or publish in
+	// flight. Below the stopped states because a dead agent outranks a loop
+	// that cannot act for it anyway.
+	case m.auto.active():
+		return overlayAutopilot
 	case m.settings.open:
 		return overlaySettings
 	case m.sessions.open:
@@ -761,6 +795,7 @@ func init() {
 	overlayDefs = map[overlay]overlayDef{
 		overlayPermission: {Model.handlePermissionKey, Model.permissionHeight, Model.permissionView},
 		overlaySetup:      {Model.handleSetupKey, Model.setupHeight, Model.setupView},
+		overlayAutopilot:  {Model.handleAutopilotKey, Model.autopilotHeight, Model.autopilotView},
 		overlayLaunching:  {Model.handleLaunchingKey, Model.launchingHeight, Model.launchingView},
 		overlayLogin:      {Model.handleLoginKey, Model.loginHeight, Model.loginView},
 		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
@@ -798,7 +833,11 @@ func (m Model) Init() tea.Cmd {
 		// window is drawn and answering before the handshake finishes.
 		start = m.launchCmd(true)
 	}
-	return tea.Batch(waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink)
+	cmds := []tea.Cmd{waitForMsg(m.msgs), start, loadFilesCmd(m.opts.Cwd), textarea.Blink}
+	if m.autoPolling {
+		cmds = append(cmds, autoPollTick())
+	}
+	return tea.Batch(cmds...)
 }
 
 // loadFilesCmd lists the worktree's tracked files for @-mention completion.
