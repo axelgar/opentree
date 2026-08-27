@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -59,9 +60,24 @@ type statusServer struct {
 	ln net.Listener
 }
 
+// shortSocketPath is a socket path that binds on every platform. t.TempDir()
+// embeds the whole test name, and on macOS that lands under the already-long
+// /var/folders/... — past the ~104-byte cap unix sockets bind under, which is
+// the same cliff chat.SocketPath documents. A bare MkdirTemp keeps the OS
+// prefix and drops the test name.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ot")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s")
+}
+
 func newStatusServer(t *testing.T, name string) (*statusServer, string) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "s")
+	sock := shortSocketPath(t)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -96,7 +112,7 @@ func TestWaitForChat_AnswersWhenTheSocketDoes(t *testing.T) {
 	if err := waitForChat(sock, "ws", time.Second); err != nil {
 		t.Fatalf("waitForChat: %v", err)
 	}
-	if err := waitForChat(filepath.Join(t.TempDir(), "nothing"), "ws", 700*time.Millisecond); err == nil {
+	if err := waitForChat(filepath.Join(shortSocketPath(t), "nothing"), "ws", 700*time.Millisecond); err == nil {
 		t.Fatal("a socket nobody serves should time out")
 	}
 }
