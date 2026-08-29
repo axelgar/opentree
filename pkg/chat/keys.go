@@ -93,7 +93,7 @@ var keys = keyMap{
 	),
 	Cancel: key.NewBinding(
 		key.WithKeys("esc"),
-		key.WithHelp("esc", "interrupt"),
+		key.WithHelp("esc", "interrupt/clear"),
 	),
 	PageUp: key.NewBinding(
 		key.WithKeys("pgup"),

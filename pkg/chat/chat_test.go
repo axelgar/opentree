@@ -1922,6 +1922,35 @@ func TestUserMessage_BandRunsTheFullColumn(t *testing.T) {
 	}
 }
 
+// A notice is often an error line from an adapter or a dumped stderr ring, and
+// those run long. Unwrapped, it was the one entry kind that could push the
+// whole log sideways.
+func TestNotice_WrapsToTheColumn(t *testing.T) {
+	m := newTestModel()
+	long := strings.Repeat("the adapter said something ", 10)
+	for _, line := range strings.Split(m.renderEntry(entry{kind: entryNotice, text: long}, 40), "\n") {
+		if got := lipgloss.Width(line); got > 40 {
+			t.Fatalf("a notice line rendered %d cells wide at width 40", got)
+		}
+	}
+}
+
+// Esc has always meant "stop": with a turn in flight it interrupts the agent,
+// and with nothing running it clears a message not yet sent. The clear is
+// recorded first, so ↑ is its undo.
+func TestCancel_ClearsAnUnsentMessage(t *testing.T) {
+	m := typeInto(newTestModel(), "half a thought")
+
+	m, _ = applyUpdate(m, keyMsg("esc"))
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("after esc the box holds %q, want it empty", got)
+	}
+	m, _ = applyUpdate(m, up)
+	if got := m.input.Value(); got != "half a thought" {
+		t.Fatalf("after ↑ the box holds %q, want the cleared message back", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Attachments
 // ---------------------------------------------------------------------------

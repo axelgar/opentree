@@ -797,7 +797,10 @@ func (m Model) renderEntry(e entry, width int) string {
 	case entryThought:
 		return wrap.Inherit(thoughtStyle).Render(e.text)
 	case entryNotice:
-		return noticeStyle.Render("  " + e.text)
+		// Wrapped like the prose kinds. A notice is often an error line from
+		// an adapter or a dumped stderr ring, and those run long; unwrapped it
+		// was the one entry kind that could push the whole log sideways.
+		return wrap.PaddingLeft(2).Inherit(noticeStyle).Render(e.text)
 	case entrySetup:
 		// A command's own output, quieter than the conversation and not wrapped:
 		// installers align in columns, and rewrapping their output to the

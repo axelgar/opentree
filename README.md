@@ -206,7 +206,7 @@ agent's own logo, in its own colours:
 | `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
-| `esc` | interrupt the current turn |
+| `esc` | interrupt the current turn — or clear an unsent message (`↑` brings it back) |
 | `shift+tab` | cycle the agent's mode (plan / build / …) |
 | `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
 | `ctrl+o` | show or hide the agent's reasoning |

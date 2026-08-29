@@ -527,6 +527,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Cancel):
 		if m.turn {
 			_ = m.client.Cancel(m.sessionID)
+			return m, nil
+		}
+		// With no turn to interrupt, esc clears a message not yet sent. It is
+		// recorded first, so ↑ undoes the clear; pasted images go with their
+		// labels, exactly as if the labels had been deleted by hand.
+		if strings.TrimSpace(m.input.Value()) != "" {
+			m = m.sent(m.input.Value())
+			m.pending = nil
 		}
 		return m, nil
 
