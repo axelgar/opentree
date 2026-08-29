@@ -1922,6 +1922,70 @@ func TestUserMessage_BandRunsTheFullColumn(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The render cache
+// ---------------------------------------------------------------------------
+
+// The cache is a memo of a pure function, so the one thing worth proving is
+// that a cached render and a fresh one are the same string — served twice, so
+// the second pass really is the memo speaking.
+func TestRenderCache_AgreesWithRenderingFresh(t *testing.T) {
+	feed := func(m Model) Model {
+		m, _ = applyUpdate(m, textUpdate("agent_message_chunk", "some **prose**\n"))
+		m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, acp.ToolCall{
+			ToolCallID: "t1", Title: "go test ./...", Kind: "execute", Status: acp.StatusCompleted,
+		}))
+		m = m.appendNotice("a notice for the log")
+		return m.relayout()
+	}
+	fresh := feed(newTestModel())
+
+	cached := newTestModel()
+	cached.cache = newRenderCache()
+	cached = feed(cached)
+	cached.relayout() // one pass to fill the memos
+
+	if got, want := cached.renderLog(), fresh.renderLog(); got != want {
+		t.Errorf("cached render disagrees with fresh:\n cached: %q\n fresh:  %q", got, want)
+	}
+}
+
+// A patched tool call must repaint even though its entry was already cached —
+// the merge stamps a new revision, which is the whole invalidation story.
+func TestRenderCache_AMergedToolCallRepaints(t *testing.T) {
+	m := newTestModel()
+	m.cache = newRenderCache()
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, acp.ToolCall{
+		ToolCallID: "t1", Title: "go vet ./...", Kind: "execute", Status: acp.StatusCompleted,
+	}))
+	if !strings.Contains(m.renderLog(), "✓") {
+		t.Fatal("the completed call never showed its check mark")
+	}
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCallUpdate, acp.ToolCall{
+		ToolCallID: "t1", Status: acp.StatusFailed,
+	}))
+	if got := m.renderLog(); !strings.Contains(got, "✗") || strings.Contains(got, "✓") {
+		t.Errorf("after the failure merge the log still shows the cached row:\n%s", got)
+	}
+}
+
+// A resize refolds every line, so memos from the old width must not survive.
+func TestRenderCache_AWidthChangeDropsTheMemos(t *testing.T) {
+	m := newTestModel()
+	m.cache = newRenderCache()
+	long := strings.Repeat("words that will fold differently ", 6)
+	m, _ = applyUpdate(m, textUpdate("agent_message_chunk", long))
+	m = m.relayout()
+
+	m, _ = applyUpdate(m, tea.WindowSizeMsg{Width: 48, Height: 30})
+	fresh := newTestModel()
+	fresh.width = 48
+	fresh, _ = applyUpdate(fresh, textUpdate("agent_message_chunk", long))
+	if got, want := m.renderLog(), fresh.renderLog(); got != want {
+		t.Errorf("after a resize the cached log kept the old fold:\n got:  %q\n want: %q", got, want)
+	}
+}
+
 // The agent's prose arrives in chunks and is re-rendered as markdown on each
 // one. Half a fence is the interesting state: the opener has arrived, the
 // closer has not, and the code between them must already read as code.

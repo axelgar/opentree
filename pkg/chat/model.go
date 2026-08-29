@@ -458,6 +458,11 @@ type entry struct {
 	text string
 	tool acp.ToolCall
 	plan []acp.PlanEntry
+
+	// rev names this entry's content, for the render cache: every mutation
+	// stamps a fresh one from the model's counter. Zero means never stamped —
+	// an entry built by hand in a test — and is never cached.
+	rev uint64
 }
 
 type Model struct {
@@ -529,6 +534,17 @@ type Model struct {
 
 	entries []entry
 	toolIdx map[string]int
+
+	// rev is the entry revision counter — monotonic for the life of the chat,
+	// across log resets too, so a cache line can never mistake a new
+	// conversation's entry for the old one that sat at the same index.
+	rev uint64
+
+	// cache memoizes rendered entries by index and revision. A pointer on a
+	// model passed by value, deliberately: renderEntry is pure, so every copy
+	// writing memos into the same map only ever agrees, and the alternative is
+	// no cache surviving Update's copies at all.
+	cache *renderCache
 
 	input    textarea.Model
 	viewport viewport.Model
@@ -625,6 +641,7 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 		msgs:    msgs,
 		opts:    opts,
 		toolIdx: make(map[string]int),
+		cache:   newRenderCache(),
 		input:   newComposer(),
 		help:    help.New(),
 		keys:    keys,

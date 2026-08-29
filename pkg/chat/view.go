@@ -706,11 +706,21 @@ func (m Model) renderLog() string {
 	if !m.conversationStarted() && !m.turn {
 		b.WriteString(m.emptyState())
 	}
-	for _, e := range m.entries {
+	cache := m.cache.at(width)
+	for i, e := range m.entries {
 		if e.kind == entryThought && m.hideThoughts {
 			continue
 		}
-		b.WriteString(m.renderEntry(e, width))
+		if s, ok := cache.get(i, e.rev); ok {
+			b.WriteString(s)
+			b.WriteString("\n")
+			continue
+		}
+		s := m.renderEntry(e, width)
+		if cacheable(e) {
+			cache.put(i, e.rev, s)
+		}
+		b.WriteString(s)
 		b.WriteString("\n")
 	}
 	if m.turn {
@@ -718,6 +728,66 @@ func (m Model) renderLog() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// renderCache memoizes rendered entries by index and revision, at one width.
+// It exists because relayout re-renders the whole log — including once per
+// spinner frame while a turn is live — and a long conversation is thousands of
+// settled lines re-wrapped, re-diffed and re-highlighted to produce exactly
+// what they produced last frame. The join stays O(log); the rendering becomes
+// O(what changed).
+//
+// Correctness leans on three facts: renderEntry is pure in (entry, width),
+// revisions are unique for the life of the chat, and a nil cache — every
+// hand-built test model — degrades to rendering everything, identically.
+type renderCache struct {
+	width int
+	lines map[int]cachedLine
+}
+
+type cachedLine struct {
+	rev  uint64
+	text string
+}
+
+func newRenderCache() *renderCache {
+	return &renderCache{lines: make(map[int]cachedLine)}
+}
+
+// at readies the cache for a render at this width; a width change empties it,
+// since every memo was folded to the old column.
+func (c *renderCache) at(width int) *renderCache {
+	if c != nil && c.width != width {
+		c.width = width
+		clear(c.lines)
+	}
+	return c
+}
+
+func (c *renderCache) get(i int, rev uint64) (string, bool) {
+	if c == nil || rev == 0 {
+		return "", false
+	}
+	l, ok := c.lines[i]
+	if !ok || l.rev != rev {
+		return "", false
+	}
+	return l.text, true
+}
+
+func (c *renderCache) put(i int, rev uint64, text string) {
+	if c != nil && rev != 0 {
+		c.lines[i] = cachedLine{rev: rev, text: text}
+	}
+}
+
+// cacheable is every entry but a live tool row: its glyph is the spinner, and
+// a memo of one frame of a spinner is a spinner that stands still.
+func cacheable(e entry) bool {
+	if e.kind != entryTool {
+		return true
+	}
+	return e.tool.Status == acp.StatusCompleted || e.tool.Status == acp.StatusFailed
 }
 
 // emptyState orients someone who has just landed in a chat they did not set
@@ -847,8 +917,9 @@ func renderPlan(entries []acp.PlanEntry, width int) string {
 //
 // The builder is not tidiness: a long answer wraps to hundreds of rows, and
 // growing a string one row at a time copies everything written so far on each
-// of them — paid again on every frame, because the whole log is re-rendered
-// ten times a second while a turn is live.
+// of them — paid again on every frame, because the entry still streaming is
+// the one the render cache can never hold, and a live turn redraws it ten
+// times a second.
 func (m Model) bulleted(body string) string {
 	b := m.brand()
 	lines := strings.Split(body, "\n")

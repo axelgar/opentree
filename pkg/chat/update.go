@@ -905,7 +905,7 @@ func (m Model) startTurn(text string, from turnSource) (Model, tea.Cmd) {
 	}
 
 	cmd := m.promptCmd(blocks)
-	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks)})
+	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks), rev: m.nextRev()})
 	for _, n := range notices {
 		m = m.appendNotice(n)
 	}
@@ -1124,10 +1124,11 @@ func (m Model) upsertPlan(entries []acp.PlanEntry) Model {
 	for i := range m.entries {
 		if m.entries[i].kind == entryPlan {
 			m.entries[i].plan = entries
+			m.entries[i].rev = m.nextRev()
 			return m
 		}
 	}
-	m.entries = append(m.entries, entry{kind: entryPlan, plan: entries})
+	m.entries = append(m.entries, entry{kind: entryPlan, plan: entries, rev: m.nextRev()})
 	return m
 }
 
@@ -1180,19 +1181,28 @@ func (m Model) appendChunk(kind entryKind, text string) Model {
 	}
 	if n := len(m.entries); n > 0 && m.entries[n-1].kind == kind {
 		m.entries[n-1].text += text
+		m.entries[n-1].rev = m.nextRev()
 		return m
 	}
-	m.entries = append(m.entries, entry{kind: kind, text: text})
+	m.entries = append(m.entries, entry{kind: kind, text: text, rev: m.nextRev()})
 	return m
+}
+
+// nextRev stamps a mutation. Every write to an entry takes one, which is the
+// whole contract the render cache rests on.
+func (m *Model) nextRev() uint64 {
+	m.rev++
+	return m.rev
 }
 
 func (m Model) upsertToolCall(call acp.ToolCall) Model {
 	if i, ok := m.toolIdx[call.ToolCallID]; ok {
 		m.entries[i].tool.Merge(call)
+		m.entries[i].rev = m.nextRev()
 		return m
 	}
 	m.toolIdx[call.ToolCallID] = len(m.entries)
-	m.entries = append(m.entries, entry{kind: entryTool, tool: call})
+	m.entries = append(m.entries, entry{kind: entryTool, tool: call, rev: m.nextRev()})
 	return m
 }
 
@@ -1207,7 +1217,7 @@ const setupLogLines = 200
 func (m Model) appendSetupLine(line string) Model {
 	n := len(m.entries)
 	if n == 0 || m.entries[n-1].kind != entrySetup {
-		m.entries = append(m.entries, entry{kind: entrySetup, text: line})
+		m.entries = append(m.entries, entry{kind: entrySetup, text: line, rev: m.nextRev()})
 		return m
 	}
 	lines := append(strings.Split(m.entries[n-1].text, "\n"), line)
@@ -1215,6 +1225,7 @@ func (m Model) appendSetupLine(line string) Model {
 		lines = lines[len(lines)-setupLogLines:]
 	}
 	m.entries[n-1].text = strings.Join(lines, "\n")
+	m.entries[n-1].rev = m.nextRev()
 	return m
 }
 
@@ -1222,7 +1233,7 @@ func (m Model) appendNotice(text string) Model {
 	if text == "" {
 		return m
 	}
-	m.entries = append(m.entries, entry{kind: entryNotice, text: text})
+	m.entries = append(m.entries, entry{kind: entryNotice, text: text, rev: m.nextRev()})
 	return m
 }
 
