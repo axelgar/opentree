@@ -93,6 +93,13 @@ type Model struct {
 	deleting     bool
 	deleteTarget string // single target; empty means batch (use m.selected)
 
+	// promoting is the promote confirmation dialog; promoteWinner is the
+	// sibling it keeps. Its losers are recomputed at confirm time rather than
+	// stored: the dialog can sit open across a refresh, and a sibling deleted
+	// meanwhile must not be deleted again.
+	promoting     bool
+	promoteWinner string
+
 	// in-flight operation feedback
 	workspaceCreating      bool
 	workspaceCreatingName  string
@@ -250,6 +257,12 @@ type createdWorkspaceMsg struct {
 	worktreeDir string
 }
 type deletedWorkspaceMsg struct{ names []string }
+type promotedWorkspaceMsg struct {
+	winner  string
+	deleted []string
+	losers  []string // everything the promote was asked to delete
+	err     error
+}
 type errMsg struct{ err error }
 type clearErrorMsg struct{ seq int }
 type clearNoticeMsg struct{ seq int }

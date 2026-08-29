@@ -62,6 +62,11 @@ var (
 				Background(lipgloss.Color("#8250DF")).
 				Padding(0, 1)
 
+	fanoutBadgeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF")).
+				Background(lipgloss.Color("#0E7490")).
+				Padding(0, 1)
+
 	// delete confirmation styles
 	dangerStyle = lipgloss.NewStyle().
 			Foreground(ui.Danger).

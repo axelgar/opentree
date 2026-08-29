@@ -325,6 +325,42 @@ func TestPersistenceAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestFanoutGroup_RoundTripsAndOmitsWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+
+	store1, _ := New(dir)
+	grouped := sampleWorkspace("feat/x-claude")
+	grouped.FanoutGroup = "feat/x"
+	if err := store1.AddWorkspace(grouped); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+	if err := store1.AddWorkspace(sampleWorkspace("loner")); err != nil {
+		t.Fatalf("AddWorkspace() failed: %v", err)
+	}
+
+	store2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	ws, err := store2.GetWorkspace("feat/x-claude")
+	if err != nil {
+		t.Fatalf("GetWorkspace() after reload failed: %v", err)
+	}
+	if ws.FanoutGroup != "feat/x" {
+		t.Errorf("FanoutGroup = %q, want %q", ws.FanoutGroup, "feat/x")
+	}
+
+	// The empty value is every pre-fanout workspace; it must not start
+	// appearing in their records just because the field now exists.
+	raw, err := os.ReadFile(filepath.Join(dir, ".opentree", "state.json"))
+	if err != nil {
+		t.Fatalf("reading state file: %v", err)
+	}
+	if got := strings.Count(string(raw), `"fanout_group"`); got != 1 {
+		t.Errorf("state file mentions fanout_group %d times, want once (grouped workspace only)", got)
+	}
+}
+
 func TestAddWorkspace_OverwritesExisting(t *testing.T) {
 	store := newTestStore(t)
 	ws := sampleWorkspace("overwrite")

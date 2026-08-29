@@ -57,6 +57,7 @@ func init() {
 	rootCmd.AddCommand(cmd.AttachCmd)
 	rootCmd.AddCommand(cmd.ChatCmd)
 	rootCmd.AddCommand(cmd.DeleteCmd)
+	rootCmd.AddCommand(cmd.PromoteCmd)
 	rootCmd.AddCommand(cmd.DiffCmd)
 	rootCmd.AddCommand(cmd.PrCmd)
 	rootCmd.AddCommand(cmd.AutoCmd)
