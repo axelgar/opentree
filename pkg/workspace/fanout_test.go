@@ -194,3 +194,135 @@ func TestCreateFanout_KeepsEarlierSiblingsOnFailure(t *testing.T) {
 		t.Errorf("killed windows %v, want none — live siblings stay up", mock.killWindowCalls)
 	}
 }
+
+// ---- promote ----
+
+func TestPromote_DeletesLosersAndClearsWinner(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	svc, mock := fanoutService(t, "opencode", "claude", "gemini")
+	if _, err := svc.CreateFanout("feat/x", "main", []string{"opencode", "claude", "gemini"}); err != nil {
+		t.Fatalf("CreateFanout: %v", err)
+	}
+
+	deleted, err := svc.Promote("feat/x-claude")
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	wantDeleted := []string{"feat/x-gemini", "feat/x-opencode"}
+	if strings.Join(deleted, " ") != strings.Join(wantDeleted, " ") {
+		t.Errorf("deleted = %v, want %v", deleted, wantDeleted)
+	}
+
+	remaining := svc.state.ListWorkspaces()
+	if len(remaining) != 1 || remaining[0].Name != "feat/x-claude" {
+		t.Fatalf("remaining = %v, want only the winner", remaining)
+	}
+	if remaining[0].FanoutGroup != "" {
+		t.Errorf("winner still wears group %q, want it cleared", remaining[0].FanoutGroup)
+	}
+	// The winner keeps its suffixed branch: no rename, ever.
+	if remaining[0].Branch != "feat/x-claude" {
+		t.Errorf("winner branch = %q, want feat/x-claude untouched", remaining[0].Branch)
+	}
+	// The losers' windows must go with them; the winner's must not.
+	for _, name := range wantDeleted {
+		if !contains(mock.killWindowCalls, name) {
+			t.Errorf("window %q not killed; kills = %v", name, mock.killWindowCalls)
+		}
+	}
+	if contains(mock.killWindowCalls, "feat/x-claude") {
+		t.Errorf("winner's window was killed; kills = %v", mock.killWindowCalls)
+	}
+}
+
+func TestPromote_RefusesNonGroupWorkspace(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	svc, _ := fanoutService(t, "opencode")
+	if _, err := svc.Create("loner", "main"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := svc.Promote("loner"); err == nil || !strings.Contains(err.Error(), "not part of a fan-out group") {
+		t.Errorf("err = %v, want the not-a-group refusal", err)
+	}
+	if _, err := svc.Promote("never-existed"); err == nil {
+		t.Error("expected an error for an unknown workspace")
+	}
+}
+
+// A group of one is what a crash between the deletes and the clear leaves
+// behind; promoting again must finish the job rather than refuse it.
+func TestPromote_GroupOfOneJustClears(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	svc, _ := fanoutService(t, "opencode")
+	if _, err := svc.CreateFanout("feat/x", "main", []string{"opencode"}); err != nil {
+		t.Fatalf("CreateFanout: %v", err)
+	}
+
+	deleted, err := svc.Promote("feat/x-opencode")
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("deleted = %v, want none", deleted)
+	}
+	ws, err := svc.state.GetWorkspace("feat/x-opencode")
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if ws.FanoutGroup != "" {
+		t.Errorf("group = %q, want cleared", ws.FanoutGroup)
+	}
+}
+
+func TestPromote_KeepsGroupOnPartialDeleteFailure(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	svc, _ := fanoutService(t, "opencode", "claude", "gemini")
+	if _, err := svc.CreateFanout("feat/x", "main", []string{"opencode", "claude", "gemini"}); err != nil {
+		t.Fatalf("CreateFanout: %v", err)
+	}
+
+	// Make one loser undeletable: its worktree directory holds a different
+	// checkout than its branch, the guard worktree.Delete refuses on.
+	brokenDir := svc.WorktreePath("feat/x-gemini")
+	if err := os.RemoveAll(brokenDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(brokenDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := svc.Promote("feat/x-claude")
+	if err == nil {
+		t.Fatal("expected the partial-delete error")
+	}
+	if !contains(deleted, "feat/x-opencode") {
+		t.Errorf("deleted = %v, want the healthy loser gone", deleted)
+	}
+
+	// The winner keeps its mark so a second promote retries the straggler.
+	ws, getErr := svc.state.GetWorkspace("feat/x-claude")
+	if getErr != nil {
+		t.Fatalf("GetWorkspace: %v", getErr)
+	}
+	if ws.FanoutGroup != "feat/x" {
+		t.Errorf("winner group = %q, want feat/x kept for the retry", ws.FanoutGroup)
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}

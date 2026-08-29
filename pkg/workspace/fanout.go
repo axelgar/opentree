@@ -1,8 +1,10 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/axelgar/opentree/pkg/bootstrap"
@@ -111,4 +113,67 @@ func (s *Service) CreateFanout(base, baseBranch string, agents []string) ([]*sta
 		created = append(created, ws)
 	}
 	return created, nil
+}
+
+// FanoutSiblings is every other member of a workspace's group, sorted by
+// name — the workspaces a promote would delete. Empty for a workspace in no
+// group, and for the last member standing.
+func (s *Service) FanoutSiblings(name string) []string {
+	ws, err := s.state.GetWorkspace(name)
+	if err != nil || ws.FanoutGroup == "" {
+		return nil
+	}
+	var siblings []string
+	for _, w := range s.ListWorkspaces() {
+		if w.FanoutGroup == ws.FanoutGroup && w.Name != name {
+			siblings = append(siblings, w.Name)
+		}
+	}
+	sort.Strings(siblings)
+	return siblings
+}
+
+// Promote keeps the winner of a fan-out and dissolves its group: every other
+// workspace sharing the group is deleted, then the winner's group mark is
+// cleared. The winner keeps its suffixed branch — nothing is renamed, because
+// the branch name is what the state map, worktree directory, tmux window,
+// chat socket and any open PR are all keyed on, and a rename would invalidate
+// every one of them under a live agent.
+//
+// Losers go first and the winner's mark is cleared last, so that every
+// interruption leaves a state a second promote finishes: a crash after the
+// deletes leaves a group of one, which promotes again to a plain clear. The
+// other order would leave the losers orphaned in a group with no winner in
+// it — nothing left to point a retry at. For the same reason a partial
+// delete returns with the winner's mark intact: the names that failed are in
+// the error, and promoting again retries exactly those.
+//
+// The returned names are the siblings actually deleted, whatever the error.
+func (s *Service) Promote(winner string) ([]string, error) {
+	ws, err := s.state.GetWorkspace(winner)
+	if err != nil {
+		return nil, err
+	}
+	if ws.FanoutGroup == "" {
+		return nil, fmt.Errorf("%q is not part of a fan-out group", winner)
+	}
+
+	losers := s.FanoutSiblings(winner)
+	if len(losers) > 0 {
+		if err := s.DeleteMultiple(losers); err != nil {
+			var batch *DeleteBatchError
+			if errors.As(err, &batch) {
+				return batch.Deleted, err
+			}
+			return nil, err
+		}
+	}
+
+	if err := s.state.Update(winner, func(w *state.Workspace) error {
+		w.FanoutGroup = ""
+		return nil
+	}); err != nil {
+		return losers, fmt.Errorf("siblings deleted, but the winner still wears its group mark: %w", err)
+	}
+	return losers, nil
 }
