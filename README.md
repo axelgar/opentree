@@ -210,6 +210,7 @@ agent's own logo, in its own colours:
 | `shift+tab` | cycle the agent's mode (plan / build / …) |
 | `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
 | `ctrl+o` | show or hide the agent's reasoning |
+| `ctrl+x` | expand what the last tool call held back, and fold it again |
 | `?` | every key |
 
 **Prose.** The agent's replies render as markdown while they stream: emphasis,
@@ -218,6 +219,12 @@ when the fence names a language — code is never rewrapped, so its indentation
 keeps meaning. A half-arrived fence already reads
 as code and never snaps back to prose; a lone `**` stays two asterisks until
 its closer arrives. Tables render as the text they are.
+
+**Tool output.** A tool row shows a few lines of what it did — the diff, or
+what it printed — and holds the rest back behind `… 42 more lines · ctrl+x`.
+`ctrl+x` opens the most recent held-back row where you are reading, up to 500
+lines; the same key folds it again. There is no cursor to place: the row you
+want open is the one that just said how much it was hiding.
 
 **Newlines.** `shift+enter` breaks the line instead of sending it, with nothing
 to configure. A terminal left to itself sends a bare carriage return for

@@ -463,6 +463,10 @@ type entry struct {
 	// stamps a fresh one from the model's counter. Zero means never stamped —
 	// an entry built by hand in a test — and is never cached.
 	rev uint64
+
+	// expanded is whether ctrl+x has opened this tool row past the caps that
+	// keep one loud call from burying the log.
+	expanded bool
 }
 
 type Model struct {

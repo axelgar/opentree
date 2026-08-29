@@ -26,6 +26,11 @@ const (
 	// to stay readable around it.
 	outputMaxLines = 8
 
+	// expandedMaxLines is the ceiling once a tool row has been expanded with
+	// ctrl+x — the same reasoning as setupLogLines: a build log is thousands
+	// of lines and the end is the part worth having.
+	expandedMaxLines = 500
+
 	// compactLogoWidth separates a mark, which can stand beside the agent's
 	// name, from a wordmark, which cannot.
 	compactLogoWidth = 12
@@ -655,7 +660,7 @@ func (m Model) permDetail() []string {
 
 	call, width := m.perm().req.ToolCall, m.width-6
 	detail := renderDiffs(call, width)
-	detail = append(detail, renderOutput(call, width, toolOutputStyle)...)
+	detail = append(detail, renderOutput(call, width, toolOutputStyle, outputMaxLines, false)...)
 	if len(detail) <= maxLines {
 		return detail
 	}
@@ -877,7 +882,7 @@ func (m Model) renderEntry(e entry, width int) string {
 		// terminal turns a table into a paragraph.
 		return toolOutputStyle.Render(indentLines(e.text, width))
 	case entryTool:
-		return m.renderTool(e.tool, width)
+		return m.renderTool(e.tool, width, e.expanded)
 	case entryPlan:
 		return renderPlan(e.plan, width)
 	}
@@ -935,7 +940,7 @@ func (m Model) bulleted(body string) string {
 	return out.String()
 }
 
-func (m Model) renderTool(call acp.ToolCall, width int) string {
+func (m Model) renderTool(call acp.ToolCall, width int, expanded bool) string {
 	var glyph string
 	var style lipgloss.Style
 	switch call.Status {
@@ -960,8 +965,12 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 			" " + diffRemoveStyle.Render(fmt.Sprintf("-%d", removed))
 	}
 
+	limit, hint := diffMaxLines, true
+	if expanded {
+		limit, hint = expandedMaxLines, false
+	}
 	lines := []string{row}
-	diffs := renderChanges(changes, width)
+	diffs := renderChanges(changes, width, limit, hint)
 	lines = append(lines, diffs...)
 
 	// ponytail: a call that drew a diff has already shown what it did, and its
@@ -972,7 +981,11 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 		if call.Status == acp.StatusFailed {
 			out = toolFailedStyle
 		}
-		lines = append(lines, renderOutput(call, width, out)...)
+		outLimit := outputMaxLines
+		if expanded {
+			outLimit = expandedMaxLines
+		}
+		lines = append(lines, renderOutput(call, width, out, outLimit, hint)...)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -981,27 +994,37 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 // every status, not only on failures: a command's stdout, a file preview, a
 // subagent's report all arrive this way.
 //
-// ponytail: capped, with no key to expand. Expanding wants a cursor in a
-// viewport that has none plus per-entry state; the count says how much was
-// held back, and the agent still has all of it.
-func renderOutput(call acp.ToolCall, width int, style lipgloss.Style) []string {
+// Capped at limit; hint offers the expand key on the held-back line, and is
+// false where ctrl+x cannot reach — the permission box, an expanded row's own
+// hard ceiling.
+func renderOutput(call acp.ToolCall, width int, style lipgloss.Style, limit int, hint bool) []string {
 	lines := splitLines(unfence(toolOutput(call)))
 	if len(lines) == 0 {
 		return nil
 	}
 
 	shown := lines
-	if len(shown) > outputMaxLines {
-		shown = shown[:outputMaxLines]
+	if len(shown) > limit {
+		shown = shown[:limit]
 	}
 	out := make([]string, 0, len(shown)+1)
 	for _, line := range shown {
 		out = append(out, style.Render(ui.Truncate("    "+line, width)))
 	}
 	if hidden := len(lines) - len(shown); hidden > 0 {
-		out = append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", hidden)))
+		out = append(out, moreLines(hidden, hint))
 	}
 	return out
+}
+
+// moreLines is the held-back count, doubling as the expand affordance: the
+// line that says what is missing is the only honest place to say which key
+// shows it.
+func moreLines(hidden int, hint bool) string {
+	if hint {
+		return noticeStyle.Render(fmt.Sprintf("    … %d more lines · ctrl+x", hidden))
+	}
+	return noticeStyle.Render(fmt.Sprintf("    … %d more lines", hidden))
 }
 
 // toolOutput joins a call's content blocks. The wrapping is real: a text block
@@ -1040,17 +1063,17 @@ func unfence(s string) string {
 // renderDiffs expands a call's changed lines into coloured ones, for a caller
 // that has nothing else to do with the diff.
 func renderDiffs(call acp.ToolCall, width int) []string {
-	return renderChanges(callDiff(call), width)
+	return renderChanges(callDiff(call), width, diffMaxLines, false)
 }
 
 // renderChanges is the same for a caller that has already matched the diff and
 // must not be made to pay for it again — which is every tool row in the log,
 // since the row also counts what changed.
-func renderChanges(changes []change, width int) []string {
+func renderChanges(changes []change, width, limit int, hint bool) []string {
 	out := make([]string, 0, len(changes))
 	for i, ch := range changes {
-		if i == diffMaxLines {
-			return append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", len(changes)-i)))
+		if i == limit {
+			return append(out, moreLines(len(changes)-i, hint))
 		}
 		style, sign := diffRemoveStyle, "-"
 		if ch.add {

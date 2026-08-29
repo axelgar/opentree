@@ -19,6 +19,7 @@ type keyMap struct {
 	Settings  key.Binding
 	CycleMode key.Binding
 	Thoughts  key.Binding
+	Expand    key.Binding
 	Paste     key.Binding
 	Help      key.Binding
 
@@ -59,7 +60,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
-		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts},
+		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand},
 		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
 	}
 }
@@ -130,6 +131,12 @@ var keys = keyMap{
 	Thoughts: key.NewBinding(
 		key.WithKeys("ctrl+o"),
 		key.WithHelp("ctrl+o", "toggle reasoning"),
+	),
+	// ctrl+x is free: the textarea's cut family stops at ctrl+k/ctrl+u, and
+	// emacs's ctrl+x prefix has no meaning in a one-box composer.
+	Expand: key.NewBinding(
+		key.WithKeys("ctrl+x"),
+		key.WithHelp("ctrl+x", "expand tool output"),
 	),
 	// Taken from the textarea, which binds ctrl+v to pasting text, and handed
 	// straight back when the clipboard holds no image. On macOS this is ctrl+v

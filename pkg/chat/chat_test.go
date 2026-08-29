@@ -975,7 +975,7 @@ func TestCountChanges(t *testing.T) {
 
 func TestRenderTool_ShowsDiffLinesAndStat(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(diffCall(acp.StatusCompleted, "old line", "new line"), 60)
+	out := m.renderTool(diffCall(acp.StatusCompleted, "old line", "new line"), 60, false)
 
 	for _, want := range []string{"pkg/auth/session.go", "+1", "-1", "- old line", "+ new line"} {
 		if !strings.Contains(out, want) {
@@ -1048,7 +1048,7 @@ func outputCall(status, text string) acp.ToolCall {
 func TestRenderTool_ShowsFailureReason(t *testing.T) {
 	m := newTestModel()
 	call := outputCall(acp.StatusFailed, "The user rejected permission to use this specific tool call.")
-	out := m.renderTool(call, 80)
+	out := m.renderTool(call, 80, false)
 	if !strings.Contains(out, "rejected permission") {
 		t.Errorf("renderTool() should explain a failure\ngot:\n%s", out)
 	}
@@ -1058,7 +1058,7 @@ func TestRenderTool_ShowsFailureReason(t *testing.T) {
 // it away — the row said a command ran and nothing said what it printed.
 func TestRenderTool_ShowsOutputOnSuccess(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(outputCall(acp.StatusCompleted, "ok  \tgithub.com/axelgar/opentree/pkg/acp\t0.4s"), 80)
+	out := m.renderTool(outputCall(acp.StatusCompleted, "ok  \tgithub.com/axelgar/opentree/pkg/acp\t0.4s"), 80, false)
 	if !strings.Contains(out, "github.com/axelgar/opentree/pkg/acp") {
 		t.Errorf("renderTool() should show what the tool produced\ngot:\n%s", out)
 	}
@@ -1068,7 +1068,7 @@ func TestRenderTool_ShowsOutputOnSuccess(t *testing.T) {
 // truncated to "panic: runtime error:" names the category and hides the cause.
 func TestRenderTool_ShowsEveryLineOfAFailure(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(outputCall(acp.StatusFailed, "panic: runtime error\n\tat main.go:12\nexit status 2"), 80)
+	out := m.renderTool(outputCall(acp.StatusFailed, "panic: runtime error\n\tat main.go:12\nexit status 2"), 80, false)
 	for _, want := range []string{"panic: runtime error", "at main.go:12", "exit status 2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderTool() missing %q\ngot:\n%s", want, out)
@@ -1076,9 +1076,58 @@ func TestRenderTool_ShowsEveryLineOfAFailure(t *testing.T) {
 	}
 }
 
+// ctrl+x opens the most recent row that is holding lines back, and the same
+// key closes it again. "Most recent" rather than a cursor: the row you want
+// open is the one that just said "… 22 more lines".
+func TestExpand_OpensAndClosesTheMostRecentCappedRow(t *testing.T) {
+	m := newTestModel()
+	body := strings.TrimSuffix(strings.Repeat("line\n", 30), "\n") + "\nthe last line"
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, outputCall(acp.StatusCompleted, body)))
+
+	if strings.Contains(m.View(), "the last line") {
+		t.Fatal("the cap is not capping; the test is testing nothing")
+	}
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if !strings.Contains(m.View(), "the last line") {
+		t.Error("ctrl+x did not show the held-back lines")
+	}
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if strings.Contains(m.View(), "the last line") {
+		t.Error("a second ctrl+x did not fold the row back up")
+	}
+}
+
+func TestExpand_PrefersTheNewestOfTwoCappedRows(t *testing.T) {
+	m := newTestModel()
+	old := outputCall(acp.StatusCompleted, strings.Repeat("early\n", 20)+"early tail")
+	old.ToolCallID = "t-old"
+	late := outputCall(acp.StatusCompleted, strings.Repeat("late\n", 20)+"late tail")
+	late.ToolCallID = "t-late"
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, old))
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, late))
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	view := m.View()
+	if !strings.Contains(view, "late tail") {
+		t.Error("ctrl+x skipped the row nearest the reader")
+	}
+	if strings.Contains(view, "early tail") {
+		t.Error("ctrl+x opened more than the one row")
+	}
+}
+
+func TestExpand_DoesNothingWhenNothingIsHeldBack(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, outputCall(acp.StatusCompleted, "short")))
+	before := m.View()
+	if m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX}); m.View() != before {
+		t.Error("ctrl+x changed a log with nothing to expand")
+	}
+}
+
 func TestRenderOutput_CapsLongOutput(t *testing.T) {
 	body := strings.TrimSuffix(strings.Repeat("line\n", 30), "\n")
-	lines := renderOutput(outputCall(acp.StatusCompleted, body), 80, toolOutputStyle)
+	lines := renderOutput(outputCall(acp.StatusCompleted, body), 80, toolOutputStyle, outputMaxLines, true)
 
 	if len(lines) != outputMaxLines+1 {
 		t.Fatalf("rendered %d lines, want %d plus a count of what was held back", len(lines), outputMaxLines)
@@ -1093,7 +1142,7 @@ func TestRenderOutput_CapsLongOutput(t *testing.T) {
 // literally, the first line of a failed command reads "```console".
 func TestRenderTool_StripsTheAdaptersCodeFence(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(outputCall(acp.StatusFailed, "```console\nno such file or directory\n```"), 80)
+	out := m.renderTool(outputCall(acp.StatusFailed, "```console\nno such file or directory\n```"), 80, false)
 	if strings.Contains(out, "```") {
 		t.Errorf("renderTool() should not render the fence\ngot:\n%s", out)
 	}
@@ -1111,7 +1160,7 @@ func TestRenderTool_DiffCallDoesNotAlsoPrintItsReceipt(t *testing.T) {
 		Type: "content", Content: &acp.ContentBlock{Type: "text", Text: "Edit applied successfully."},
 	})
 
-	out := m.renderTool(call, 80)
+	out := m.renderTool(call, 80, false)
 	if strings.Contains(out, "Edit applied successfully") {
 		t.Errorf("the diff is the output; the receipt says it twice\ngot:\n%s", out)
 	}

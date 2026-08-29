@@ -512,6 +512,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 		return m, nil
 
+	case key.Matches(msg, m.keys.Expand):
+		return m.toggleExpand(), nil
+
 	// Taken from the textarea, which binds ctrl+v to pasting text. The command
 	// hands it straight back when the clipboard holds no image, so the key does
 	// what it always did and gains a second meaning rather than losing its first.
@@ -1193,6 +1196,35 @@ func (m Model) appendChunk(kind entryKind, text string) Model {
 func (m *Model) nextRev() uint64 {
 	m.rev++
 	return m.rev
+}
+
+// toggleExpand opens — or closes again — the most recent tool row that is
+// holding lines back. "Most recent" rather than a cursor on purpose: the row
+// you want open is the one you are looking at, which is the one that just
+// said "… 42 more lines", and anything older the agent can simply be asked
+// about. An expanded row counts as the target too, so the same key closes
+// what it opened.
+func (m Model) toggleExpand() Model {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		e := m.entries[i]
+		if e.kind != entryTool || (!e.expanded && !holdsBack(e.tool)) {
+			continue
+		}
+		m.entries[i].expanded = !e.expanded
+		m.entries[i].rev = m.nextRev()
+		return m.relayout()
+	}
+	return m
+}
+
+// holdsBack reports whether a call's row is showing less than it has — the
+// same choice renderTool makes: the diff when there is one, the output
+// otherwise.
+func holdsBack(call acp.ToolCall) bool {
+	if changes := callDiff(call); len(changes) > 0 {
+		return len(changes) > diffMaxLines
+	}
+	return len(splitLines(unfence(toolOutput(call)))) > outputMaxLines
 }
 
 func (m Model) upsertToolCall(call acp.ToolCall) Model {
