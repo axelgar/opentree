@@ -93,6 +93,16 @@ var (
 
 	// ToolOutput is a command's output quoted back inside a tool call.
 	ToolOutput = lipgloss.AdaptiveColor{Dark: "#7A7A7A", Light: "#6A6A6A"}
+
+	// The five syntax colours for the code the agent writes into its replies.
+	// They live here under the same rule as everything above — every Light
+	// value clears AA on white — and they sit on Band, not the terminal's own
+	// background, so the Dark values are judged against that.
+	SynKeyword = lipgloss.AdaptiveColor{Dark: "#C678DD", Light: "#6F42C1"}
+	SynString  = lipgloss.AdaptiveColor{Dark: "#98C379", Light: "#22683C"}
+	SynComment = lipgloss.AdaptiveColor{Dark: "#7F848E", Light: "#67707B"}
+	SynNumber  = lipgloss.AdaptiveColor{Dark: "#D19A66", Light: "#8A4B0F"}
+	SynName    = lipgloss.AdaptiveColor{Dark: "#61AFEF", Light: "#1B5E8A"}
 )
 
 // Danger is the terminal's own red, and stays an ANSI index on purpose: 196 is

@@ -41,10 +41,11 @@ func renderMarkdown(text string, width int) string {
 	for _, line := range strings.Split(text, "\n") {
 		if fence != nil {
 			if fence.closes(line) {
+				out = append(out, renderCodeBlock(fence.lines, fence.lang, width)...)
 				fence = nil
 				continue
 			}
-			out = append(out, codeLine(line, width))
+			fence.lines = append(fence.lines, line)
 			continue
 		}
 		if f, ok := fenceOpen(line); ok {
@@ -53,14 +54,21 @@ func renderMarkdown(text string, width int) string {
 		}
 		out = append(out, blockLine(line, width)...)
 	}
+	if fence != nil {
+		out = append(out, renderCodeBlock(fence.lines, fence.lang, width)...)
+	}
 	return strings.Join(out, "\n")
 }
 
-// fenceState is an open code block: the delimiter that opened it, which alone
-// can close it.
+// fenceState is an open code block: the delimiter that opened it — which alone
+// can close it — and the code gathered so far. The block is rendered whole
+// rather than line by line because the highlighter needs the lines together: a
+// string or a comment opened on one line reaches into the next.
 type fenceState struct {
-	char rune
-	n    int
+	char  rune
+	n     int
+	lang  string
+	lines []string
 }
 
 // fenceOpen reports whether a line opens a fenced code block: up to three
@@ -81,7 +89,8 @@ func fenceOpen(line string) (fenceState, bool) {
 	if n < 3 || (char == '`' && strings.ContainsRune(rest, '`')) {
 		return fenceState{}, false
 	}
-	return fenceState{char: char, n: n}, true
+	lang, _, _ := strings.Cut(strings.TrimSpace(rest), " ")
+	return fenceState{char: char, n: n, lang: lang}, true
 }
 
 // closes reports whether a line closes this fence: a run of the same character

@@ -90,6 +90,15 @@ var (
 	mdQuoteStyle      = lipgloss.NewStyle().Foreground(ui.Faint).Italic(true)
 	mdRuleStyle       = lipgloss.NewStyle().Foreground(ui.Divider)
 
+	// The syntax styles all carry the code block's background themselves:
+	// they paint whole spans, and a span that reset to the terminal's own
+	// background would punch a hole in the block.
+	mdSynKeywordStyle = lipgloss.NewStyle().Foreground(ui.SynKeyword).Background(ui.Band)
+	mdSynStringStyle  = lipgloss.NewStyle().Foreground(ui.SynString).Background(ui.Band)
+	mdSynCommentStyle = lipgloss.NewStyle().Foreground(ui.SynComment).Background(ui.Band).Italic(true)
+	mdSynNumberStyle  = lipgloss.NewStyle().Foreground(ui.SynNumber).Background(ui.Band)
+	mdSynNameStyle    = lipgloss.NewStyle().Foreground(ui.SynName).Background(ui.Band)
+
 	errorStyle = lipgloss.NewStyle().
 			Foreground(ui.Danger).
 			Bold(true)
