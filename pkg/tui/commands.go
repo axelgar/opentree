@@ -494,6 +494,36 @@ func (m Model) loadGroupDiffCmd(ws WorkspaceItem) tea.Cmd {
 	}
 }
 
+// fanoutLosers is every sibling a promote of winner would delete, from the
+// list as last loaded, sorted by name. Computed fresh at each use rather than
+// stored with the dialog: the dialog can sit open across a refresh, and a
+// sibling deleted meanwhile must not be counted — or deleted — again.
+func (m Model) fanoutLosers(winner string) []string {
+	i := m.workspaceIndex(winner)
+	if i < 0 || m.workspaces[i].FanoutGroup == "" {
+		return nil
+	}
+	group := m.workspaces[i].FanoutGroup
+	var losers []string
+	for _, w := range m.workspaces {
+		if w.FanoutGroup == group && w.Name != winner {
+			losers = append(losers, w.Name)
+		}
+	}
+	sort.Strings(losers)
+	return losers
+}
+
+// promoteWorkspaceCmd runs the promote and reports both halves: what went,
+// and — inside err — what stayed. losers rides along so the handler can clear
+// the in-flight mark for every row it set one on, deleted or not.
+func (m Model) promoteWorkspaceCmd(winner string, losers []string) tea.Cmd {
+	return func() tea.Msg {
+		deleted, err := m.svc.Promote(winner)
+		return promotedWorkspaceMsg{winner: winner, deleted: deleted, losers: losers, err: err}
+	}
+}
+
 // buildGroupDiff joins the siblings' diffs under headers naming each one —
 // the same ══════ shape DiffCombined itself emits for its committed and
 // uncommitted halves, so renderDiffLine styles the seams between agents

@@ -262,6 +262,31 @@ func (m Model) View() string {
 		return m.dialogCard(titleMsg, strings.Join(body, "\n"), footer, dialogDanger)
 	}
 
+	// Promote confirmation dialog. Danger-bordered like delete, because that
+	// is what it mostly is: keeping the winner costs every other sibling.
+	if m.promoting {
+		losers := m.fanoutLosers(m.promoteWinner)
+		footer := fmt.Sprintf("%s %s  •  %s %s",
+			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("confirm"),
+			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
+		)
+		var body []string
+		if len(losers) == 0 {
+			body = append(body, confirmLabelStyle.Render(fmt.Sprintf("Last of its group — keeps branch '%s' and drops the group mark.", m.promoteWinner)))
+		} else {
+			body = append(body,
+				confirmLabelStyle.Render(fmt.Sprintf("Keeps this workspace and its branch '%s'.", m.promoteWinner)),
+				confirmLabelStyle.Render(fmt.Sprintf("Deletes %s: %s — worktrees, branches and windows.",
+					plural(len(losers), "sibling"), strings.Join(losers, ", "))),
+			)
+			if losses := m.lossesFor(losers); len(losses) > 0 {
+				body = append(body, "")
+				body = append(body, losses...)
+			}
+		}
+		return m.dialogCard(fmt.Sprintf("Promote %q?", m.promoteWinner), strings.Join(body, "\n"), footer, dialogDanger)
+	}
+
 	// Issue creation dialog
 	if m.creating && m.issueMode {
 		return m.dialogCard("Create Workspace from GitHub Issue", m.input.View(),

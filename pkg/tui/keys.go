@@ -20,16 +20,19 @@ type keyMap struct {
 	// P keeps publishing until the PR is green.
 	Autopilot key.Binding
 	Delete    key.Binding
-	Select    key.Binding
-	Filter    key.Binding
-	Sort      key.Binding
-	Agent     key.Binding
-	Answer    key.Binding
-	Stop      key.Binding
-	Msg       key.Binding
-	Server    key.Binding
-	Blocked   key.Binding
-	ErrLog    key.Binding
+	// Promote is uppercase for the same reason Delete confirms: it removes
+	// workspaces. W as in winner — the sibling it keeps.
+	Promote key.Binding
+	Select  key.Binding
+	Filter  key.Binding
+	Sort    key.Binding
+	Agent   key.Binding
+	Answer  key.Binding
+	Stop    key.Binding
+	Msg     key.Binding
+	Server  key.Binding
+	Blocked key.Binding
+	ErrLog  key.Binding
 	// CopyErrLog is only ever consulted inside the error log, which swallows
 	// every other key. That is why it can share a letter with Stop without
 	// either becoming ambiguous — the log is modal, and the list is not
@@ -50,7 +53,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
-		{k.Diff, k.Compare, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
+		{k.Diff, k.Compare, k.Promote, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
 		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
 		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
@@ -108,6 +111,10 @@ var keys = keyMap{
 	Delete: key.NewBinding(
 		key.WithKeys("x"),
 		key.WithHelp("x", "delete"),
+	),
+	Promote: key.NewBinding(
+		key.WithKeys("W"),
+		key.WithHelp("W", "promote fan-out winner"),
 	),
 	Select: key.NewBinding(
 		key.WithKeys(" "),

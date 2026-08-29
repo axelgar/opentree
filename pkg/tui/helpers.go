@@ -109,7 +109,7 @@ func (ws WorkspaceItem) actionHint() string {
 	// The group actions lead on a sibling row: comparing and promoting are
 	// what a fan-out exists for, whatever else the row can do.
 	if ws.FanoutGroup != "" {
-		group := "D compare group"
+		group := "D compare group • W promote"
 		if hint == "" {
 			return group
 		}
@@ -138,7 +138,13 @@ func (m Model) deletionLosses() []string {
 		}
 		sort.Strings(targets)
 	}
+	return m.lossesFor(targets)
+}
 
+// lossesFor is the loss lines for any set of doomed workspaces — the delete
+// dialog computes its own targets, the promote dialog hands in the losing
+// siblings, and both show the same accounting.
+func (m Model) lossesFor(targets []string) []string {
 	var lines []string
 	for _, name := range targets {
 		i := m.workspaceIndex(name)

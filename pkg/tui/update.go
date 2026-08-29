@@ -228,6 +228,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Promote confirmation mode
+		if m.promoting {
+			switch msg.String() {
+			case "y", "Y":
+				winner := m.promoteWinner
+				m.promoting = false
+				m.promoteWinner = ""
+				losers := m.fanoutLosers(winner)
+				if len(losers) > 0 {
+					m.markDeleting(losers...)
+				}
+				return m, tea.Batch(m.promoteWorkspaceCmd(winner, losers), spinnerTickCmd())
+			case "n", "esc":
+				m.promoting = false
+				m.promoteWinner = ""
+			}
+			return m, nil
+		}
+
 		// PR creation dialog
 		if m.prCreating {
 			switch msg.String() {
@@ -566,6 +585,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.deleting = true
 				m.deleteTarget = ws.Name
 			}
+		case key.Matches(msg, m.keys.Promote):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if ws.FanoutGroup == "" {
+					return m, m.transientErrCmd(fmt.Sprintf("%q is not part of a fan-out group", ws.Name))
+				}
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				m.promoting = true
+				m.promoteWinner = ws.Name
+			}
 		case key.Matches(msg, m.keys.Filter):
 			m.filtering = true
 			m.filterQuery = ""
@@ -751,6 +782,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		notice := fmt.Sprintf("deleted %s", strings.Join(msg.names, ", "))
 		if len(msg.names) > 1 {
 			notice = fmt.Sprintf("deleted %d workspaces", len(msg.names))
+		}
+		return m, tea.Batch(m.loadWorkspacesCmd, m.noticeCmd(notice))
+
+	case promotedWorkspaceMsg:
+		// The batch is over either way: clear the mark for every loser it was
+		// asked about, not only the deleted, or a failed row would spin
+		// forever. The error path names the stragglers itself.
+		for _, name := range msg.losers {
+			delete(m.workspaceDeletingNames, name)
+			delete(m.selected, name)
+		}
+		if len(m.workspaceDeletingNames) == 0 {
+			m.workspaceDeleting = false
+			m.workspaceDeletingName = ""
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			m.appendErrLog(msg.err.Error())
+			return m, tea.Batch(m.loadWorkspacesCmd, m.scheduleErrClear())
+		}
+		notice := fmt.Sprintf("promoted %s", msg.winner)
+		if len(msg.deleted) > 0 {
+			notice = fmt.Sprintf("promoted %s — deleted %s", msg.winner, plural(len(msg.deleted), "sibling"))
 		}
 		return m, tea.Batch(m.loadWorkspacesCmd, m.noticeCmd(notice))
 
@@ -1112,7 +1166,7 @@ const wheelLines = 3
 // keyboard. The wheel stays out of those: the cursor it would move is not
 // visible, so the change would only be discovered later as a surprise.
 func (m Model) busyWithDialog() bool {
-	return m.creating || m.deleting || m.filtering || m.prCreating || m.prGenerating ||
+	return m.creating || m.deleting || m.promoting || m.filtering || m.prCreating || m.prGenerating ||
 		m.agentSelecting || m.agentInstallConfirm != nil || m.answering || m.prompting ||
 		m.showErrLog
 }

@@ -805,6 +805,7 @@ func TestWheel_LeavesDialogsAlone(t *testing.T) {
 	dialogs := map[string]func(*Model){
 		"creating":       func(m *Model) { m.creating = true },
 		"deleting":       func(m *Model) { m.deleting = true },
+		"promoting":      func(m *Model) { m.promoting = true },
 		"filtering":      func(m *Model) { m.filtering = true },
 		"agent picker":   func(m *Model) { m.agentSelecting = true },
 		"answering":      func(m *Model) { m.answering = true },

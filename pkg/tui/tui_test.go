@@ -2099,6 +2099,7 @@ func TestDialogs_AreCentredCards(t *testing.T) {
 		want  string
 	}{
 		{"delete", func(m Model) Model { m.deleting, m.deleteTarget = true, "ws"; return m }, "Delete workspace"},
+		{"promote", func(m Model) Model { m.promoting, m.promoteWinner = true, "ws"; return m }, "Promote"},
 		{"create", func(m Model) Model { m.creating = true; return m }, "Create New Workspace"},
 		{"issue", func(m Model) Model { m.creating, m.issueMode = true, true; return m }, "GitHub Issue"},
 		{"prompt", func(m Model) Model { m.prompting, m.promptWs = true, "ws"; return m }, "Message agent"},
@@ -2248,6 +2249,7 @@ func TestDiffLoaded_DoesNotOpenUnderAnotherDialog(t *testing.T) {
 		{"filtering", func(m *Model) { m.filtering = true }},
 		{"generating PR content", func(m *Model) { m.prGenerating = true }},
 		{"deleting", func(m *Model) { m.deleting = true }},
+		{"promoting", func(m *Model) { m.promoting = true }},
 		{"on another tab", func(m *Model) { m.tab = tabSkills }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
