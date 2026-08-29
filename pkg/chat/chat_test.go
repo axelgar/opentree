@@ -2399,6 +2399,23 @@ func TestSpin_OneChainAtATime(t *testing.T) {
 	}
 }
 
+// The frame lives inside rendered entries, and the viewport caches whatever
+// the last relayout gave it. A tick that only advanced the counter left the
+// thinking line and every running tool's glyph frozen until the agent next
+// said something — exactly the quiet stretch the spinner exists for.
+func TestSpin_TickRepaintsTheLog(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m.spinning = true
+	m = m.relayout()
+
+	before := m.View()
+	m, _ = applyUpdate(m, spinnerTickMsg{})
+	if m.View() == before {
+		t.Error("a tick moved the frame on but the visible log never changed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Whose message a turn is carrying
 // ---------------------------------------------------------------------------

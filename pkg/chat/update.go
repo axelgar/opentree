@@ -287,7 +287,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
-		return m, spinnerTick()
+		// The frame lives inside rendered entries — the thinking line and every
+		// running tool's glyph — and the viewport caches whatever the last
+		// relayout gave it. Without a relayout here the spinner only moves when
+		// the agent happens to say something, which is exactly when nobody
+		// needs reassurance that it is alive.
+		return m.relayout(), spinnerTick()
 
 	case agentGoneMsg:
 		// This arrives down the handler channel, so the reader has to be
