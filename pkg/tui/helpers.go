@@ -91,21 +91,31 @@ func shortenPath(path string, maxLen int) string {
 // speaks in one voice — key, then what it does — so the line reads the same
 // wherever the row happens to be.
 func (ws WorkspaceItem) actionHint() string {
+	var hint string
 	switch {
 	case ws.pendingPermission() != nil:
-		return "a answer permission • m message • c interrupt"
+		hint = "a answer permission • m message • c interrupt"
 	case ws.ChatStatus != nil && ws.ChatStatus.State == chat.StateStopped:
-		return "enter attach and restart the stopped agent"
+		hint = "enter attach and restart the stopped agent"
 	case ws.PRStatus == "merged":
-		return "x clean up this merged workspace"
+		hint = "x clean up this merged workspace"
 	case ws.ChatStatus != nil && ws.ChatStatus.Autopilot != nil && ws.ChatStatus.Autopilot.Phase == "halted":
-		return "m message resets the halted autopilot • P autopilot off"
+		hint = "m message resets the halted autopilot • P autopilot off"
 	case ws.PRStatus == "open":
-		return "o open PR • R send reviews • m message • P autopilot"
+		hint = "o open PR • R send reviews • m message • P autopilot"
 	case ws.UncommittedCount > 0 || (ws.DiffStat != "" && ws.DiffStat != "No changes"):
-		return "p create PR • d diff • m message • P autopilot"
+		hint = "p create PR • d diff • m message • P autopilot"
 	}
-	return ""
+	// The group actions lead on a sibling row: comparing and promoting are
+	// what a fan-out exists for, whatever else the row can do.
+	if ws.FanoutGroup != "" {
+		group := "D compare group"
+		if hint == "" {
+			return group
+		}
+		return group + " • " + hint
+	}
+	return hint
 }
 
 // deletionLosses is one line per workspace the delete dialog is about, naming

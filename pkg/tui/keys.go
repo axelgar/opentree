@@ -10,9 +10,12 @@ type keyMap struct {
 	Remote key.Binding
 	Enter  key.Binding
 	Diff   key.Binding
-	PR     key.Binding
-	Open   key.Binding
-	Review key.Binding
+	// Compare is Diff writ large: d is one workspace's changes, D is every
+	// sibling of its fan-out group in one scroll.
+	Compare key.Binding
+	PR      key.Binding
+	Open    key.Binding
+	Review  key.Binding
 	// Autopilot pairs with PR the way Review does: p publishes once by hand,
 	// P keeps publishing until the PR is green.
 	Autopilot key.Binding
@@ -47,7 +50,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
-		{k.Diff, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
+		{k.Diff, k.Compare, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
 		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
 		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
@@ -81,6 +84,10 @@ var keys = keyMap{
 	Diff: key.NewBinding(
 		key.WithKeys("d"),
 		key.WithHelp("d", "diff"),
+	),
+	Compare: key.NewBinding(
+		key.WithKeys("D"),
+		key.WithHelp("D", "compare fan-out group"),
 	),
 	PR: key.NewBinding(
 		key.WithKeys("p"),

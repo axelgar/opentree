@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -452,4 +453,56 @@ func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
 		}
 		return diffLoadedMsg{content: content, wsName: ws.Name}
 	}
+}
+
+// groupDiffSection is one sibling's contribution to a fan-out comparison.
+type groupDiffSection struct {
+	name    string
+	agent   string
+	content string
+}
+
+// loadGroupDiffCmd loads every sibling's combined diff into one document for
+// the existing diff viewer. One scroll rather than a split pane, because the
+// question a fan-out comparison answers — which agent's change do I keep — is
+// answered by reading each approach whole, and the viewer already knows how
+// to style the section headers that separate them.
+//
+// A sibling whose diff fails becomes an inline error section rather than
+// failing the whole comparison: two readable approaches and one broken
+// worktree is still a comparison worth seeing.
+func (m Model) loadGroupDiffCmd(ws WorkspaceItem) tea.Cmd {
+	var siblings []WorkspaceItem
+	for _, w := range m.workspaces {
+		if w.FanoutGroup == ws.FanoutGroup {
+			siblings = append(siblings, w)
+		}
+	}
+	sort.Slice(siblings, func(i, j int) bool { return siblings[i].Name < siblings[j].Name })
+	group := ws.FanoutGroup
+	return func() tea.Msg {
+		sections := make([]groupDiffSection, 0, len(siblings))
+		for _, sib := range siblings {
+			content, err := m.worktreeMgr.DiffCombined(sib.Branch, m.baseOr(sib.BaseBranch))
+			if err != nil {
+				content = "(error: " + err.Error() + ")"
+			}
+			sections = append(sections, groupDiffSection{name: sib.Name, agent: sib.Agent, content: content})
+		}
+		title := fmt.Sprintf("%s · %d siblings", group, len(sections))
+		return diffLoadedMsg{content: buildGroupDiff(sections), wsName: title}
+	}
+}
+
+// buildGroupDiff joins the siblings' diffs under headers naming each one —
+// the same ══════ shape DiffCombined itself emits for its committed and
+// uncommitted halves, so renderDiffLine styles the seams between agents
+// without the viewer learning that groups exist.
+func buildGroupDiff(sections []groupDiffSection) string {
+	parts := make([]string, 0, len(sections))
+	for _, s := range sections {
+		header := fmt.Sprintf("══════════ %s (%s) ══════════", s.name, s.agent)
+		parts = append(parts, header+"\n\n"+strings.TrimSpace(s.content))
+	}
+	return strings.Join(parts, "\n\n")
 }

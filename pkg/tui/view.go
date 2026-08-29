@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -456,6 +457,10 @@ func (m Model) View() string {
 				title += "  " + badge
 			}
 
+			if badge := renderFanoutBadge(ws); badge != "" {
+				title += "  " + badge
+			}
+
 			// The agent working here cannot see the repository's own skills, and
 			// nothing else about the row would say so.
 			if len(ws.MissingSkills) > 0 {
@@ -688,45 +693,82 @@ func (m Model) visibleWorkspaces() []WorkspaceItem {
 // Every mode breaks ties by name: the base list comes from map iteration
 // (random per refresh), so without a total order tied rows would reshuffle
 // on every refresh underneath the cursor.
+//
+// Fan-out siblings sort as one unit in every mode: each mode compares groups
+// by their best member's value — newest creation, newest activity, best PR
+// state — then falls back to the group key and the member name. Grouping is
+// an invariant rather than a fifth sort mode, because siblings scattered by
+// an activity sort would defeat the reason the group exists: seeing the same
+// task's runs side by side. An ungrouped workspace is its own group of one,
+// which reduces every comparison to exactly what it did before fan-out.
 func (m Model) sortedWorkspaces() []WorkspaceItem {
 	ws := make([]WorkspaceItem, len(m.workspaces))
 	copy(ws, m.workspaces)
+
+	groupKey := func(w WorkspaceItem) string {
+		if w.FanoutGroup != "" {
+			return w.FanoutGroup
+		}
+		return w.Name
+	}
+	prOrder := func(s string) int {
+		switch s {
+		case "open":
+			return 0
+		case "merged":
+			return 1
+		default:
+			return 2
+		}
+	}
+	newest := make(map[string]time.Time)
+	active := make(map[string]time.Time)
+	prBest := make(map[string]int)
+	for _, w := range ws {
+		k := groupKey(w)
+		if w.CreatedAt.After(newest[k]) {
+			newest[k] = w.CreatedAt
+		}
+		if w.LastActivity.After(active[k]) {
+			active[k] = w.LastActivity
+		}
+		if v, ok := prBest[k]; !ok || prOrder(w.PRStatus) < v {
+			prBest[k] = prOrder(w.PRStatus)
+		}
+	}
+	tiebreak := func(i, j int) bool {
+		if a, b := groupKey(ws[i]), groupKey(ws[j]); a != b {
+			return a < b
+		}
+		return ws[i].Name < ws[j].Name
+	}
+
 	switch m.sortMode {
 	case sortByAge:
 		sort.Slice(ws, func(i, j int) bool {
-			if !ws[i].CreatedAt.Equal(ws[j].CreatedAt) {
-				return ws[i].CreatedAt.After(ws[j].CreatedAt)
+			a, b := newest[groupKey(ws[i])], newest[groupKey(ws[j])]
+			if !a.Equal(b) {
+				return a.After(b)
 			}
-			return ws[i].Name < ws[j].Name
+			return tiebreak(i, j)
 		})
 	case sortByActivity:
 		sort.Slice(ws, func(i, j int) bool {
-			if !ws[i].LastActivity.Equal(ws[j].LastActivity) {
-				return ws[i].LastActivity.After(ws[j].LastActivity)
+			a, b := active[groupKey(ws[i])], active[groupKey(ws[j])]
+			if !a.Equal(b) {
+				return a.After(b)
 			}
-			return ws[i].Name < ws[j].Name
+			return tiebreak(i, j)
 		})
 	case sortByPR:
-		prOrder := func(s string) int {
-			switch s {
-			case "open":
-				return 0
-			case "merged":
-				return 1
-			default:
-				return 2
-			}
-		}
 		sort.Slice(ws, func(i, j int) bool {
-			if a, b := prOrder(ws[i].PRStatus), prOrder(ws[j].PRStatus); a != b {
+			if a, b := prBest[groupKey(ws[i])], prBest[groupKey(ws[j])]; a != b {
 				return a < b
 			}
-			return ws[i].Name < ws[j].Name
+			return tiebreak(i, j)
 		})
 	default: // sortByName
-		sort.Slice(ws, func(i, j int) bool {
-			return ws[i].Name < ws[j].Name
-		})
+		sort.Slice(ws, tiebreak)
 	}
 	return ws
 }
@@ -749,6 +791,17 @@ func renderAutopilotBadge(ws WorkspaceItem) string {
 		return dangerStyle.Render("auto · halted")
 	}
 	return autopilotBadgeStyle.Render("auto")
+}
+
+// renderFanoutBadge marks one sibling of a fan-out. It carries the group's
+// name rather than a bare mark because adjacency is the only other thing
+// saying these rows belong together, and adjacency is invisible when the
+// group is half scrolled off the screen.
+func renderFanoutBadge(ws WorkspaceItem) string {
+	if ws.FanoutGroup == "" {
+		return ""
+	}
+	return fanoutBadgeStyle.Render("⑂ " + ws.FanoutGroup)
 }
 
 func renderCIBadge(ci string) string {

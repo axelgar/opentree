@@ -484,6 +484,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.loadDiffCmd(ws)
 			}
+		case key.Matches(msg, m.keys.Compare):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if ws.FanoutGroup == "" {
+					return m, m.transientErrCmd(fmt.Sprintf("%q is not part of a fan-out group", ws.Name))
+				}
+				return m, m.loadGroupDiffCmd(ws)
+			}
 		case key.Matches(msg, m.keys.PR):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
