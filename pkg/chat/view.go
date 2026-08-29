@@ -51,7 +51,19 @@ func (m Model) footerHeight() int {
 	if m.scrollPill() != "" {
 		pill = 1
 	}
-	return inputHeight + 2 + m.completionHeight() + pill
+	return inputHeight + 2 + m.completionHeight() + len(m.queue) + pill
+}
+
+// queuedView is the messages waiting for the agent, one dim line each, sitting
+// just above the box they were typed into. Above the input rather than in the
+// log: the log is what has been said, and these have not been yet.
+func (m Model) queuedView() string {
+	var b strings.Builder
+	for _, q := range m.queue {
+		b.WriteString(noticeStyle.Render(ui.Truncate(" ⏳ "+strings.ReplaceAll(q.text, "\n", " "), m.width-1)))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // scrollPill tells the reader they are not looking at the end of the log, and
@@ -147,6 +159,7 @@ func (m Model) footer() string {
 		b.WriteString(m.completionView())
 		b.WriteString("\n")
 	}
+	b.WriteString(m.queuedView())
 	b.WriteString(inputBoxStyle.Render(m.inputView()))
 	b.WriteString("\n")
 	b.WriteString(m.statusLine())

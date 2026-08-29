@@ -255,6 +255,14 @@ when you started looking — so a prompt worth repeating, or repeating with one
 word changed, is a keypress away rather than a retype. Inside a message the
 arrows still move the cursor: they only recall from its first and last row.
 
+**Messages you have not sent yet.** Enter while the agent is still working
+queues the message instead of dropping it: it waits as a `⏳` line above the
+box, one fires after each finished turn — so each answer still gets read
+before the next question goes — and backspace on an empty box takes the
+newest one back to be edited, pasted images and all. A failed turn drops the
+queue by name rather than firing into a broken session; `↑` still has every
+message.
+
 **Earlier conversations.** `/resume` lists what this worktree has already
 talked about — newest first, by what each conversation was about — and picking
 one reopens it in place, history and all. The list is the agent's own where it

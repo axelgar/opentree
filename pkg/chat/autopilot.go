@@ -243,7 +243,7 @@ type autoPollResultMsg struct {
 // permission means the turn is not really over, and a dead agent has nothing
 // to act for.
 func (m Model) afterTurn(resp *acp.PromptResponse) (tea.Model, tea.Cmd) {
-	if m.queued != "" {
+	if len(m.queue) > 0 {
 		return m.flushQueued()
 	}
 	if !m.auto.enabled() || m.dead || m.perm() != nil {
@@ -462,7 +462,7 @@ func (m Model) handleAutoPollResult(msg autoPollResultMsg) (tea.Model, tea.Cmd) 
 // the turn it starts re-runs the check like any other.
 func (m Model) drainAutopilot() (tea.Model, tea.Cmd) {
 	if !m.auto.enabled() || m.auto.stage != autoIdle || m.turn || m.dead ||
-		m.perm() != nil || m.queued != "" || m.sessionID == "" {
+		m.perm() != nil || len(m.queue) > 0 || m.sessionID == "" {
 		return m, nil
 	}
 	text, ack := m.auto.pendingCI, m.auto.pendingCIAck

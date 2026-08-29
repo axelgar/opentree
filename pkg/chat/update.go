@@ -147,8 +147,11 @@ func (m Model) status() Status {
 		}
 	}
 
-	if m.queued != "" {
-		st.Queued = m.queued
+	// The badge reports the head of the queue — the message that fires next —
+	// which keeps the socket's shape from before the queue could hold more
+	// than one.
+	if len(m.queue) > 0 {
+		st.Queued = m.queue[0].text
 	}
 	st.Tool = m.currentTool()
 	if m.usage != nil {
@@ -229,8 +232,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = false
 		if msg.err != nil {
 			m.err = msg.err
-			m.queued = "" // a queued prompt must not fire into a broken session
-			return m, nil
+			// A queued prompt must not fire into a broken session. Each is
+			// dropped by name — the text is one ↑ away — rather than silently.
+			for _, q := range m.queue {
+				m = m.appendNotice("not sent: " + q.text)
+			}
+			m.queue = nil
+			return m.relayout(), nil
 		}
 		// A turn that began before this model existed — a resumed session, or a
 		// test — has no start, and time.Since(zero) would report decades.
@@ -580,10 +588,28 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if run, ok := m.clientCommandFor(text); ok {
 			return run(m.sent(text))
 		}
+		// A message typed while the agent is working queues instead of silently
+		// not sending — visibly, above the box, and one flushes per finished
+		// turn. The images leave with it now: captured at enter, so deleting a
+		// label later cannot reach into a message already committed to.
 		if m.turn || m.sessionID == "" {
-			return m, nil
+			m = m.sent(text)
+			m.queue = append(m.queue, queuedPrompt{text: text, images: m.pending, source: typedHere})
+			m.pending = nil
+			return m.relayout(), nil
 		}
 		return m.sent(text).startTurn(text, typedHere)
+
+	// Backspace on an empty box takes the newest queued message back to be
+	// edited — or just deleted, which is the same gesture one keypress longer.
+	// After the palette and overlays: their backspace is their own.
+	case msg.Type == tea.KeyBackspace && strings.TrimSpace(m.input.Value()) == "" && len(m.queue) > 0:
+		q := m.queue[len(m.queue)-1]
+		m.queue = m.queue[:len(m.queue)-1]
+		m.input.SetValue(q.text)
+		m.input.CursorEnd()
+		m.pending = append(m.pending, q.images...)
+		return m.relayout(), nil
 	}
 
 	before := m.input.Value()
@@ -810,10 +836,7 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 		// It is shown in the log and in the list's badge, so a prompt firing
 		// later is something you watched arrive, not a surprise.
 		if m.sessionID == "" || m.turn {
-			if m.queued != "" {
-				return m, nil, Result{Reason: "a prompt is already queued"}
-			}
-			m.queued = text
+			m.queue = append(m.queue, queuedPrompt{text: text, source: sentRemotely})
 			m = m.appendNotice("queued: " + text)
 			return m.relayout(), nil, Result{OK: true}
 		}
@@ -946,19 +969,30 @@ func (m Model) composer() composer {
 	return composer{cwd: m.opts.Cwd, known: m.known, images: m.canSendImages}
 }
 
-// flushQueued runs a prompt that arrived while the agent was busy or starting.
+// flushQueued runs the oldest prompt that arrived while the agent was busy or
+// starting — one per finished turn, so each answer still gets read before the
+// next question goes.
 //
-// Still somebody else's message, however long it waited: the queue only ever
-// holds what came in over the control socket, and the wait makes the case
-// stronger rather than weaker — an image pasted in the minutes since it was
-// accepted has even less to do with it.
+// A queued message stays whose it was, however long it waited: one typed here
+// leaves with the images captured when enter was pressed, and one from the
+// control socket takes no attachments at all — an image pasted in the minutes
+// since it was accepted has nothing to do with it. The box's own pending
+// images are set aside and put back so a queued message's send cannot take a
+// screenshot pasted for the next one.
 func (m Model) flushQueued() (tea.Model, tea.Cmd) {
-	if m.queued == "" || m.sessionID == "" || m.turn {
+	if len(m.queue) == 0 || m.sessionID == "" || m.turn {
 		return m, nil
 	}
-	text := m.queued
-	m.queued = ""
-	return m.startTurn(text, sentRemotely)
+	q := m.queue[0]
+	m.queue = m.queue[1:]
+	if q.source != typedHere {
+		return m.startTurn(q.text, q.source)
+	}
+	held := m.pending
+	m.pending = q.images
+	next, cmd := m.startTurn(q.text, typedHere)
+	next.pending = held
+	return next, cmd
 }
 
 // stopped reports whether the agent is unusable until something is done about

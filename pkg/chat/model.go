@@ -450,6 +450,16 @@ const (
 	entrySetup
 )
 
+// queuedPrompt is one message waiting for the agent to be free. It remembers
+// whose it is: only a message typed here carries the images that were pasted
+// into it, captured at enter so deleting a label afterwards cannot reach back
+// into a message already on its way.
+type queuedPrompt struct {
+	text   string
+	images []acp.ContentBlock
+	source turnSource
+}
+
 // entry is one renderable item in the conversation log. Message entries
 // accumulate streamed chunks; tool entries are patched in place as the call
 // advances through its statuses.
@@ -574,9 +584,11 @@ type Model struct {
 	// so they wait beside it and lead the next prompt.
 	pending []acp.ContentBlock
 
-	// queued holds a prompt from the workspace list that arrived while the
-	// agent was busy or still starting. At most one waits at a time.
-	queued string
+	// queue holds the prompts that arrived while the agent was busy or still
+	// starting — typed here or sent from the workspace list — oldest first.
+	// One flushes per finished turn, so an answer can change your mind about
+	// the next message: backspace on an empty box takes the newest back.
+	queue []queuedPrompt
 
 	// perms holds escalations in arrival order; the first is the one on screen.
 	// More than one can be in flight — a subagent asks independently of the turn

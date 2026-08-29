@@ -185,6 +185,13 @@ func (m Model) chooseSession(i int) (tea.Model, tea.Cmd) {
 	m.entries, m.toolIdx = nil, make(map[string]int)
 	m.usage, m.err = nil, nil
 	m.sessionID = ""
+	// So does the queue: a message waiting for the old conversation must not
+	// fire into the new one the moment it opens. Dropped by name, in the new
+	// view, where the eyes now are.
+	for _, q := range m.queue {
+		m = m.appendNotice("not sent — the conversation changed: " + q.text)
+	}
+	m.queue = nil
 	return m.relayout(), m.switchSessionCmd(chosen)
 }
 

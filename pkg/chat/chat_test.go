@@ -2610,14 +2610,97 @@ func TestRemotePrompt_LeavesThePastedImageAlone(t *testing.T) {
 	}
 }
 
+// Enter during a live turn used to be a silent no-op — the one key that did
+// nothing and said nothing. Now the message queues where you can see it, and
+// fires when the agent is free.
+func TestTypedPrompt_QueuesWhileTheAgentWorks(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m = typeInto(m, "and update the docs")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if got := m.input.Value(); got != "" {
+		t.Errorf("input = %q, want the box cleared once the message is queued", got)
+	}
+	if !strings.Contains(m.View(), "⏳ and update the docs") {
+		t.Error("a queued message should wait above the box, visibly")
+	}
+
+	m, cmd := applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if !m.turn || cmd == nil {
+		t.Fatal("the queued message did not start its turn when the agent freed up")
+	}
+	if last := m.entries[len(m.entries)-1]; last.kind != entryUser || last.text != "and update the docs" {
+		t.Errorf("last entry = %+v, want the queued message sent", last)
+	}
+}
+
+// A message typed here keeps its attachments even through the wait: the image
+// is captured at enter, so pasting another for the next message cannot cross.
+func TestTypedPrompt_QueuedImageTravelsWithItsMessage(t *testing.T) {
+	m := newPastingModel()
+	m.turn = true
+	m, _ = applyUpdate(m, pastedImage())
+	m = typeInto(m, "what is this")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if len(m.pending) != 0 {
+		t.Fatalf("pending = %d, want the image committed to the queued message", len(m.pending))
+	}
+	m, _ = applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if !m.turn {
+		t.Fatal("the queued message did not run")
+	}
+	if last := m.entries[len(m.entries)-1]; !strings.Contains(last.text, "image") {
+		t.Errorf("sent %q, want the image along with the message", last.text)
+	}
+}
+
+// Backspace on an empty box takes the newest queued message back to be edited
+// — or deleted, which is the same gesture one keypress longer.
+func TestTypedPrompt_BackspaceTakesTheNewestBack(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	for _, text := range []string{"first thought", "second thought"} {
+		m = typeInto(m, text)
+		m, _ = applyUpdate(m, keyMsg("enter"))
+	}
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.input.Value(); got != "second thought" {
+		t.Fatalf("input = %q, want the newest queued message back", got)
+	}
+	if len(m.queue) != 1 || m.queue[0].text != "first thought" {
+		t.Errorf("queue = %+v, want the older message still waiting", m.queue)
+	}
+}
+
+// The queue drains oldest first, whoever queued: answers should land in the
+// order the questions were asked, typed here or sent from the list.
+func TestTypedPrompt_DrainsInArrivalOrder(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "from the list"}})
+	m = typeInto(m, "typed after")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	m, _ = applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if last := m.entries[len(m.entries)-1]; last.text != "from the list" {
+		t.Fatalf("first drained = %q, want the older message first", last.text)
+	}
+	if len(m.queue) != 1 || m.queue[0].text != "typed after" {
+		t.Errorf("queue = %+v, want the newer message still waiting its turn", m.queue)
+	}
+}
+
 // And the same when it waited in the queue first: the wait makes the case
 // stronger, since the image was pasted after the prompt was already accepted.
 func TestQueuedPrompt_LeavesThePastedImageAlone(t *testing.T) {
 	m := newPastingModel()
 	m.turn = true
 	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "run the tests"}})
-	if m.queued != "run the tests" {
-		t.Fatalf("queued = %q, want the prompt held while the agent works", m.queued)
+	if len(m.queue) != 1 || m.queue[0].text != "run the tests" {
+		t.Fatalf("queue = %+v, want the prompt held while the agent works", m.queue)
 	}
 
 	m, _ = applyUpdate(m, pastedImage())
