@@ -19,6 +19,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **🚀 PR Creation**: Create GitHub PRs directly from the TUI with auto-generated title and body
 - **✈️ Autopilot**: After each agent turn, run your check command, feed failures back, and publish the PR when it passes — per workspace, opt-in
 - **📦 Dispatch**: `opentree dispatch 42 --headless` turns an issue into a PR with nobody watching, exiting with a code a script can branch on
+- **⑂ Fan-out**: `opentree new feat/x --agents claude,opencode,gemini` races the same task across agents — grouped in the dashboard, compared side by side, the winner promoted and the rest deleted
 - **🐛 Issue Workflow**: Create a workspace directly from a GitHub issue number
 - **✅ CI Status**: Live CI check status displayed per workspace
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
@@ -115,6 +116,8 @@ opentree
 - `i` - Create workspace from a GitHub issue number
 - `Enter` - Attach to selected workspace
 - `d` - Show diff for selected workspace
+- `D` - Compare a fan-out group: every sibling's diff in one scroll
+- `W` - Promote a fan-out's winner: keep this sibling, delete the rest
 - `p` - Create PR for selected workspace (auto-generates title and body from commits)
 - `o` - Open PR in browser
 - `x` - Delete selected workspace (shows diff confirmation if uncommitted changes)
@@ -348,6 +351,41 @@ where it stopped. Headless can ask nothing, so the repository's `setup` and
 `check` commands must be approved ahead of time with `opentree trust`, and a
 tmux server must be running (`tmux new-session -d` in CI).
 
+### Fan-out
+
+Four agents through one protocol makes a comparison no single-agent tool can
+run: the same task, raced.
+
+```bash
+opentree new feat/x --agents claude,opencode,gemini --prompt "add dark mode"
+git log --oneline | opentree new fix/y --agents claude,gemini  # or pipe the task in
+```
+
+One sibling workspace per agent — `feat/x-claude`, `feat/x-opencode`,
+`feat/x-gemini` — all from the same base, each running its own agent, every
+one handed the same prompt (queued until its agent is ready). A name a
+sibling would have taken is stepped past with a numeric suffix rather than
+refused. Without `--prompt` or a pipe the siblings start idle, and `m` in the
+dashboard messages whichever you like.
+
+The dashboard shows the group as one thing: siblings sort together under
+every sort mode, each row wears a `⑂ feat/x` badge, and the cost, context
+and diff numbers already on every row become the scoreboard. `D` opens the
+comparison — every sibling's diff in one scroll, sectioned by agent.
+
+Then pick:
+
+```bash
+opentree promote feat/x-claude   # or W on the row in the dashboard
+```
+
+The winner stays, every other sibling is deleted — worktree, branch, window —
+and the group dissolves. Dirty losers show their diffs and ask first, the way
+delete does. **The winner keeps its suffixed branch name**: `feat/x-claude`
+does not become `feat/x`, because its worktree, chat and any open PR are all
+keyed on the name it has. Rename it on the PR page if the suffix bothers you,
+or not at all.
+
 ### Notifications
 
 The cost of running four agents at once is that idleness becomes invisible: the
@@ -407,6 +445,8 @@ opentree new <branch-name> [flags]
 # Examples
 opentree new feat/user-auth           # Create workspace with branch
 opentree new fix/login-bug --base dev # Branch off 'dev' instead of 'main'
+opentree new feat/x --agent claude    # Run claude here, whatever the config says
+opentree new feat/x --agents claude,gemini --prompt "task"  # Fan out — see Fan-out
 ```
 
 Creates:
@@ -496,6 +536,19 @@ opentree delete feat/user-auth
 ```
 
 Removes the worktree, kills the tmux window, and deletes the branch. If uncommitted changes are detected, a diff is shown and confirmation is required before proceeding.
+
+#### Promote a Fan-out Winner
+
+```bash
+opentree promote <branch-name>
+
+# Example
+opentree promote feat/x-claude   # keep this sibling; delete feat/x-gemini, feat/x-opencode
+```
+
+Keeps the named sibling, deletes every other member of its fan-out group, and
+dissolves the group. Losers with uncommitted or unpushed work show their diffs
+and ask for confirmation first. The winner keeps its suffixed branch name.
 
 #### Install Shell Completion
 
@@ -734,6 +787,11 @@ opentree new fix/header-overflow
 
 # (work on bugfix...)
 # (detach)
+
+# Not sure which agent will do a refactor best? Race them
+opentree new refactor/auth --agents claude,opencode,gemini --prompt "extract the auth middleware"
+# (press D in the dashboard to compare, then promote the winner)
+opentree promote refactor/auth-claude
 
 # Review changes for first feature
 opentree diff feat/add-dark-mode
