@@ -268,6 +268,10 @@ type CreateOpts struct {
 	// fan-out, where N siblings each run a different agent against the same
 	// task — a per-repository setting cannot express that.
 	Agent string
+
+	// FanoutGroup stamps the workspace as one sibling of a fan-out, carrying
+	// the base name the group shares. Empty means an ordinary workspace.
+	FanoutGroup string
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
@@ -303,6 +307,7 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 		Status:      "active",
 		Agent:       agent,
 		WorktreeDir: worktreePath,
+		FanoutGroup: opts.FanoutGroup,
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
 		// Roll back: a worktree+window with no state entry is invisible to

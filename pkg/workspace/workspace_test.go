@@ -1013,6 +1013,36 @@ func TestCreateWith_OverrideDoesNotRequireConfigAgent(t *testing.T) {
 	}
 }
 
+func TestCreateWith_StampsFanoutGroup(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	ws, err := svc.CreateWith("feat/x-opencode", "main", CreateOpts{FanoutGroup: "feat/x"})
+	if err != nil {
+		t.Fatalf("CreateWith: %v", err)
+	}
+	if ws.FanoutGroup != "feat/x" {
+		t.Errorf("ws.FanoutGroup = %q, want %q", ws.FanoutGroup, "feat/x")
+	}
+	stored, err := svc.state.GetWorkspace("feat/x-opencode")
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if stored.FanoutGroup != "feat/x" {
+		t.Errorf("stored FanoutGroup = %q, want %q", stored.FanoutGroup, "feat/x")
+	}
+}
+
 func TestEnsureWindow_ReopensAClosedWindow(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")

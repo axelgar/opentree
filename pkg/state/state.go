@@ -102,6 +102,16 @@ type Workspace struct {
 	AutopilotCISha     string `json:"autopilot_ci_sha,omitempty"`
 	AutopilotReviewsFp string `json:"autopilot_reviews_fp,omitempty"`
 
+	// FanoutGroup names the fan-out this workspace was created as one sibling
+	// of — the base name the user typed, so "feat/x" for feat/x-claude. A
+	// group is nothing more than the workspaces sharing a non-empty value: no
+	// group record exists anywhere, which is why deleting siblings needs no
+	// bookkeeping and a group left with one member is just a workspace wearing
+	// a badge. The empty value is every workspace written before the field
+	// existed — in no group, which is what they were — the same polarity
+	// argument AdoptedBranch makes.
+	FanoutGroup string `json:"fanout_group,omitempty"`
+
 	// SetupAt and SetupHash are the project's bootstrap commands, as this
 	// worktree last ran them. The hash is what earns the pair its keep: a chat
 	// starts many times per workspace — losing a window relaunches one — so
