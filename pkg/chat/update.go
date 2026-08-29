@@ -219,7 +219,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionReadyMsg:
 		m.sessionID = msg.id
-		m.configOptions = msg.options
+		m.configOptions, m.classicModes = withClassicModes(msg.options, msg.modes)
 		m.titled = msg.resumed
 		if msg.note != "" {
 			m = m.appendNotice(msg.note)

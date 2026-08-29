@@ -207,7 +207,7 @@ agent's own logo, in its own colours:
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn — or clear an unsent message (`↑` brings it back) |
-| `shift+tab` | cycle the agent's mode (plan / build / …) |
+| `shift+tab` | cycle the agent's mode (plan / build / …) — Claude Code's plan mode and accept-edits included |
 | `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
 | `ctrl+o` | show or hide the agent's reasoning |
 | `ctrl+x` | expand what the last tool call held back, and fold it again |

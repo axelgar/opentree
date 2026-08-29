@@ -457,6 +457,54 @@ func TestCurrentModeUpdate_MovesTheFlag(t *testing.T) {
 	}
 }
 
+// Agents split on how they say "modes": opencode declares a config option,
+// the Claude Code adapter sends classic ACP's modes object. The latter is
+// folded into the former's shape, so shift+tab, ctrl+g, /mode and the flags
+// line all work without knowing which agent they are talking to.
+func TestClassicModes_FoldIntoTheConfigOptions(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, sessionReadyMsg{id: "ses_1", modes: &acp.SessionModeState{
+		CurrentModeID: "plan",
+		AvailableModes: []acp.SessionMode{
+			{ID: "plan", Name: "Plan"}, {ID: "acceptEdits", Name: "Accept Edits"},
+		},
+	}})
+
+	if !m.classicModes {
+		t.Fatal("the synthesized mode option was not marked classic")
+	}
+	opt, ok := configOption(m.configOptions, classicModeID)
+	if !ok || opt.Category != categoryMode || opt.CurrentValue != "plan" {
+		t.Fatalf("synthesized option = %+v, want a mode option currently on plan", opt)
+	}
+	if !strings.Contains(strings.Join(m.flagsSummary(), " "), "plan") {
+		t.Errorf("flags = %v, want the mode shown beside the input", m.flagsSummary())
+	}
+
+	// shift+tab has something to cycle now, and the agent's own
+	// current_mode_update lands on the synthesized option like any other.
+	if _, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyShiftTab}); cmd == nil {
+		t.Error("shift+tab found no mode to cycle")
+	}
+	m, _ = applyUpdate(m, acpUpdateMsg(acp.SessionUpdate{Type: acp.UpdateMode, CurrentModeID: "acceptEdits"}))
+	if opt, _ := configOption(m.configOptions, classicModeID); opt.CurrentValue != "acceptEdits" {
+		t.Errorf("mode = %q, want the agent's own switch to have landed", opt.CurrentValue)
+	}
+}
+
+// An agent that says it both ways is believed the config-option way — that is
+// the shape its set method serves — so nothing is synthesized over it.
+func TestClassicModes_ADeclaredModeOptionWins(t *testing.T) {
+	declared := []acp.ConfigOption{{ID: "agent-mode", Category: "mode", CurrentValue: "build"}}
+	options, classic := withClassicModes(declared, &acp.SessionModeState{
+		CurrentModeID:  "plan",
+		AvailableModes: []acp.SessionMode{{ID: "plan", Name: "Plan"}, {ID: "build", Name: "Build"}},
+	})
+	if classic || len(options) != 1 {
+		t.Errorf("options = %+v (classic=%v), want the declared option left alone", options, classic)
+	}
+}
+
 func TestConfigOptionUpdate_ReplacesTheSet(t *testing.T) {
 	m := newTestModel()
 	m.configOptions = []acp.ConfigOption{{ID: "mode", Category: "mode", CurrentValue: "plan"}}

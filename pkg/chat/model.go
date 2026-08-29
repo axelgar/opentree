@@ -381,6 +381,7 @@ type setupBeginMsg struct{}
 type sessionReadyMsg struct {
 	id      string
 	options []acp.ConfigOption
+	modes   *acp.SessionModeState
 	note    string
 
 	// resumed distinguishes a conversation that was reopened from one that was
@@ -537,9 +538,15 @@ type Model struct {
 
 	sessionID     string
 	configOptions []acp.ConfigOption
-	settings      settings
-	sessions      sessions
-	login         login
+
+	// classicModes is whether the mode among those options is synthesized from
+	// the agent's classic ACP modes object, and so must be set through
+	// session/set_mode rather than session/set_config_option.
+	classicModes bool
+
+	settings settings
+	sessions sessions
+	login    login
 
 	// titled is whether the current conversation already has a name in the
 	// ledger, which stops the first prompt of a resumed session from renaming
@@ -934,7 +941,7 @@ func (m Model) reopenSession(client *acp.Client, id, cwd string) tea.Msg {
 			// beats an empty log that looks like a lost one.
 			note = "resumed — this agent does not replay what was said before"
 		}
-		return sessionReadyMsg{id: id, options: resp.ConfigOptions, note: note, resumed: true}
+		return sessionReadyMsg{id: id, options: resp.ConfigOptions, modes: resp.Modes, note: note, resumed: true}
 
 	case errors.Is(err, acp.ErrCannotReopen):
 		// Both agents opentree ships with can, so this is for the next one.
@@ -975,7 +982,7 @@ func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
 			return errMsg{err: fmt.Errorf("failed to record session id: %w", err), fatal: true}
 		}
 	}
-	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, note: note}
+	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, modes: resp.Modes, note: note}
 }
 
 // promptCmd sends blocks that have already been composed. Composing happens in

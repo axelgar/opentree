@@ -291,6 +291,7 @@ var ErrCannotReopen = errors.New("this agent cannot reopen a conversation")
 // client's view of it differs.
 type ReopenResponse struct {
 	ConfigOptions []ConfigOption
+	Modes         *SessionModeState
 	Replayed      bool
 }
 
@@ -306,7 +307,7 @@ func (c *Client) Reopen(ctx context.Context, sessionID, cwd string) (*ReopenResp
 		if err := c.call(ctx, methodSessionLoad, req, &resp); err != nil {
 			return nil, err
 		}
-		return &ReopenResponse{ConfigOptions: resp.ConfigOptions, Replayed: true}, nil
+		return &ReopenResponse{ConfigOptions: resp.ConfigOptions, Modes: resp.Modes, Replayed: true}, nil
 
 	case c.caps.SessionCapabilities.Resume != nil:
 		var resp ResumeSessionResponse
@@ -314,7 +315,7 @@ func (c *Client) Reopen(ctx context.Context, sessionID, cwd string) (*ReopenResp
 		if err := c.call(ctx, methodSessionResume, req, &resp); err != nil {
 			return nil, err
 		}
-		return &ReopenResponse{ConfigOptions: resp.ConfigOptions}, nil
+		return &ReopenResponse{ConfigOptions: resp.ConfigOptions, Modes: resp.Modes}, nil
 	}
 	return nil, ErrCannotReopen
 }
@@ -355,6 +356,14 @@ func (c *Client) SetConfigOption(ctx context.Context, sessionID, configID, value
 		return nil, err
 	}
 	return resp.ConfigOptions, nil
+}
+
+// SetSessionMode switches a classic ACP session mode — the counterpart of
+// SetConfigOption for agents that declare modes as their own object rather
+// than as a config option. The response carries nothing; agents that confirm
+// do it with a current_mode_update notification.
+func (c *Client) SetSessionMode(ctx context.Context, sessionID, modeID string) error {
+	return c.call(ctx, methodSessionSetMode, SetSessionModeRequest{SessionID: sessionID, ModeID: modeID}, nil)
 }
 
 // Cancel asks the agent to stop the current turn. It is a notification, so it

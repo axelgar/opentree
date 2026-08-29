@@ -177,6 +177,50 @@ func TestNewSessionResponse_Decode(t *testing.T) {
 	}
 }
 
+// Shaped like the Claude Code adapter's session/new result: the classic modes
+// object beside the sessionId, per the published schema. opencode never sends
+// this — its modes are a config option — which is exactly why both shapes have
+// to decode.
+func TestSessionModes_Decode(t *testing.T) {
+	raw := `{"result":{"sessionId":"ses_abc","modes":{"currentModeId":"default",` +
+		`"availableModes":[{"id":"default","name":"Always Ask"},{"id":"plan","name":"Plan Mode"},` +
+		`{"id":"acceptEdits","name":"Accept Edits","description":"Edits apply without asking"}]}}}`
+	var env struct {
+		Result NewSessionResponse `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	modes := env.Result.Modes
+	if modes == nil || modes.CurrentModeID != "default" {
+		t.Fatalf("Modes = %+v, want the current mode decoded", modes)
+	}
+	if len(modes.AvailableModes) != 3 || modes.AvailableModes[1].ID != "plan" {
+		t.Errorf("AvailableModes = %+v, want all three with their ids", modes.AvailableModes)
+	}
+}
+
+func TestSetSessionMode_RoundTrip(t *testing.T) {
+	f := newFakeAgent(t, Handlers{})
+
+	errc := make(chan error, 1)
+	go func() { errc <- f.client.SetSessionMode(context.Background(), "ses_1", "plan") }()
+
+	req := f.next()
+	if req["method"] != methodSessionSetMode {
+		t.Fatalf("method = %v, want %s", req["method"], methodSessionSetMode)
+	}
+	params := req["params"].(map[string]any)
+	if params["sessionId"] != "ses_1" || params["modeId"] != "plan" {
+		t.Errorf("params = %v, want the session and the mode", params)
+	}
+	f.reply(req, `{}`)
+
+	if err := <-errc; err != nil {
+		t.Errorf("SetSessionMode: %v", err)
+	}
+}
+
 func TestPromptResponse_Decode(t *testing.T) {
 	var env struct {
 		Result PromptResponse `json:"result"`
