@@ -119,14 +119,14 @@ func (s *Service) WorktreePath(name string) string {
 	return filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(name))
 }
 
-// launchAgentWindow starts the workspace's agent in a new tmux window for
-// name's worktree. On failure the just-created worktree is rolled back;
-// deleteBranch controls whether its branch is deleted too (a pre-existing
-// branch may hold the user's own local-only commits).
-func (s *Service) launchAgentWindow(name string, deleteBranch bool) (string, error) {
+// launchAgentWindow starts the given agent in a new tmux window for name's
+// worktree. On failure the just-created worktree is rolled back; deleteBranch
+// controls whether its branch is deleted too (a pre-existing branch may hold
+// the user's own local-only commits).
+func (s *Service) launchAgentWindow(name, agentCommand string, deleteBranch bool) (string, error) {
 	worktreePath := s.WorktreePath(name)
 
-	launch, err := s.agentLaunch(name, s.cfg.Agent.Command, worktreePath)
+	launch, err := s.agentLaunch(name, agentCommand, worktreePath)
 	if err != nil {
 		_ = s.worktrees.Delete(name, deleteBranch)
 		return "", err
@@ -239,23 +239,49 @@ func (s *Service) seedWorktree(name string) {
 	_, _ = bootstrap.Seed(s.repoRoot, worktreePath, s.cfg.Workspace.Seed)
 }
 
-// checkPrerequisites rejects a configuration no workspace could be created
-// from, before anything is created.
+// checkPrerequisites rejects a setup no workspace could be created from,
+// before anything is created.
 //
-// Both are the same kind of mistake: wrong for every workspace this repository
-// will ever make, with no per-workspace recovery. Failing here is one clear
-// message rather than a "✓ Launched" followed by a dead shell window, or a
-// worktree that quietly never receives its .env.
-func (s *Service) checkPrerequisites() error {
-	if err := s.cfg.Agent.Validate(); err != nil {
+// Both checks are the same kind of mistake: wrong for the whole run, with no
+// per-workspace recovery. Failing here is one clear message rather than a
+// "✓ Launched" followed by a dead shell window, or a worktree that quietly
+// never receives its .env.
+//
+// The agent is a parameter rather than a read of the config because it is the
+// agent this workspace will actually run — an override validates in place of
+// the config's default, not in addition to it. A fan-out onto installed agents
+// must not fail because the repository's configured default happens to be
+// missing from this machine.
+func (s *Service) checkPrerequisites(agentCommand string) error {
+	if err := (config.AgentConfig{Command: agentCommand}).Validate(); err != nil {
 		return err
 	}
 	return bootstrap.ValidateSeed(s.repoRoot, s.cfg.Workspace.Seed)
 }
 
+// CreateOpts is what a single creation can override about the repository's
+// defaults. The zero value means "exactly what Create always did", which is
+// why Create can delegate here without changing meaning.
+type CreateOpts struct {
+	// Agent is the agent command this workspace runs instead of the
+	// configured one. Empty means the config's agent. The override exists for
+	// fan-out, where N siblings each run a different agent against the same
+	// task — a per-repository setting cannot express that.
+	Agent string
+}
+
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
 func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
-	if err := s.checkPrerequisites(); err != nil {
+	return s.CreateWith(name, baseBranch, CreateOpts{})
+}
+
+// CreateWith is Create with per-workspace overrides.
+func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.Workspace, error) {
+	agent := opts.Agent
+	if agent == "" {
+		agent = s.cfg.Agent.Command
+	}
+	if err := s.checkPrerequisites(agent); err != nil {
 		return nil, err
 	}
 
@@ -264,7 +290,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 	}
 	s.seedWorktree(name)
 
-	worktreePath, err := s.launchAgentWindow(name, true)
+	worktreePath, err := s.launchAgentWindow(name, agent, true)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +301,7 @@ func (s *Service) Create(name, baseBranch string) (*state.Workspace, error) {
 		BaseBranch:  baseBranch,
 		CreatedAt:   time.Now(),
 		Status:      "active",
-		Agent:       s.cfg.Agent.Command,
+		Agent:       agent,
 		WorktreeDir: worktreePath,
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
@@ -330,7 +356,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 // CreateFromRemoteBranch creates a workspace from an existing remote branch.
 // The branch is fetched from origin and checked out into a new worktree.
 func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, error) {
-	if err := s.checkPrerequisites(); err != nil {
+	if err := s.checkPrerequisites(s.cfg.Agent.Command); err != nil {
 		return nil, err
 	}
 
@@ -340,7 +366,7 @@ func (s *Service) CreateFromRemoteBranch(branchName string) (*state.Workspace, e
 	}
 	s.seedWorktree(branchName)
 
-	worktreePath, err := s.launchAgentWindow(branchName, createdBranch)
+	worktreePath, err := s.launchAgentWindow(branchName, s.cfg.Agent.Command, createdBranch)
 	if err != nil {
 		return nil, err
 	}

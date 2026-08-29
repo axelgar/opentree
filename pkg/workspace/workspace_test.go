@@ -913,6 +913,106 @@ func TestCreate_ACPAgentLaunchesTheChatView(t *testing.T) {
 	}
 }
 
+// ---- per-workspace agent override ----
+
+func TestCreateWith_OverridesAgent(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "opencode")
+	fakeBinary(t, binDir, "claude")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "opencode"
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	ws, err := svc.CreateWith("override-branch", "main", CreateOpts{Agent: "claude"})
+	if err != nil {
+		t.Fatalf("CreateWith: %v", err)
+	}
+
+	// The override must reach both places the agent choice lives: the window
+	// command that launches the chat, and the record EnsureWindow reopens from.
+	wantArgs := []string{"chat", "override-branch", "--agent", "claude"}
+	if strings.Join(mock.createWindowArgs[0], " ") != strings.Join(wantArgs, " ") {
+		t.Errorf("args = %v, want %v", mock.createWindowArgs[0], wantArgs)
+	}
+	if ws.Agent != "claude" {
+		t.Errorf("ws.Agent = %q, want %q", ws.Agent, "claude")
+	}
+	stored, err := svc.state.GetWorkspace("override-branch")
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if stored.Agent != "claude" {
+		t.Errorf("stored Agent = %q, want %q", stored.Agent, "claude")
+	}
+}
+
+func TestCreateWith_RejectsUnknownAgentOverride(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	cfg := config.Default()
+	useAgent(t, cfg)
+
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	_, err = svc.CreateWith("nope", "main", CreateOpts{Agent: "not-an-agent"})
+	if err == nil {
+		t.Fatal("expected an error for an unknown agent override")
+	}
+	if len(mock.createWindowCalls) != 0 {
+		t.Error("no window should be created for an unknown agent override")
+	}
+	if _, statErr := os.Stat(svc.WorktreePath("nope")); statErr == nil {
+		t.Error("no worktree should be created for an unknown agent override")
+	}
+}
+
+// The override validates in place of the config's default, not in addition:
+// a workspace that will run claude must not fail because the repository's
+// configured agent happens to be missing from this machine.
+func TestCreateWith_OverrideDoesNotRequireConfigAgent(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+
+	binDir := t.TempDir()
+	fakeBinary(t, binDir, "claude") // the override exists; the config default does not
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := config.Default()
+	cfg.Agent.Command = "definitely-not-installed-xyz"
+	mock := &mockProcessManager{}
+	svc, err := newWithMock(repoDir, cfg, mock)
+	if err != nil {
+		t.Fatalf("newWithMock: %v", err)
+	}
+
+	ws, err := svc.CreateWith("only-override", "main", CreateOpts{Agent: "claude"})
+	if err != nil {
+		t.Fatalf("CreateWith with an installed override: %v", err)
+	}
+	if ws.Agent != "claude" {
+		t.Errorf("ws.Agent = %q, want %q", ws.Agent, "claude")
+	}
+}
+
 func TestEnsureWindow_ReopensAClosedWindow(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
