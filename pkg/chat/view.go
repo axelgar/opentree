@@ -460,7 +460,7 @@ func (m Model) statusLine() string {
 	flags := m.flagsSummary()
 	if len(flags) == 0 {
 		if m.err != nil {
-			return errorStyle.Render("✕ " + m.errorText())
+			return errorStyle.Render("✕ " + m.errorText() + m.retryHint())
 		}
 		return helpStyle.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 	}
@@ -473,7 +473,7 @@ func (m Model) statusLine() string {
 
 	left := m.shortHelp(room)
 	if m.err != nil {
-		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText(), room))
+		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText()+m.retryHint(), room))
 	}
 
 	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
@@ -587,6 +587,15 @@ func (m Model) helpHeight() int { return lipgloss.Height(m.helpView()) }
 // into the log whole when it is stored (see the errMsg branch of update), which
 // is the one surface with room for it and the one a reader can scroll back
 // through.
+// retryHint offers ctrl+r beside a failure, but only when pressing it would do
+// something: there has to be a message to resend, and no turn already going.
+func (m Model) retryHint() string {
+	if m.turn || len(m.lastSent) == 0 {
+		return ""
+	}
+	return " · ctrl+r to retry"
+}
+
 func (m Model) errorText() string {
 	if m.err == nil {
 		return "agent unavailable"

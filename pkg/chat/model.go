@@ -602,6 +602,12 @@ type Model struct {
 	spinnerFrame int
 	usage        *acp.ContextUsage
 
+	// lastSent is the previous turn's message as it actually went — blocks,
+	// not text, so a retry resends the images too. It exists for ctrl+r after
+	// a failed turn; ↑ already covers retyping, but recall returns an image's
+	// label where this returns the image.
+	lastSent []acp.ContentBlock
+
 	// spinning is whether a tick is already on its way back. The chain sustains
 	// itself — each tick asks for the next — so whatever starts one has to know
 	// that nothing else already did. Two chains is a spinner at twice the rate

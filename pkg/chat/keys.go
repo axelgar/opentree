@@ -20,6 +20,7 @@ type keyMap struct {
 	CycleMode key.Binding
 	Thoughts  key.Binding
 	Expand    key.Binding
+	Retry     key.Binding
 	Paste     key.Binding
 	Help      key.Binding
 
@@ -60,7 +61,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
-		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand},
+		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand, k.Retry},
 		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
 	}
 }
@@ -137,6 +138,12 @@ var keys = keyMap{
 	Expand: key.NewBinding(
 		key.WithKeys("ctrl+x"),
 		key.WithHelp("ctrl+x", "expand tool output"),
+	),
+	// ctrl+r is free too — the textarea has no reverse search — and bare r
+	// belongs to the stopped panel, where it restarts the whole agent.
+	Retry: key.NewBinding(
+		key.WithKeys("ctrl+r"),
+		key.WithHelp("ctrl+r", "retry the failed turn"),
 	),
 	// Taken from the textarea, which binds ctrl+v to pasting text, and handed
 	// straight back when the clipboard holds no image. On macOS this is ctrl+v

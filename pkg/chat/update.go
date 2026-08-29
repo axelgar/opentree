@@ -523,6 +523,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Expand):
 		return m.toggleExpand(), nil
 
+	case key.Matches(msg, m.keys.Retry):
+		return m.retryTurn()
+
 	// Taken from the textarea, which binds ctrl+v to pasting text. The command
 	// hands it straight back when the clipboard holds no image, so the key does
 	// what it always did and gains a second meaning rather than losing its first.
@@ -931,6 +934,7 @@ func (m Model) startTurn(text string, from turnSource) (Model, tea.Cmd) {
 	}
 
 	cmd := m.promptCmd(blocks)
+	m.lastSent = blocks
 	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks), rev: m.nextRev()})
 	for _, n := range notices {
 		m = m.appendNotice(n)
@@ -993,6 +997,23 @@ func (m Model) flushQueued() (tea.Model, tea.Cmd) {
 	next, cmd := m.startTurn(q.text, typedHere)
 	next.pending = held
 	return next, cmd
+}
+
+// retryTurn sends the last message again, exactly as it went the first time —
+// the blocks rather than the text, so an image is retried along with the words
+// around it. Only after a failure: with no error there is nothing to retry,
+// and mid-turn there is nothing to retry yet.
+func (m Model) retryTurn() (tea.Model, tea.Cmd) {
+	if m.err == nil || m.turn || m.sessionID == "" || len(m.lastSent) == 0 {
+		return m, nil
+	}
+	cmd := m.promptCmd(m.lastSent)
+	m.entries = append(m.entries, entry{kind: entryUser, text: echo(m.lastSent), rev: m.nextRev()})
+	m.turn = true
+	m.turnStart = time.Now()
+	m.err = nil
+	m, tick := m.spin()
+	return m.relayout(), tea.Batch(cmd, tick)
 }
 
 // stopped reports whether the agent is unusable until something is done about

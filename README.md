@@ -211,6 +211,7 @@ agent's own logo, in its own colours:
 | `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
 | `ctrl+o` | show or hide the agent's reasoning |
 | `ctrl+x` | expand what the last tool call held back, and fold it again |
+| `ctrl+r` | retry a failed turn — the same message, pasted images included |
 | `?` | every key |
 
 **Prose.** The agent's replies render as markdown while they stream: emphasis,

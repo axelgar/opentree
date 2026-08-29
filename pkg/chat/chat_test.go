@@ -2610,6 +2610,38 @@ func TestRemotePrompt_LeavesThePastedImageAlone(t *testing.T) {
 	}
 }
 
+// ctrl+r retries a failed turn with the message exactly as it went — the
+// blocks, not the text, so a pasted image is retried too, which ↑-and-enter
+// cannot do: recall returns an image's label, this returns the image.
+func TestRetry_ResendsTheFailedMessage(t *testing.T) {
+	m := sendMessage(newTestModel(), "flaky request")
+	m, _ = applyUpdate(m, promptDoneMsg{err: stringError("connection lost")})
+
+	if !strings.Contains(m.View(), "ctrl+r to retry") {
+		t.Error("a failed turn should offer the retry key")
+	}
+	m, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if !m.turn || cmd == nil {
+		t.Fatal("ctrl+r did not restart the turn")
+	}
+	if m.err != nil {
+		t.Error("the old failure should clear when the retry goes")
+	}
+	if last := m.entries[len(m.entries)-1]; last.kind != entryUser || last.text != "flaky request" {
+		t.Errorf("last entry = %+v, want the message sent again", last)
+	}
+}
+
+func TestRetry_OnlyAfterAFailure(t *testing.T) {
+	m := sendMessage(newTestModel(), "all fine")
+	m, _ = applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+
+	m, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if m.turn || cmd != nil {
+		t.Error("ctrl+r with nothing failed should do nothing")
+	}
+}
+
 // Enter during a live turn used to be a silent no-op — the one key that did
 // nothing and said nothing. Now the message queues where you can see it, and
 // fires when the agent is free.
