@@ -1922,6 +1922,28 @@ func TestUserMessage_BandRunsTheFullColumn(t *testing.T) {
 	}
 }
 
+// The agent's prose arrives in chunks and is re-rendered as markdown on each
+// one. Half a fence is the interesting state: the opener has arrived, the
+// closer has not, and the code between them must already read as code.
+func TestAgentMessage_RendersMarkdownWhileStreaming(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	for _, chunk := range []string{"use **make", " check** first:\n``", "`\nmake check\n"} {
+		m, _ = applyUpdate(m, textUpdate("agent_message_chunk", chunk))
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "use make check first:") {
+		t.Errorf("view kept the ** markers:\n%s", view)
+	}
+	if !strings.Contains(view, "make check\n") && !strings.Contains(view, "make check ") {
+		t.Errorf("the open fence's code line is missing:\n%s", view)
+	}
+	if strings.Contains(view, "```") {
+		t.Errorf("the fence delimiter leaked into the view:\n%s", view)
+	}
+}
+
 // A notice is often an error line from an adapter or a dumped stderr ring, and
 // those run long. Unwrapped, it was the one entry kind that could push the
 // whole log sideways.

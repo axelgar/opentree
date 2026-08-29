@@ -75,6 +75,21 @@ var (
 			Foreground(ui.Meta).
 			Italic(true)
 
+	// The markdown styles below are what renderMarkdown paints with. They stay
+	// close to agentTextStyle on purpose: emphasis should read as emphasis, not
+	// as a second voice, and everything here has to hold up on a light terminal
+	// too — hence palette colours throughout, and ui.Band for the code
+	// backgrounds, which is defined as "a shade off whichever background".
+	mdBoldStyle       = lipgloss.NewStyle().Foreground(ui.BodyStrong).Bold(true)
+	mdItalicStyle     = lipgloss.NewStyle().Foreground(ui.Body).Italic(true)
+	mdBoldItalicStyle = lipgloss.NewStyle().Foreground(ui.BodyStrong).Bold(true).Italic(true)
+	mdHeadingStyle    = lipgloss.NewStyle().Foreground(ui.BodyStrong).Bold(true)
+	mdInlineCodeStyle = lipgloss.NewStyle().Foreground(ui.Accent).Background(ui.Band)
+	mdCodeBlockStyle  = lipgloss.NewStyle().Foreground(ui.Body).Background(ui.Band)
+	mdBulletStyle     = lipgloss.NewStyle().Foreground(ui.Accent)
+	mdQuoteStyle      = lipgloss.NewStyle().Foreground(ui.Faint).Italic(true)
+	mdRuleStyle       = lipgloss.NewStyle().Foreground(ui.Divider)
+
 	errorStyle = lipgloss.NewStyle().
 			Foreground(ui.Danger).
 			Bold(true)

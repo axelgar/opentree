@@ -212,6 +212,12 @@ agent's own logo, in its own colours:
 | `ctrl+o` | show or hide the agent's reasoning |
 | `?` | every key |
 
+**Prose.** The agent's replies render as markdown while they stream: emphasis,
+headings, lists, quotes, and fenced code on its own background — code is never
+rewrapped, so its indentation keeps meaning. A half-arrived fence already reads
+as code and never snaps back to prose; a lone `**` stays two asterisks until
+its closer arrives. Tables render as the text they are.
+
 **Newlines.** `shift+enter` breaks the line instead of sending it, with nothing
 to configure. A terminal left to itself sends a bare carriage return for
 `shift+enter` — the same byte `enter` sends, and nothing downstream can tell the

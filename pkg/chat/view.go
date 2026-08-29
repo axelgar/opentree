@@ -793,7 +793,7 @@ func (m Model) renderEntry(e entry, width int) string {
 		// Less one for the border, which lipgloss adds outside the width.
 		return "\n" + userBoxStyle.Width(width-1).Render(e.text) + "\n"
 	case entryAgent:
-		return m.bulleted(wrap.Width(width - 2).Inherit(agentTextStyle).Render(e.text))
+		return m.bulleted(renderMarkdown(e.text, width-2))
 	case entryThought:
 		return wrap.Inherit(thoughtStyle).Render(e.text)
 	case entryNotice:
