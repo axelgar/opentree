@@ -22,6 +22,7 @@ const (
 	methodSessionPrompt     = "session/prompt"
 	methodSessionCancel     = "session/cancel"
 	methodSetConfigOption   = "session/set_config_option"
+	methodSessionSetMode    = "session/set_mode"
 	methodRequestPermission = "session/request_permission"
 	methodSessionUpdate     = "session/update"
 )
@@ -168,8 +169,32 @@ type NewSessionRequest struct {
 }
 
 type NewSessionResponse struct {
-	SessionID     string         `json:"sessionId"`
-	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+	SessionID     string            `json:"sessionId"`
+	ConfigOptions []ConfigOption    `json:"configOptions,omitempty"`
+	Modes         *SessionModeState `json:"modes,omitempty"`
+}
+
+// SessionModeState is classic ACP's session modes — plan, build, accept-edits —
+// as the schema publishes them. Agents split here: opencode declares modes as a
+// ConfigOption with Category "mode", the Claude Code adapter sends this object
+// and serves session/set_mode. The chat folds this shape into the config-option
+// world rather than growing a parallel UI for it.
+type SessionModeState struct {
+	CurrentModeID  string        `json:"currentModeId"`
+	AvailableModes []SessionMode `json:"availableModes"`
+}
+
+type SessionMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// SetSessionModeRequest switches the session's classic mode. The empty
+// response is normal; agents may also confirm with a current_mode_update.
+type SetSessionModeRequest struct {
+	SessionID string `json:"sessionId"`
+	ModeID    string `json:"modeId"`
 }
 
 type LoadSessionRequest struct {
@@ -181,7 +206,8 @@ type LoadSessionRequest struct {
 // LoadSessionResponse arrives only after the agent has replayed the whole
 // conversation as session/update notifications.
 type LoadSessionResponse struct {
-	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+	ConfigOptions []ConfigOption    `json:"configOptions,omitempty"`
+	Modes         *SessionModeState `json:"modes,omitempty"`
 }
 
 // ResumeSessionRequest reopens a conversation without replaying it. It is the
@@ -193,7 +219,8 @@ type ResumeSessionRequest struct {
 }
 
 type ResumeSessionResponse struct {
-	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+	ConfigOptions []ConfigOption    `json:"configOptions,omitempty"`
+	Modes         *SessionModeState `json:"modes,omitempty"`
 }
 
 // ListSessionsRequest asks for the conversations an agent still has. Cwd

@@ -147,8 +147,11 @@ func (m Model) status() Status {
 		}
 	}
 
-	if m.queued != "" {
-		st.Queued = m.queued
+	// The badge reports the head of the queue — the message that fires next —
+	// which keeps the socket's shape from before the queue could hold more
+	// than one.
+	if len(m.queue) > 0 {
+		st.Queued = m.queue[0].text
 	}
 	st.Tool = m.currentTool()
 	if m.usage != nil {
@@ -216,7 +219,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionReadyMsg:
 		m.sessionID = msg.id
-		m.configOptions = msg.options
+		m.configOptions, m.classicModes = withClassicModes(msg.options, msg.modes)
 		m.titled = msg.resumed
 		if msg.note != "" {
 			m = m.appendNotice(msg.note)
@@ -229,8 +232,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = false
 		if msg.err != nil {
 			m.err = msg.err
-			m.queued = "" // a queued prompt must not fire into a broken session
-			return m, nil
+			// A queued prompt must not fire into a broken session. Each is
+			// dropped by name — the text is one ↑ away — rather than silently.
+			for _, q := range m.queue {
+				m = m.appendNotice("not sent: " + q.text)
+			}
+			m.queue = nil
+			return m.relayout(), nil
 		}
 		// A turn that began before this model existed — a resumed session, or a
 		// test — has no start, and time.Since(zero) would report decades.
@@ -287,7 +295,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(ui.SpinnerFrames)
-		return m, spinnerTick()
+		// The frame lives inside rendered entries — the thinking line and every
+		// running tool's glyph — and the viewport caches whatever the last
+		// relayout gave it. Without a relayout here the spinner only moves when
+		// the agent happens to say something, which is exactly when nobody
+		// needs reassurance that it is alive.
+		return m.relayout(), spinnerTick()
 
 	case agentGoneMsg:
 		// This arrives down the handler channel, so the reader has to be
@@ -507,6 +520,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 		return m, nil
 
+	case key.Matches(msg, m.keys.Expand):
+		return m.toggleExpand(), nil
+
+	case key.Matches(msg, m.keys.Retry):
+		return m.retryTurn()
+
 	// Taken from the textarea, which binds ctrl+v to pasting text. The command
 	// hands it straight back when the clipboard holds no image, so the key does
 	// what it always did and gains a second meaning rather than losing its first.
@@ -522,6 +541,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Cancel):
 		if m.turn {
 			_ = m.client.Cancel(m.sessionID)
+			return m, nil
+		}
+		// With no turn to interrupt, esc clears a message not yet sent. It is
+		// recorded first, so ↑ undoes the clear; pasted images go with their
+		// labels, exactly as if the labels had been deleted by hand.
+		if strings.TrimSpace(m.input.Value()) != "" {
+			m = m.sent(m.input.Value())
+			m.pending = nil
 		}
 		return m, nil
 
@@ -564,10 +591,28 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if run, ok := m.clientCommandFor(text); ok {
 			return run(m.sent(text))
 		}
+		// A message typed while the agent is working queues instead of silently
+		// not sending — visibly, above the box, and one flushes per finished
+		// turn. The images leave with it now: captured at enter, so deleting a
+		// label later cannot reach into a message already committed to.
 		if m.turn || m.sessionID == "" {
-			return m, nil
+			m = m.sent(text)
+			m.queue = append(m.queue, queuedPrompt{text: text, images: m.pending, source: typedHere})
+			m.pending = nil
+			return m.relayout(), nil
 		}
 		return m.sent(text).startTurn(text, typedHere)
+
+	// Backspace on an empty box takes the newest queued message back to be
+	// edited — or just deleted, which is the same gesture one keypress longer.
+	// After the palette and overlays: their backspace is their own.
+	case msg.Type == tea.KeyBackspace && strings.TrimSpace(m.input.Value()) == "" && len(m.queue) > 0:
+		q := m.queue[len(m.queue)-1]
+		m.queue = m.queue[:len(m.queue)-1]
+		m.input.SetValue(q.text)
+		m.input.CursorEnd()
+		m.pending = append(m.pending, q.images...)
+		return m.relayout(), nil
 	}
 
 	before := m.input.Value()
@@ -794,10 +839,7 @@ func (m Model) applyRemoteCommand(cmd Command) (tea.Model, tea.Cmd, Result) {
 		// It is shown in the log and in the list's badge, so a prompt firing
 		// later is something you watched arrive, not a surprise.
 		if m.sessionID == "" || m.turn {
-			if m.queued != "" {
-				return m, nil, Result{Reason: "a prompt is already queued"}
-			}
-			m.queued = text
+			m.queue = append(m.queue, queuedPrompt{text: text, source: sentRemotely})
 			m = m.appendNotice("queued: " + text)
 			return m.relayout(), nil, Result{OK: true}
 		}
@@ -892,7 +934,8 @@ func (m Model) startTurn(text string, from turnSource) (Model, tea.Cmd) {
 	}
 
 	cmd := m.promptCmd(blocks)
-	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks)})
+	m.lastSent = blocks
+	m.entries = append(m.entries, entry{kind: entryUser, text: echo(blocks), rev: m.nextRev()})
 	for _, n := range notices {
 		m = m.appendNotice(n)
 	}
@@ -930,19 +973,47 @@ func (m Model) composer() composer {
 	return composer{cwd: m.opts.Cwd, known: m.known, images: m.canSendImages}
 }
 
-// flushQueued runs a prompt that arrived while the agent was busy or starting.
+// flushQueued runs the oldest prompt that arrived while the agent was busy or
+// starting — one per finished turn, so each answer still gets read before the
+// next question goes.
 //
-// Still somebody else's message, however long it waited: the queue only ever
-// holds what came in over the control socket, and the wait makes the case
-// stronger rather than weaker — an image pasted in the minutes since it was
-// accepted has even less to do with it.
+// A queued message stays whose it was, however long it waited: one typed here
+// leaves with the images captured when enter was pressed, and one from the
+// control socket takes no attachments at all — an image pasted in the minutes
+// since it was accepted has nothing to do with it. The box's own pending
+// images are set aside and put back so a queued message's send cannot take a
+// screenshot pasted for the next one.
 func (m Model) flushQueued() (tea.Model, tea.Cmd) {
-	if m.queued == "" || m.sessionID == "" || m.turn {
+	if len(m.queue) == 0 || m.sessionID == "" || m.turn {
 		return m, nil
 	}
-	text := m.queued
-	m.queued = ""
-	return m.startTurn(text, sentRemotely)
+	q := m.queue[0]
+	m.queue = m.queue[1:]
+	if q.source != typedHere {
+		return m.startTurn(q.text, q.source)
+	}
+	held := m.pending
+	m.pending = q.images
+	next, cmd := m.startTurn(q.text, typedHere)
+	next.pending = held
+	return next, cmd
+}
+
+// retryTurn sends the last message again, exactly as it went the first time —
+// the blocks rather than the text, so an image is retried along with the words
+// around it. Only after a failure: with no error there is nothing to retry,
+// and mid-turn there is nothing to retry yet.
+func (m Model) retryTurn() (tea.Model, tea.Cmd) {
+	if m.err == nil || m.turn || m.sessionID == "" || len(m.lastSent) == 0 {
+		return m, nil
+	}
+	cmd := m.promptCmd(m.lastSent)
+	m.entries = append(m.entries, entry{kind: entryUser, text: echo(m.lastSent), rev: m.nextRev()})
+	m.turn = true
+	m.turnStart = time.Now()
+	m.err = nil
+	m, tick := m.spin()
+	return m.relayout(), tea.Batch(cmd, tick)
 }
 
 // stopped reports whether the agent is unusable until something is done about
@@ -1111,10 +1182,11 @@ func (m Model) upsertPlan(entries []acp.PlanEntry) Model {
 	for i := range m.entries {
 		if m.entries[i].kind == entryPlan {
 			m.entries[i].plan = entries
+			m.entries[i].rev = m.nextRev()
 			return m
 		}
 	}
-	m.entries = append(m.entries, entry{kind: entryPlan, plan: entries})
+	m.entries = append(m.entries, entry{kind: entryPlan, plan: entries, rev: m.nextRev()})
 	return m
 }
 
@@ -1167,19 +1239,57 @@ func (m Model) appendChunk(kind entryKind, text string) Model {
 	}
 	if n := len(m.entries); n > 0 && m.entries[n-1].kind == kind {
 		m.entries[n-1].text += text
+		m.entries[n-1].rev = m.nextRev()
 		return m
 	}
-	m.entries = append(m.entries, entry{kind: kind, text: text})
+	m.entries = append(m.entries, entry{kind: kind, text: text, rev: m.nextRev()})
 	return m
+}
+
+// nextRev stamps a mutation. Every write to an entry takes one, which is the
+// whole contract the render cache rests on.
+func (m *Model) nextRev() uint64 {
+	m.rev++
+	return m.rev
+}
+
+// toggleExpand opens — or closes again — the most recent tool row that is
+// holding lines back. "Most recent" rather than a cursor on purpose: the row
+// you want open is the one you are looking at, which is the one that just
+// said "… 42 more lines", and anything older the agent can simply be asked
+// about. An expanded row counts as the target too, so the same key closes
+// what it opened.
+func (m Model) toggleExpand() Model {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		e := m.entries[i]
+		if e.kind != entryTool || (!e.expanded && !holdsBack(e.tool)) {
+			continue
+		}
+		m.entries[i].expanded = !e.expanded
+		m.entries[i].rev = m.nextRev()
+		return m.relayout()
+	}
+	return m
+}
+
+// holdsBack reports whether a call's row is showing less than it has — the
+// same choice renderTool makes: the diff when there is one, the output
+// otherwise.
+func holdsBack(call acp.ToolCall) bool {
+	if changes := callDiff(call); len(changes) > 0 {
+		return len(changes) > diffMaxLines
+	}
+	return len(splitLines(unfence(toolOutput(call)))) > outputMaxLines
 }
 
 func (m Model) upsertToolCall(call acp.ToolCall) Model {
 	if i, ok := m.toolIdx[call.ToolCallID]; ok {
 		m.entries[i].tool.Merge(call)
+		m.entries[i].rev = m.nextRev()
 		return m
 	}
 	m.toolIdx[call.ToolCallID] = len(m.entries)
-	m.entries = append(m.entries, entry{kind: entryTool, tool: call})
+	m.entries = append(m.entries, entry{kind: entryTool, tool: call, rev: m.nextRev()})
 	return m
 }
 
@@ -1194,7 +1304,7 @@ const setupLogLines = 200
 func (m Model) appendSetupLine(line string) Model {
 	n := len(m.entries)
 	if n == 0 || m.entries[n-1].kind != entrySetup {
-		m.entries = append(m.entries, entry{kind: entrySetup, text: line})
+		m.entries = append(m.entries, entry{kind: entrySetup, text: line, rev: m.nextRev()})
 		return m
 	}
 	lines := append(strings.Split(m.entries[n-1].text, "\n"), line)
@@ -1202,6 +1312,7 @@ func (m Model) appendSetupLine(line string) Model {
 		lines = lines[len(lines)-setupLogLines:]
 	}
 	m.entries[n-1].text = strings.Join(lines, "\n")
+	m.entries[n-1].rev = m.nextRev()
 	return m
 }
 
@@ -1209,7 +1320,7 @@ func (m Model) appendNotice(text string) Model {
 	if text == "" {
 		return m
 	}
-	m.entries = append(m.entries, entry{kind: entryNotice, text: text})
+	m.entries = append(m.entries, entry{kind: entryNotice, text: text, rev: m.nextRev()})
 	return m
 }
 

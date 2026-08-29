@@ -118,6 +118,17 @@ func (m Model) chooseSetting(i int, rows []completionItem) (tea.Model, tea.Cmd) 
 
 func (m Model) setConfigCmd(configID, value string) tea.Cmd {
 	client, sessionID := m.client, m.sessionID
+	// A synthesized mode option has no set_config_option behind it — the agent
+	// speaks classic ACP there, so the change goes out as session/set_mode.
+	// The wire answers nothing on success; the options are updated locally,
+	// exactly as a current_mode_update from the agent would.
+	if m.classicModes && configID == classicModeID {
+		updated := withModeValue(m.configOptions, value)
+		return func() tea.Msg {
+			err := client.SetSessionMode(m.ctx, sessionID, value)
+			return configChangedMsg{configID: configID, value: value, options: updated, err: err}
+		}
+	}
 	return func() tea.Msg {
 		options, err := client.SetConfigOption(m.ctx, sessionID, configID, value)
 		return configChangedMsg{configID: configID, value: value, options: options, err: err}
@@ -296,6 +307,40 @@ func valueLabel(o acp.ConfigOption) string {
 		}
 	}
 	return o.CurrentValue
+}
+
+// classicModeID names the config option synthesized from a classic ACP modes
+// object. No agent-declared id can be shadowed by it: an agent that declares
+// its own mode option is exactly the agent no option is synthesized for.
+const classicModeID = "mode"
+
+// withClassicModes folds an agent's classic ACP modes object into the declared
+// config options, so the whole mode UI — the flags line, ctrl+g, shift+tab,
+// /mode — works from one shape. Synthesized only when the agent did not also
+// declare a mode-category option of its own: an agent saying it both ways gets
+// believed the config-option way, which is the one its set method serves.
+func withClassicModes(options []acp.ConfigOption, modes *acp.SessionModeState) ([]acp.ConfigOption, bool) {
+	if modes == nil || len(modes.AvailableModes) == 0 {
+		return options, false
+	}
+	for _, o := range options {
+		if o.Category == categoryMode {
+			return options, false
+		}
+	}
+	values := make([]acp.ConfigOptionValue, 0, len(modes.AvailableModes))
+	for _, mode := range modes.AvailableModes {
+		values = append(values, acp.ConfigOptionValue{
+			Value: mode.ID, Name: mode.Name, Description: mode.Description,
+		})
+	}
+	return append(options, acp.ConfigOption{
+		ID:           classicModeID,
+		Name:         "Mode",
+		Category:     categoryMode,
+		CurrentValue: modes.CurrentModeID,
+		Options:      values,
+	}), true
 }
 
 // nextMode is the mode that follows the current one, or ok=false when the agent

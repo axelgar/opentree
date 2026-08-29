@@ -26,6 +26,11 @@ const (
 	// to stay readable around it.
 	outputMaxLines = 8
 
+	// expandedMaxLines is the ceiling once a tool row has been expanded with
+	// ctrl+x — the same reasoning as setupLogLines: a build log is thousands
+	// of lines and the end is the part worth having.
+	expandedMaxLines = 500
+
 	// compactLogoWidth separates a mark, which can stand beside the agent's
 	// name, from a wordmark, which cannot.
 	compactLogoWidth = 12
@@ -46,7 +51,19 @@ func (m Model) footerHeight() int {
 	if m.scrollPill() != "" {
 		pill = 1
 	}
-	return inputHeight + 2 + m.completionHeight() + pill
+	return inputHeight + 2 + m.completionHeight() + len(m.queue) + pill
+}
+
+// queuedView is the messages waiting for the agent, one dim line each, sitting
+// just above the box they were typed into. Above the input rather than in the
+// log: the log is what has been said, and these have not been yet.
+func (m Model) queuedView() string {
+	var b strings.Builder
+	for _, q := range m.queue {
+		b.WriteString(noticeStyle.Render(ui.Truncate(" ⏳ "+strings.ReplaceAll(q.text, "\n", " "), m.width-1)))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // scrollPill tells the reader they are not looking at the end of the log, and
@@ -142,6 +159,7 @@ func (m Model) footer() string {
 		b.WriteString(m.completionView())
 		b.WriteString("\n")
 	}
+	b.WriteString(m.queuedView())
 	b.WriteString(inputBoxStyle.Render(m.inputView()))
 	b.WriteString("\n")
 	b.WriteString(m.statusLine())
@@ -442,7 +460,7 @@ func (m Model) statusLine() string {
 	flags := m.flagsSummary()
 	if len(flags) == 0 {
 		if m.err != nil {
-			return errorStyle.Render("✕ " + m.errorText())
+			return errorStyle.Render("✕ " + m.errorText() + m.retryHint())
 		}
 		return helpStyle.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 	}
@@ -455,7 +473,7 @@ func (m Model) statusLine() string {
 
 	left := m.shortHelp(room)
 	if m.err != nil {
-		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText(), room))
+		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText()+m.retryHint(), room))
 	}
 
 	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
@@ -569,6 +587,15 @@ func (m Model) helpHeight() int { return lipgloss.Height(m.helpView()) }
 // into the log whole when it is stored (see the errMsg branch of update), which
 // is the one surface with room for it and the one a reader can scroll back
 // through.
+// retryHint offers ctrl+r beside a failure, but only when pressing it would do
+// something: there has to be a message to resend, and no turn already going.
+func (m Model) retryHint() string {
+	if m.turn || len(m.lastSent) == 0 {
+		return ""
+	}
+	return " · ctrl+r to retry"
+}
+
 func (m Model) errorText() string {
 	if m.err == nil {
 		return "agent unavailable"
@@ -655,7 +682,7 @@ func (m Model) permDetail() []string {
 
 	call, width := m.perm().req.ToolCall, m.width-6
 	detail := renderDiffs(call, width)
-	detail = append(detail, renderOutput(call, width, toolOutputStyle)...)
+	detail = append(detail, renderOutput(call, width, toolOutputStyle, outputMaxLines, false)...)
 	if len(detail) <= maxLines {
 		return detail
 	}
@@ -706,11 +733,21 @@ func (m Model) renderLog() string {
 	if !m.conversationStarted() && !m.turn {
 		b.WriteString(m.emptyState())
 	}
-	for _, e := range m.entries {
+	cache := m.cache.at(width)
+	for i, e := range m.entries {
 		if e.kind == entryThought && m.hideThoughts {
 			continue
 		}
-		b.WriteString(m.renderEntry(e, width))
+		if s, ok := cache.get(i, e.rev); ok {
+			b.WriteString(s)
+			b.WriteString("\n")
+			continue
+		}
+		s := m.renderEntry(e, width)
+		if cacheable(e) {
+			cache.put(i, e.rev, s)
+		}
+		b.WriteString(s)
 		b.WriteString("\n")
 	}
 	if m.turn {
@@ -718,6 +755,66 @@ func (m Model) renderLog() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// renderCache memoizes rendered entries by index and revision, at one width.
+// It exists because relayout re-renders the whole log — including once per
+// spinner frame while a turn is live — and a long conversation is thousands of
+// settled lines re-wrapped, re-diffed and re-highlighted to produce exactly
+// what they produced last frame. The join stays O(log); the rendering becomes
+// O(what changed).
+//
+// Correctness leans on three facts: renderEntry is pure in (entry, width),
+// revisions are unique for the life of the chat, and a nil cache — every
+// hand-built test model — degrades to rendering everything, identically.
+type renderCache struct {
+	width int
+	lines map[int]cachedLine
+}
+
+type cachedLine struct {
+	rev  uint64
+	text string
+}
+
+func newRenderCache() *renderCache {
+	return &renderCache{lines: make(map[int]cachedLine)}
+}
+
+// at readies the cache for a render at this width; a width change empties it,
+// since every memo was folded to the old column.
+func (c *renderCache) at(width int) *renderCache {
+	if c != nil && c.width != width {
+		c.width = width
+		clear(c.lines)
+	}
+	return c
+}
+
+func (c *renderCache) get(i int, rev uint64) (string, bool) {
+	if c == nil || rev == 0 {
+		return "", false
+	}
+	l, ok := c.lines[i]
+	if !ok || l.rev != rev {
+		return "", false
+	}
+	return l.text, true
+}
+
+func (c *renderCache) put(i int, rev uint64, text string) {
+	if c != nil && rev != 0 {
+		c.lines[i] = cachedLine{rev: rev, text: text}
+	}
+}
+
+// cacheable is every entry but a live tool row: its glyph is the spinner, and
+// a memo of one frame of a spinner is a spinner that stands still.
+func cacheable(e entry) bool {
+	if e.kind != entryTool {
+		return true
+	}
+	return e.tool.Status == acp.StatusCompleted || e.tool.Status == acp.StatusFailed
 }
 
 // emptyState orients someone who has just landed in a chat they did not set
@@ -793,18 +890,21 @@ func (m Model) renderEntry(e entry, width int) string {
 		// Less one for the border, which lipgloss adds outside the width.
 		return "\n" + userBoxStyle.Width(width-1).Render(e.text) + "\n"
 	case entryAgent:
-		return m.bulleted(wrap.Width(width - 2).Inherit(agentTextStyle).Render(e.text))
+		return m.bulleted(renderMarkdown(e.text, width-2))
 	case entryThought:
 		return wrap.Inherit(thoughtStyle).Render(e.text)
 	case entryNotice:
-		return noticeStyle.Render("  " + e.text)
+		// Wrapped like the prose kinds. A notice is often an error line from
+		// an adapter or a dumped stderr ring, and those run long; unwrapped it
+		// was the one entry kind that could push the whole log sideways.
+		return wrap.PaddingLeft(2).Inherit(noticeStyle).Render(e.text)
 	case entrySetup:
 		// A command's own output, quieter than the conversation and not wrapped:
 		// installers align in columns, and rewrapping their output to the
 		// terminal turns a table into a paragraph.
 		return toolOutputStyle.Render(indentLines(e.text, width))
 	case entryTool:
-		return m.renderTool(e.tool, width)
+		return m.renderTool(e.tool, width, e.expanded)
 	case entryPlan:
 		return renderPlan(e.plan, width)
 	}
@@ -844,8 +944,9 @@ func renderPlan(entries []acp.PlanEntry, width int) string {
 //
 // The builder is not tidiness: a long answer wraps to hundreds of rows, and
 // growing a string one row at a time copies everything written so far on each
-// of them — paid again on every frame, because the whole log is re-rendered
-// ten times a second while a turn is live.
+// of them — paid again on every frame, because the entry still streaming is
+// the one the render cache can never hold, and a live turn redraws it ten
+// times a second.
 func (m Model) bulleted(body string) string {
 	b := m.brand()
 	lines := strings.Split(body, "\n")
@@ -861,7 +962,7 @@ func (m Model) bulleted(body string) string {
 	return out.String()
 }
 
-func (m Model) renderTool(call acp.ToolCall, width int) string {
+func (m Model) renderTool(call acp.ToolCall, width int, expanded bool) string {
 	var glyph string
 	var style lipgloss.Style
 	switch call.Status {
@@ -886,8 +987,12 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 			" " + diffRemoveStyle.Render(fmt.Sprintf("-%d", removed))
 	}
 
+	limit, hint := diffMaxLines, true
+	if expanded {
+		limit, hint = expandedMaxLines, false
+	}
 	lines := []string{row}
-	diffs := renderChanges(changes, width)
+	diffs := renderChanges(changes, width, limit, hint)
 	lines = append(lines, diffs...)
 
 	// ponytail: a call that drew a diff has already shown what it did, and its
@@ -898,7 +1003,11 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 		if call.Status == acp.StatusFailed {
 			out = toolFailedStyle
 		}
-		lines = append(lines, renderOutput(call, width, out)...)
+		outLimit := outputMaxLines
+		if expanded {
+			outLimit = expandedMaxLines
+		}
+		lines = append(lines, renderOutput(call, width, out, outLimit, hint)...)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -907,27 +1016,37 @@ func (m Model) renderTool(call acp.ToolCall, width int) string {
 // every status, not only on failures: a command's stdout, a file preview, a
 // subagent's report all arrive this way.
 //
-// ponytail: capped, with no key to expand. Expanding wants a cursor in a
-// viewport that has none plus per-entry state; the count says how much was
-// held back, and the agent still has all of it.
-func renderOutput(call acp.ToolCall, width int, style lipgloss.Style) []string {
+// Capped at limit; hint offers the expand key on the held-back line, and is
+// false where ctrl+x cannot reach — the permission box, an expanded row's own
+// hard ceiling.
+func renderOutput(call acp.ToolCall, width int, style lipgloss.Style, limit int, hint bool) []string {
 	lines := splitLines(unfence(toolOutput(call)))
 	if len(lines) == 0 {
 		return nil
 	}
 
 	shown := lines
-	if len(shown) > outputMaxLines {
-		shown = shown[:outputMaxLines]
+	if len(shown) > limit {
+		shown = shown[:limit]
 	}
 	out := make([]string, 0, len(shown)+1)
 	for _, line := range shown {
 		out = append(out, style.Render(ui.Truncate("    "+line, width)))
 	}
 	if hidden := len(lines) - len(shown); hidden > 0 {
-		out = append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", hidden)))
+		out = append(out, moreLines(hidden, hint))
 	}
 	return out
+}
+
+// moreLines is the held-back count, doubling as the expand affordance: the
+// line that says what is missing is the only honest place to say which key
+// shows it.
+func moreLines(hidden int, hint bool) string {
+	if hint {
+		return noticeStyle.Render(fmt.Sprintf("    … %d more lines · ctrl+x", hidden))
+	}
+	return noticeStyle.Render(fmt.Sprintf("    … %d more lines", hidden))
 }
 
 // toolOutput joins a call's content blocks. The wrapping is real: a text block
@@ -966,17 +1085,17 @@ func unfence(s string) string {
 // renderDiffs expands a call's changed lines into coloured ones, for a caller
 // that has nothing else to do with the diff.
 func renderDiffs(call acp.ToolCall, width int) []string {
-	return renderChanges(callDiff(call), width)
+	return renderChanges(callDiff(call), width, diffMaxLines, false)
 }
 
 // renderChanges is the same for a caller that has already matched the diff and
 // must not be made to pay for it again — which is every tool row in the log,
 // since the row also counts what changed.
-func renderChanges(changes []change, width int) []string {
+func renderChanges(changes []change, width, limit int, hint bool) []string {
 	out := make([]string, 0, len(changes))
 	for i, ch := range changes {
-		if i == diffMaxLines {
-			return append(out, noticeStyle.Render(fmt.Sprintf("    … %d more lines", len(changes)-i)))
+		if i == limit {
+			return append(out, moreLines(len(changes)-i, hint))
 		}
 		style, sign := diffRemoveStyle, "-"
 		if ch.add {

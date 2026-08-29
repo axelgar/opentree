@@ -366,12 +366,6 @@ func TestRemoteCommand_RefusalsAreReported(t *testing.T) {
 		wantReason string
 	}{
 		{
-			name:       "a second prompt while one is already queued",
-			setup:      func(m Model) Model { m.turn = true; m.queued = "first"; return m },
-			cmd:        Command{Type: CommandPrompt, Text: "second"},
-			wantReason: "already queued",
-		},
-		{
 			name:       "empty prompt",
 			setup:      func(m Model) Model { return m },
 			cmd:        Command{Type: CommandPrompt, Text: "   "},
@@ -426,8 +420,8 @@ func TestRemoteCommand_PromptQueues(t *testing.T) {
 			if !res.OK {
 				t.Fatalf("prompt was refused: %q", res.Reason)
 			}
-			if m.queued != "later please" {
-				t.Errorf("queued = %q, want the prompt held", m.queued)
+			if len(m.queue) != 1 || m.queue[0].text != "later please" {
+				t.Errorf("queue = %+v, want the prompt held", m.queue)
 			}
 			if !strings.Contains(m.renderLog(), "queued: later please") {
 				t.Error("a waiting prompt should be visible in the log")
@@ -445,7 +439,7 @@ func TestQueuedPrompt_RunsWhenTheTurnEnds(t *testing.T) {
 	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "run after"})
 
 	m, cmd := applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
-	if m.queued != "" {
+	if len(m.queue) != 0 {
 		t.Error("the queue should be drained")
 	}
 	if !m.turn {
@@ -466,7 +460,7 @@ func TestQueuedPrompt_RunsWhenTheSessionArrives(t *testing.T) {
 	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "as soon as you can"})
 
 	m, cmd := applyUpdate(m, sessionReadyMsg{id: "ses_new"})
-	if m.queued != "" {
+	if len(m.queue) != 0 {
 		t.Error("the queue should be drained once the session exists")
 	}
 	if !m.turn || cmd == nil {
@@ -482,8 +476,8 @@ func TestQueuedPrompt_DroppedWhenTheTurnFails(t *testing.T) {
 	m, _ = remoteResult(m, Command{Type: CommandPrompt, Text: "never runs"})
 
 	m, _ = applyUpdate(m, promptDoneMsg{err: stringError("connection lost")})
-	if m.queued != "" {
-		t.Errorf("queued = %q, want it dropped after a failed turn", m.queued)
+	if len(m.queue) != 0 {
+		t.Errorf("queue = %+v, want it dropped after a failed turn", m.queue)
 	}
 	if m.turn {
 		t.Error("no new turn should have started")

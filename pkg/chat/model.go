@@ -381,6 +381,7 @@ type setupBeginMsg struct{}
 type sessionReadyMsg struct {
 	id      string
 	options []acp.ConfigOption
+	modes   *acp.SessionModeState
 	note    string
 
 	// resumed distinguishes a conversation that was reopened from one that was
@@ -450,6 +451,16 @@ const (
 	entrySetup
 )
 
+// queuedPrompt is one message waiting for the agent to be free. It remembers
+// whose it is: only a message typed here carries the images that were pasted
+// into it, captured at enter so deleting a label afterwards cannot reach back
+// into a message already on its way.
+type queuedPrompt struct {
+	text   string
+	images []acp.ContentBlock
+	source turnSource
+}
+
 // entry is one renderable item in the conversation log. Message entries
 // accumulate streamed chunks; tool entries are patched in place as the call
 // advances through its statuses.
@@ -458,6 +469,15 @@ type entry struct {
 	text string
 	tool acp.ToolCall
 	plan []acp.PlanEntry
+
+	// rev names this entry's content, for the render cache: every mutation
+	// stamps a fresh one from the model's counter. Zero means never stamped —
+	// an entry built by hand in a test — and is never cached.
+	rev uint64
+
+	// expanded is whether ctrl+x has opened this tool row past the caps that
+	// keep one loud call from burying the log.
+	expanded bool
 }
 
 type Model struct {
@@ -518,9 +538,15 @@ type Model struct {
 
 	sessionID     string
 	configOptions []acp.ConfigOption
-	settings      settings
-	sessions      sessions
-	login         login
+
+	// classicModes is whether the mode among those options is synthesized from
+	// the agent's classic ACP modes object, and so must be set through
+	// session/set_mode rather than session/set_config_option.
+	classicModes bool
+
+	settings settings
+	sessions sessions
+	login    login
 
 	// titled is whether the current conversation already has a name in the
 	// ledger, which stops the first prompt of a resumed session from renaming
@@ -529,6 +555,17 @@ type Model struct {
 
 	entries []entry
 	toolIdx map[string]int
+
+	// rev is the entry revision counter — monotonic for the life of the chat,
+	// across log resets too, so a cache line can never mistake a new
+	// conversation's entry for the old one that sat at the same index.
+	rev uint64
+
+	// cache memoizes rendered entries by index and revision. A pointer on a
+	// model passed by value, deliberately: renderEntry is pure, so every copy
+	// writing memos into the same map only ever agrees, and the alternative is
+	// no cache surviving Update's copies at all.
+	cache *renderCache
 
 	input    textarea.Model
 	viewport viewport.Model
@@ -554,9 +591,11 @@ type Model struct {
 	// so they wait beside it and lead the next prompt.
 	pending []acp.ContentBlock
 
-	// queued holds a prompt from the workspace list that arrived while the
-	// agent was busy or still starting. At most one waits at a time.
-	queued string
+	// queue holds the prompts that arrived while the agent was busy or still
+	// starting — typed here or sent from the workspace list — oldest first.
+	// One flushes per finished turn, so an answer can change your mind about
+	// the next message: backspace on an empty box takes the newest back.
+	queue []queuedPrompt
 
 	// perms holds escalations in arrival order; the first is the one on screen.
 	// More than one can be in flight — a subagent asks independently of the turn
@@ -569,6 +608,12 @@ type Model struct {
 	turnStart    time.Time
 	spinnerFrame int
 	usage        *acp.ContextUsage
+
+	// lastSent is the previous turn's message as it actually went — blocks,
+	// not text, so a retry resends the images too. It exists for ctrl+r after
+	// a failed turn; ↑ already covers retyping, but recall returns an image's
+	// label where this returns the image.
+	lastSent []acp.ContentBlock
 
 	// spinning is whether a tick is already on its way back. The chain sustains
 	// itself — each tick asks for the next — so whatever starts one has to know
@@ -625,6 +670,7 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 		msgs:    msgs,
 		opts:    opts,
 		toolIdx: make(map[string]int),
+		cache:   newRenderCache(),
 		input:   newComposer(),
 		help:    help.New(),
 		keys:    keys,
@@ -895,7 +941,7 @@ func (m Model) reopenSession(client *acp.Client, id, cwd string) tea.Msg {
 			// beats an empty log that looks like a lost one.
 			note = "resumed — this agent does not replay what was said before"
 		}
-		return sessionReadyMsg{id: id, options: resp.ConfigOptions, note: note, resumed: true}
+		return sessionReadyMsg{id: id, options: resp.ConfigOptions, modes: resp.Modes, note: note, resumed: true}
 
 	case errors.Is(err, acp.ErrCannotReopen):
 		// Both agents opentree ships with can, so this is for the next one.
@@ -936,7 +982,7 @@ func (m Model) freshSession(client *acp.Client, cwd, note string) tea.Msg {
 			return errMsg{err: fmt.Errorf("failed to record session id: %w", err), fatal: true}
 		}
 	}
-	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, note: note}
+	return sessionReadyMsg{id: resp.SessionID, options: resp.ConfigOptions, modes: resp.Modes, note: note}
 }
 
 // promptCmd sends blocks that have already been composed. Composing happens in

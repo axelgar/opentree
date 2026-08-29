@@ -206,11 +206,26 @@ agent's own logo, in its own colours:
 | `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
-| `esc` | interrupt the current turn |
-| `shift+tab` | cycle the agent's mode (plan / build / …) |
+| `esc` | interrupt the current turn — or clear an unsent message (`↑` brings it back) |
+| `shift+tab` | cycle the agent's mode (plan / build / …) — Claude Code's plan mode and accept-edits included |
 | `ctrl+g` | settings — model, reasoning effort, anything else the agent declares |
 | `ctrl+o` | show or hide the agent's reasoning |
+| `ctrl+x` | expand what the last tool call held back, and fold it again |
+| `ctrl+r` | retry a failed turn — the same message, pasted images included |
 | `?` | every key |
+
+**Prose.** The agent's replies render as markdown while they stream: emphasis,
+headings, lists, quotes, and fenced code on its own background, syntax-coloured
+when the fence names a language — code is never rewrapped, so its indentation
+keeps meaning. A half-arrived fence already reads
+as code and never snaps back to prose; a lone `**` stays two asterisks until
+its closer arrives. Tables render as the text they are.
+
+**Tool output.** A tool row shows a few lines of what it did — the diff, or
+what it printed — and holds the rest back behind `… 42 more lines · ctrl+x`.
+`ctrl+x` opens the most recent held-back row where you are reading, up to 500
+lines; the same key folds it again. There is no cursor to place: the row you
+want open is the one that just said how much it was hiding.
 
 **Newlines.** `shift+enter` breaks the line instead of sending it, with nothing
 to configure. A terminal left to itself sends a bare carriage return for
@@ -240,6 +255,14 @@ forward again, and coming back past the newest returns whatever was half typed
 when you started looking — so a prompt worth repeating, or repeating with one
 word changed, is a keypress away rather than a retype. Inside a message the
 arrows still move the cursor: they only recall from its first and last row.
+
+**Messages you have not sent yet.** Enter while the agent is still working
+queues the message instead of dropping it: it waits as a `⏳` line above the
+box, one fires after each finished turn — so each answer still gets read
+before the next question goes — and backspace on an empty box takes the
+newest one back to be edited, pasted images and all. A failed turn drops the
+queue by name rather than firing into a broken session; `↑` still has every
+message.
 
 **Earlier conversations.** `/resume` lists what this worktree has already
 talked about — newest first, by what each conversation was about — and picking

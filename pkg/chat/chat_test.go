@@ -457,6 +457,54 @@ func TestCurrentModeUpdate_MovesTheFlag(t *testing.T) {
 	}
 }
 
+// Agents split on how they say "modes": opencode declares a config option,
+// the Claude Code adapter sends classic ACP's modes object. The latter is
+// folded into the former's shape, so shift+tab, ctrl+g, /mode and the flags
+// line all work without knowing which agent they are talking to.
+func TestClassicModes_FoldIntoTheConfigOptions(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, sessionReadyMsg{id: "ses_1", modes: &acp.SessionModeState{
+		CurrentModeID: "plan",
+		AvailableModes: []acp.SessionMode{
+			{ID: "plan", Name: "Plan"}, {ID: "acceptEdits", Name: "Accept Edits"},
+		},
+	}})
+
+	if !m.classicModes {
+		t.Fatal("the synthesized mode option was not marked classic")
+	}
+	opt, ok := configOption(m.configOptions, classicModeID)
+	if !ok || opt.Category != categoryMode || opt.CurrentValue != "plan" {
+		t.Fatalf("synthesized option = %+v, want a mode option currently on plan", opt)
+	}
+	if !strings.Contains(strings.Join(m.flagsSummary(), " "), "plan") {
+		t.Errorf("flags = %v, want the mode shown beside the input", m.flagsSummary())
+	}
+
+	// shift+tab has something to cycle now, and the agent's own
+	// current_mode_update lands on the synthesized option like any other.
+	if _, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyShiftTab}); cmd == nil {
+		t.Error("shift+tab found no mode to cycle")
+	}
+	m, _ = applyUpdate(m, acpUpdateMsg(acp.SessionUpdate{Type: acp.UpdateMode, CurrentModeID: "acceptEdits"}))
+	if opt, _ := configOption(m.configOptions, classicModeID); opt.CurrentValue != "acceptEdits" {
+		t.Errorf("mode = %q, want the agent's own switch to have landed", opt.CurrentValue)
+	}
+}
+
+// An agent that says it both ways is believed the config-option way — that is
+// the shape its set method serves — so nothing is synthesized over it.
+func TestClassicModes_ADeclaredModeOptionWins(t *testing.T) {
+	declared := []acp.ConfigOption{{ID: "agent-mode", Category: "mode", CurrentValue: "build"}}
+	options, classic := withClassicModes(declared, &acp.SessionModeState{
+		CurrentModeID:  "plan",
+		AvailableModes: []acp.SessionMode{{ID: "plan", Name: "Plan"}, {ID: "build", Name: "Build"}},
+	})
+	if classic || len(options) != 1 {
+		t.Errorf("options = %+v (classic=%v), want the declared option left alone", options, classic)
+	}
+}
+
 func TestConfigOptionUpdate_ReplacesTheSet(t *testing.T) {
 	m := newTestModel()
 	m.configOptions = []acp.ConfigOption{{ID: "mode", Category: "mode", CurrentValue: "plan"}}
@@ -975,7 +1023,7 @@ func TestCountChanges(t *testing.T) {
 
 func TestRenderTool_ShowsDiffLinesAndStat(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(diffCall(acp.StatusCompleted, "old line", "new line"), 60)
+	out := m.renderTool(diffCall(acp.StatusCompleted, "old line", "new line"), 60, false)
 
 	for _, want := range []string{"pkg/auth/session.go", "+1", "-1", "- old line", "+ new line"} {
 		if !strings.Contains(out, want) {
@@ -1048,7 +1096,7 @@ func outputCall(status, text string) acp.ToolCall {
 func TestRenderTool_ShowsFailureReason(t *testing.T) {
 	m := newTestModel()
 	call := outputCall(acp.StatusFailed, "The user rejected permission to use this specific tool call.")
-	out := m.renderTool(call, 80)
+	out := m.renderTool(call, 80, false)
 	if !strings.Contains(out, "rejected permission") {
 		t.Errorf("renderTool() should explain a failure\ngot:\n%s", out)
 	}
@@ -1058,7 +1106,7 @@ func TestRenderTool_ShowsFailureReason(t *testing.T) {
 // it away — the row said a command ran and nothing said what it printed.
 func TestRenderTool_ShowsOutputOnSuccess(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(outputCall(acp.StatusCompleted, "ok  \tgithub.com/axelgar/opentree/pkg/acp\t0.4s"), 80)
+	out := m.renderTool(outputCall(acp.StatusCompleted, "ok  \tgithub.com/axelgar/opentree/pkg/acp\t0.4s"), 80, false)
 	if !strings.Contains(out, "github.com/axelgar/opentree/pkg/acp") {
 		t.Errorf("renderTool() should show what the tool produced\ngot:\n%s", out)
 	}
@@ -1068,7 +1116,7 @@ func TestRenderTool_ShowsOutputOnSuccess(t *testing.T) {
 // truncated to "panic: runtime error:" names the category and hides the cause.
 func TestRenderTool_ShowsEveryLineOfAFailure(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(outputCall(acp.StatusFailed, "panic: runtime error\n\tat main.go:12\nexit status 2"), 80)
+	out := m.renderTool(outputCall(acp.StatusFailed, "panic: runtime error\n\tat main.go:12\nexit status 2"), 80, false)
 	for _, want := range []string{"panic: runtime error", "at main.go:12", "exit status 2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderTool() missing %q\ngot:\n%s", want, out)
@@ -1076,9 +1124,58 @@ func TestRenderTool_ShowsEveryLineOfAFailure(t *testing.T) {
 	}
 }
 
+// ctrl+x opens the most recent row that is holding lines back, and the same
+// key closes it again. "Most recent" rather than a cursor: the row you want
+// open is the one that just said "… 22 more lines".
+func TestExpand_OpensAndClosesTheMostRecentCappedRow(t *testing.T) {
+	m := newTestModel()
+	body := strings.TrimSuffix(strings.Repeat("line\n", 30), "\n") + "\nthe last line"
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, outputCall(acp.StatusCompleted, body)))
+
+	if strings.Contains(m.View(), "the last line") {
+		t.Fatal("the cap is not capping; the test is testing nothing")
+	}
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if !strings.Contains(m.View(), "the last line") {
+		t.Error("ctrl+x did not show the held-back lines")
+	}
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if strings.Contains(m.View(), "the last line") {
+		t.Error("a second ctrl+x did not fold the row back up")
+	}
+}
+
+func TestExpand_PrefersTheNewestOfTwoCappedRows(t *testing.T) {
+	m := newTestModel()
+	old := outputCall(acp.StatusCompleted, strings.Repeat("early\n", 20)+"early tail")
+	old.ToolCallID = "t-old"
+	late := outputCall(acp.StatusCompleted, strings.Repeat("late\n", 20)+"late tail")
+	late.ToolCallID = "t-late"
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, old))
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, late))
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	view := m.View()
+	if !strings.Contains(view, "late tail") {
+		t.Error("ctrl+x skipped the row nearest the reader")
+	}
+	if strings.Contains(view, "early tail") {
+		t.Error("ctrl+x opened more than the one row")
+	}
+}
+
+func TestExpand_DoesNothingWhenNothingIsHeldBack(t *testing.T) {
+	m := newTestModel()
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, outputCall(acp.StatusCompleted, "short")))
+	before := m.View()
+	if m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlX}); m.View() != before {
+		t.Error("ctrl+x changed a log with nothing to expand")
+	}
+}
+
 func TestRenderOutput_CapsLongOutput(t *testing.T) {
 	body := strings.TrimSuffix(strings.Repeat("line\n", 30), "\n")
-	lines := renderOutput(outputCall(acp.StatusCompleted, body), 80, toolOutputStyle)
+	lines := renderOutput(outputCall(acp.StatusCompleted, body), 80, toolOutputStyle, outputMaxLines, true)
 
 	if len(lines) != outputMaxLines+1 {
 		t.Fatalf("rendered %d lines, want %d plus a count of what was held back", len(lines), outputMaxLines)
@@ -1093,7 +1190,7 @@ func TestRenderOutput_CapsLongOutput(t *testing.T) {
 // literally, the first line of a failed command reads "```console".
 func TestRenderTool_StripsTheAdaptersCodeFence(t *testing.T) {
 	m := newTestModel()
-	out := m.renderTool(outputCall(acp.StatusFailed, "```console\nno such file or directory\n```"), 80)
+	out := m.renderTool(outputCall(acp.StatusFailed, "```console\nno such file or directory\n```"), 80, false)
 	if strings.Contains(out, "```") {
 		t.Errorf("renderTool() should not render the fence\ngot:\n%s", out)
 	}
@@ -1111,7 +1208,7 @@ func TestRenderTool_DiffCallDoesNotAlsoPrintItsReceipt(t *testing.T) {
 		Type: "content", Content: &acp.ContentBlock{Type: "text", Text: "Edit applied successfully."},
 	})
 
-	out := m.renderTool(call, 80)
+	out := m.renderTool(call, 80, false)
 	if strings.Contains(out, "Edit applied successfully") {
 		t.Errorf("the diff is the output; the receipt says it twice\ngot:\n%s", out)
 	}
@@ -1923,6 +2020,121 @@ func TestUserMessage_BandRunsTheFullColumn(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The render cache
+// ---------------------------------------------------------------------------
+
+// The cache is a memo of a pure function, so the one thing worth proving is
+// that a cached render and a fresh one are the same string — served twice, so
+// the second pass really is the memo speaking.
+func TestRenderCache_AgreesWithRenderingFresh(t *testing.T) {
+	feed := func(m Model) Model {
+		m, _ = applyUpdate(m, textUpdate("agent_message_chunk", "some **prose**\n"))
+		m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, acp.ToolCall{
+			ToolCallID: "t1", Title: "go test ./...", Kind: "execute", Status: acp.StatusCompleted,
+		}))
+		m = m.appendNotice("a notice for the log")
+		return m.relayout()
+	}
+	fresh := feed(newTestModel())
+
+	cached := newTestModel()
+	cached.cache = newRenderCache()
+	cached = feed(cached)
+	cached.relayout() // one pass to fill the memos
+
+	if got, want := cached.renderLog(), fresh.renderLog(); got != want {
+		t.Errorf("cached render disagrees with fresh:\n cached: %q\n fresh:  %q", got, want)
+	}
+}
+
+// A patched tool call must repaint even though its entry was already cached —
+// the merge stamps a new revision, which is the whole invalidation story.
+func TestRenderCache_AMergedToolCallRepaints(t *testing.T) {
+	m := newTestModel()
+	m.cache = newRenderCache()
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCall, acp.ToolCall{
+		ToolCallID: "t1", Title: "go vet ./...", Kind: "execute", Status: acp.StatusCompleted,
+	}))
+	if !strings.Contains(m.renderLog(), "✓") {
+		t.Fatal("the completed call never showed its check mark")
+	}
+	m, _ = applyUpdate(m, toolUpdate(acp.UpdateToolCallUpdate, acp.ToolCall{
+		ToolCallID: "t1", Status: acp.StatusFailed,
+	}))
+	if got := m.renderLog(); !strings.Contains(got, "✗") || strings.Contains(got, "✓") {
+		t.Errorf("after the failure merge the log still shows the cached row:\n%s", got)
+	}
+}
+
+// A resize refolds every line, so memos from the old width must not survive.
+func TestRenderCache_AWidthChangeDropsTheMemos(t *testing.T) {
+	m := newTestModel()
+	m.cache = newRenderCache()
+	long := strings.Repeat("words that will fold differently ", 6)
+	m, _ = applyUpdate(m, textUpdate("agent_message_chunk", long))
+	m = m.relayout()
+
+	m, _ = applyUpdate(m, tea.WindowSizeMsg{Width: 48, Height: 30})
+	fresh := newTestModel()
+	fresh.width = 48
+	fresh, _ = applyUpdate(fresh, textUpdate("agent_message_chunk", long))
+	if got, want := m.renderLog(), fresh.renderLog(); got != want {
+		t.Errorf("after a resize the cached log kept the old fold:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+// The agent's prose arrives in chunks and is re-rendered as markdown on each
+// one. Half a fence is the interesting state: the opener has arrived, the
+// closer has not, and the code between them must already read as code.
+func TestAgentMessage_RendersMarkdownWhileStreaming(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	for _, chunk := range []string{"use **make", " check** first:\n``", "`\nmake check\n"} {
+		m, _ = applyUpdate(m, textUpdate("agent_message_chunk", chunk))
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "use make check first:") {
+		t.Errorf("view kept the ** markers:\n%s", view)
+	}
+	if !strings.Contains(view, "make check\n") && !strings.Contains(view, "make check ") {
+		t.Errorf("the open fence's code line is missing:\n%s", view)
+	}
+	if strings.Contains(view, "```") {
+		t.Errorf("the fence delimiter leaked into the view:\n%s", view)
+	}
+}
+
+// A notice is often an error line from an adapter or a dumped stderr ring, and
+// those run long. Unwrapped, it was the one entry kind that could push the
+// whole log sideways.
+func TestNotice_WrapsToTheColumn(t *testing.T) {
+	m := newTestModel()
+	long := strings.Repeat("the adapter said something ", 10)
+	for _, line := range strings.Split(m.renderEntry(entry{kind: entryNotice, text: long}, 40), "\n") {
+		if got := lipgloss.Width(line); got > 40 {
+			t.Fatalf("a notice line rendered %d cells wide at width 40", got)
+		}
+	}
+}
+
+// Esc has always meant "stop": with a turn in flight it interrupts the agent,
+// and with nothing running it clears a message not yet sent. The clear is
+// recorded first, so ↑ is its undo.
+func TestCancel_ClearsAnUnsentMessage(t *testing.T) {
+	m := typeInto(newTestModel(), "half a thought")
+
+	m, _ = applyUpdate(m, keyMsg("esc"))
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("after esc the box holds %q, want it empty", got)
+	}
+	m, _ = applyUpdate(m, up)
+	if got := m.input.Value(); got != "half a thought" {
+		t.Fatalf("after ↑ the box holds %q, want the cleared message back", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Attachments
 // ---------------------------------------------------------------------------
 
@@ -2399,6 +2611,23 @@ func TestSpin_OneChainAtATime(t *testing.T) {
 	}
 }
 
+// The frame lives inside rendered entries, and the viewport caches whatever
+// the last relayout gave it. A tick that only advanced the counter left the
+// thinking line and every running tool's glyph frozen until the agent next
+// said something — exactly the quiet stretch the spinner exists for.
+func TestSpin_TickRepaintsTheLog(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m.spinning = true
+	m = m.relayout()
+
+	before := m.View()
+	m, _ = applyUpdate(m, spinnerTickMsg{})
+	if m.View() == before {
+		t.Error("a tick moved the frame on but the visible log never changed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Whose message a turn is carrying
 // ---------------------------------------------------------------------------
@@ -2429,14 +2658,129 @@ func TestRemotePrompt_LeavesThePastedImageAlone(t *testing.T) {
 	}
 }
 
+// ctrl+r retries a failed turn with the message exactly as it went — the
+// blocks, not the text, so a pasted image is retried too, which ↑-and-enter
+// cannot do: recall returns an image's label, this returns the image.
+func TestRetry_ResendsTheFailedMessage(t *testing.T) {
+	m := sendMessage(newTestModel(), "flaky request")
+	m, _ = applyUpdate(m, promptDoneMsg{err: stringError("connection lost")})
+
+	if !strings.Contains(m.View(), "ctrl+r to retry") {
+		t.Error("a failed turn should offer the retry key")
+	}
+	m, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if !m.turn || cmd == nil {
+		t.Fatal("ctrl+r did not restart the turn")
+	}
+	if m.err != nil {
+		t.Error("the old failure should clear when the retry goes")
+	}
+	if last := m.entries[len(m.entries)-1]; last.kind != entryUser || last.text != "flaky request" {
+		t.Errorf("last entry = %+v, want the message sent again", last)
+	}
+}
+
+func TestRetry_OnlyAfterAFailure(t *testing.T) {
+	m := sendMessage(newTestModel(), "all fine")
+	m, _ = applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+
+	m, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if m.turn || cmd != nil {
+		t.Error("ctrl+r with nothing failed should do nothing")
+	}
+}
+
+// Enter during a live turn used to be a silent no-op — the one key that did
+// nothing and said nothing. Now the message queues where you can see it, and
+// fires when the agent is free.
+func TestTypedPrompt_QueuesWhileTheAgentWorks(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m = typeInto(m, "and update the docs")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if got := m.input.Value(); got != "" {
+		t.Errorf("input = %q, want the box cleared once the message is queued", got)
+	}
+	if !strings.Contains(m.View(), "⏳ and update the docs") {
+		t.Error("a queued message should wait above the box, visibly")
+	}
+
+	m, cmd := applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if !m.turn || cmd == nil {
+		t.Fatal("the queued message did not start its turn when the agent freed up")
+	}
+	if last := m.entries[len(m.entries)-1]; last.kind != entryUser || last.text != "and update the docs" {
+		t.Errorf("last entry = %+v, want the queued message sent", last)
+	}
+}
+
+// A message typed here keeps its attachments even through the wait: the image
+// is captured at enter, so pasting another for the next message cannot cross.
+func TestTypedPrompt_QueuedImageTravelsWithItsMessage(t *testing.T) {
+	m := newPastingModel()
+	m.turn = true
+	m, _ = applyUpdate(m, pastedImage())
+	m = typeInto(m, "what is this")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	if len(m.pending) != 0 {
+		t.Fatalf("pending = %d, want the image committed to the queued message", len(m.pending))
+	}
+	m, _ = applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if !m.turn {
+		t.Fatal("the queued message did not run")
+	}
+	if last := m.entries[len(m.entries)-1]; !strings.Contains(last.text, "image") {
+		t.Errorf("sent %q, want the image along with the message", last.text)
+	}
+}
+
+// Backspace on an empty box takes the newest queued message back to be edited
+// — or deleted, which is the same gesture one keypress longer.
+func TestTypedPrompt_BackspaceTakesTheNewestBack(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	for _, text := range []string{"first thought", "second thought"} {
+		m = typeInto(m, text)
+		m, _ = applyUpdate(m, keyMsg("enter"))
+	}
+
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.input.Value(); got != "second thought" {
+		t.Fatalf("input = %q, want the newest queued message back", got)
+	}
+	if len(m.queue) != 1 || m.queue[0].text != "first thought" {
+		t.Errorf("queue = %+v, want the older message still waiting", m.queue)
+	}
+}
+
+// The queue drains oldest first, whoever queued: answers should land in the
+// order the questions were asked, typed here or sent from the list.
+func TestTypedPrompt_DrainsInArrivalOrder(t *testing.T) {
+	m := newTestModel()
+	m.turn = true
+	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "from the list"}})
+	m = typeInto(m, "typed after")
+	m, _ = applyUpdate(m, keyMsg("enter"))
+
+	m, _ = applyUpdate(m, promptDoneMsg{resp: &acp.PromptResponse{StopReason: acp.StopEndTurn}})
+	if last := m.entries[len(m.entries)-1]; last.text != "from the list" {
+		t.Fatalf("first drained = %q, want the older message first", last.text)
+	}
+	if len(m.queue) != 1 || m.queue[0].text != "typed after" {
+		t.Errorf("queue = %+v, want the newer message still waiting its turn", m.queue)
+	}
+}
+
 // And the same when it waited in the queue first: the wait makes the case
 // stronger, since the image was pasted after the prompt was already accepted.
 func TestQueuedPrompt_LeavesThePastedImageAlone(t *testing.T) {
 	m := newPastingModel()
 	m.turn = true
 	m, _ = applyUpdate(m, socketCommandMsg{cmd: Command{Type: CommandPrompt, Text: "run the tests"}})
-	if m.queued != "run the tests" {
-		t.Fatalf("queued = %q, want the prompt held while the agent works", m.queued)
+	if len(m.queue) != 1 || m.queue[0].text != "run the tests" {
+		t.Fatalf("queue = %+v, want the prompt held while the agent works", m.queue)
 	}
 
 	m, _ = applyUpdate(m, pastedImage())

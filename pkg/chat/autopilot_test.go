@@ -75,7 +75,7 @@ func TestAutopilot_OnlyAnEndTurnCounts(t *testing.T) {
 func TestAutopilot_AQueuedHumanPromptWins(t *testing.T) {
 	m := autopilotModel(&autopilotRecorder{})
 	m.turn = true
-	m.queued = "actually, do this instead"
+	m.queue = []queuedPrompt{{text: "actually, do this instead", source: sentRemotely}}
 
 	m, checking := endTurn(m)
 	if checking {
