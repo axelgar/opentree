@@ -184,6 +184,17 @@ func age(since time.Time) string {
 	}
 }
 
+// CachedEntries is the cached index's agents, for shell completion — the
+// one consumer that must never fetch: a tab press that opened a network
+// connection would hang the user's shell.
+func CachedEntries() []Entry {
+	c, ok := readCache()
+	if !ok {
+		return nil
+	}
+	return c.Index.Agents
+}
+
 // FetchOrCached is the offline doctrine in one place: a fresh fetch when the
 // network allows, the cached index with its age noted when it does not, and
 // a clear refusal when there is neither. The note is "" on a fresh answer;

@@ -50,6 +50,14 @@ switched off. The command it runs is printed before it runs.`,
 // setupACPAgent installs the agent's ACP adapter when it needs one. Agents that
 // serve ACP themselves have nothing to set up, and say so.
 func setupACPAgent(agent *config.PredefinedAgent) error {
+	// A registry install has no adapter of its own to set up, and falling
+	// through to "nothing to install" would be misleading — something was
+	// installed, just not by this command.
+	if agent.Origin != nil {
+		fmt.Printf("%s was installed from the ACP Registry — `opentree agents update %s` manages it.\n",
+			agent.Name, agent.Origin.ID)
+		return nil
+	}
 	install := agent.ACPInstallCommand()
 	if len(install) == 0 {
 		return reportNoHooksNeeded(agent.Name)

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/axelgar/opentree/pkg/fsutil"
 )
 
 // recordFile is the install's record, beside what it describes — the same
@@ -32,6 +34,16 @@ type Record struct {
 	// Dir is where the record was loaded from — derived, not persisted, so a
 	// store moved wholesale (a restored backup, a renamed home) keeps working.
 	Dir string `json:"-"`
+}
+
+// writeRecord commits an install: written atomically, and last, so that at
+// every earlier moment the directory is recognisably not an agent.
+func writeRecord(dir string, r Record) error {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(filepath.Join(dir, recordFile), data)
 }
 
 // readRecord loads and checks one install's record. The entry inside is
