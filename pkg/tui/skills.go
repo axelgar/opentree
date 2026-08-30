@@ -199,6 +199,12 @@ func (m Model) deleteTargets(s skills.Skill) []skillTarget {
 		if existing.Name != s.Name {
 			continue
 		}
+		// A plugin's copy is never on the list of things x may take: it is the
+		// store's, and ticking it in a same-name picker would delete a plugin's
+		// insides on a key that was aimed at the user's own copy.
+		if existing.Scope == skills.ScopePlugin {
+			continue
+		}
 		out = append(out, skillTarget{
 			Label:  m.shortDir(filepath.Dir(existing.Dir)),
 			Dir:    existing.Dir,
@@ -886,6 +892,11 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if !ok || m.skillsTab.updating {
 			return m, nil
 		}
+		// A plugin skill has no publisher of its own to ask — the plugin's
+		// clone is the unit that updates, and it knows how.
+		if s.Scope == skills.ScopePlugin {
+			return m, m.transientErrCmd(s.Name + " comes with the " + s.Source + " plugin — `git -C` its store clone to update it")
+		}
 		m.skillsTab.updating = true
 		return m, tea.Batch(
 			m.noticeCmd("checking "+s.Name+" with its publisher…"),
@@ -894,6 +905,12 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		s, ok := m.currentSkill()
 		if !ok {
 			return m, nil
+		}
+		// The row's directory is the plugin's store copy — the one every agent's
+		// link resolves to — so deleting it here would gut the plugin while its
+		// entry stayed installed. The plugin's own remove takes the links too.
+		if s.Scope == skills.ScopePlugin {
+			return m, m.transientErrCmd(s.Name + " is " + s.Source + "'s — `opentree plugins remove " + s.Source + "` removes it")
 		}
 		m.skillsTab.deleting, m.skillsTab.chosen = &s, nil
 		// One copy is not a choice worth drawing a picker for — the same rule
@@ -1035,12 +1052,24 @@ func (m Model) renderSkillRow(s skills.Skill, selected, isShared bool) string {
 	// directory: opencode auto-loads Claude Code's global skills, so one
 	// SKILL.md is genuinely usable from both and a single badge would say the
 	// opposite.
+	// A plugin skill's scope names its plugin: "plugin" alone answers where it
+	// lives, but not which install to update or remove when it misbehaves.
+	scope := s.Scope.String()
+	if s.Scope == skills.ScopePlugin && s.Source != "" {
+		scope = "plugin:" + s.Source
+	}
 	title := fmt.Sprintf("%-*s %s %s",
 		skillNameWidth, ui.Truncate(s.Name, skillNameWidth),
 		pad(agentMarks(s), skillAgentWidth),
-		skillScopeStyle.Render(s.Scope.String()))
+		skillScopeStyle.Render(scope))
 
 	var tags []string
+	if s.Scope == skills.ScopePlugin {
+		// Read-only in the sense that matters here: the file under the cursor
+		// is the plugin's own copy, managed by the plugin commands, and x will
+		// say so rather than delete it.
+		tags = append(tags, skillOffStyle.Render("ro"))
+	}
 	if tag := stateTag(s); tag != "" {
 		tags = append(tags, skillOffStyle.Render(tag))
 	}
