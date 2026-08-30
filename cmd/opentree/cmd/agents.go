@@ -123,4 +123,6 @@ func init() {
 	agentsAddCmd.Flags().BoolVar(&agentsAddYes, "yes", false, "Install without asking (for scripts)")
 	AgentsCmd.AddCommand(agentsAddCmd)
 	AgentsCmd.AddCommand(agentsRemoveCmd)
+	agentsUpdateCmd.Flags().BoolVar(&agentsUpdateYes, "yes", false, "Update without asking (for scripts)")
+	AgentsCmd.AddCommand(agentsUpdateCmd)
 }

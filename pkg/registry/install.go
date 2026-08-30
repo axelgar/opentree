@@ -25,6 +25,11 @@ type Plan struct {
 	NpmArgv  []string
 	Target   BinaryTarget
 	Platform string
+
+	// finalDir marks an update: the install builds in Dir (a dotted staging
+	// sibling) and swaps into finalDir only once complete. Empty for a fresh
+	// add, where Dir is already the final place.
+	finalDir string
 }
 
 // NewPlan resolves how this entry installs on this machine, preferring npm:
@@ -106,8 +111,14 @@ func (p Plan) Describe() string {
 // never load, so any failure removes the whole directory rather than
 // leaving a stage behind under the agent's name.
 func (p Plan) Run(ctx context.Context) (Record, error) {
-	if _, err := os.Lstat(p.Dir); err == nil {
-		return Record{}, fmt.Errorf("%s is already installed — `opentree agents update %s` refreshes it", p.Entry.ID, p.Entry.ID)
+	if p.finalDir == "" {
+		if _, err := os.Lstat(p.Dir); err == nil {
+			return Record{}, fmt.Errorf("%s is already installed — `opentree agents update %s` refreshes it", p.Entry.ID, p.Entry.ID)
+		}
+	} else {
+		// An update's staging directory is disposable by construction — a
+		// leftover one is an update that died, and this run replaces it.
+		_ = os.RemoveAll(p.Dir)
 	}
 	if err := os.MkdirAll(p.Dir, 0o755); err != nil {
 		return Record{}, err
@@ -120,6 +131,14 @@ func (p Plan) Run(ctx context.Context) (Record, error) {
 	if err := writeRecord(p.Dir, rec); err != nil {
 		_ = os.RemoveAll(p.Dir)
 		return Record{}, err
+	}
+	if p.finalDir != "" {
+		rec, err = p.swap(rec)
+		if err != nil {
+			_ = os.RemoveAll(p.Dir)
+			return Record{}, err
+		}
+		return rec, nil
 	}
 	rec.Dir = p.Dir
 	return rec, nil
