@@ -119,4 +119,5 @@ func init() {
 	AgentsCmd.AddCommand(agentsListCmd)
 	AgentsCmd.AddCommand(agentsUseCmd)
 	AgentsCmd.AddCommand(agentsSetupCmd)
+	AgentsCmd.AddCommand(agentsSearchCmd)
 }
