@@ -14,6 +14,8 @@ import (
 
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/plugins"
+	"github.com/axelgar/opentree/pkg/skills"
 )
 
 // worktreeNotice is the sentence this command exists to be able to say out
@@ -32,11 +34,12 @@ var UninstallCmd = &cobra.Command{
 	Short: "Remove what opentree installed outside your repositories",
 	Long: `Remove the files opentree wrote into your home directory.
 
-There are four of them: the agent adapters opentree fetches into its own npm
+There are five of them: the agent adapters opentree fetches into its own npm
 prefix at ~/.opentree/tools (a few hundred megabytes each, and by far the
-largest thing it leaves behind), the record of which setup and run commands
-this machine has approved, the shell completion script, and the global config
-file. Everything present is listed with its size before anything is removed.
+largest thing it leaves behind), the plugins installed into ~/.opentree/plugins,
+the record of which setup and run commands this machine has approved, the shell
+completion script, and the global config file. Everything present is listed
+with its size before anything is removed.
 
 Three things are deliberately left alone. Repositories: the worktrees under
 <repo>/.opentree hold work in progress, and only 'opentree delete <branch>'
@@ -75,6 +78,12 @@ the end.
 			fmt.Println("Cancelled — nothing was removed. Pass --yes to answer this from a script.")
 			return nil
 		}
+		// The links pointing into the plugin store go before the store does:
+		// they sit in the agents' own skill trees, which this command otherwise
+		// leaves alone, and a dangling link is worse litter than none.
+		for _, p := range plugins.Installed() {
+			_ = skills.UnlinkPlugin(p.Dir)
+		}
 		if err := removeArtefacts(plan); err != nil {
 			return err
 		}
@@ -112,6 +121,7 @@ func uninstallPlan() ([]artefact, error) {
 
 	candidates := []artefact{
 		{label: "agent adapters", path: config.ToolsDir()},
+		{label: "installed plugins", path: plugins.Dir()},
 		{label: "approved setup and run commands", path: bootstrap.TrustPath()},
 		{label: "global config", path: config.GlobalConfigPath()},
 		{label: "zsh completion", path: filepath.Join(zshDir, "_opentree")},

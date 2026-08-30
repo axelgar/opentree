@@ -124,8 +124,8 @@ func (m Model) updateServers(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.tab = tabWorkspaces
 		return m, nil
 	case "shift+tab", "left":
-		m.tab = tabSkills
-		return m, nil
+		m.tab = tabPlugins
+		return m, scanPluginsCmd
 	case "q":
 		return m, tea.Quit
 	}

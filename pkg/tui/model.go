@@ -53,13 +53,14 @@ const (
 
 var sortModeNames = []string{"name", "age", "activity", "PR"}
 
-// The two top-level places opentree shows. Tabs rather than overlays: an
-// overlay is something you open, act on, and close, while both of these are
-// inventories you come back to.
+// The top-level places opentree shows. Tabs rather than overlays: an
+// overlay is something you open, act on, and close, while each of these is
+// an inventory you come back to.
 const (
 	tabWorkspaces = 0
 	tabSkills     = 1
-	tabServers    = 2
+	tabPlugins    = 2
+	tabServers    = 3
 )
 
 // Model is the main Bubble Tea model for the opentree TUI.
@@ -187,6 +188,9 @@ type Model struct {
 	// skillsTab is the Skills tab's own state, defined beside its behaviour
 	// in skills.go.
 	skillsTab skillsTab
+
+	// pluginsTab is the Plugins tab's own, in plugins.go, for the same reason.
+	pluginsTab pluginsTab
 
 	// serversTab is the Servers tab's own, in servers.go, for the same reason.
 	serversTab serversTab
@@ -376,6 +380,7 @@ func (m Model) Init() tea.Cmd {
 		textinput.Blink,
 		m.loadWorkspacesCmd,
 		m.scanSkillsCmd,
+		scanPluginsCmd,
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return prStatusTickMsg{} }),
 		tea.Tick(10*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg{} }),
 	)

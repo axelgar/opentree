@@ -44,8 +44,13 @@ func TestTab_SwitchesBetweenPlaces(t *testing.T) {
 		t.Error("Skills tab did not render")
 	}
 
-	// Three places, walked in the order the bar draws them, wrapping round to
+	// Four places, walked in the order the bar draws them, wrapping round to
 	// the list rather than stopping at the end.
+	next, _ = m.Update(keyMsg("tab"))
+	m = next.(Model)
+	if m.tab != tabPlugins {
+		t.Fatal("tab did not go on to the Plugins tab")
+	}
 	next, _ = m.Update(keyMsg("tab"))
 	m = next.(Model)
 	if m.tab != tabServers {
@@ -1140,5 +1145,52 @@ func TestSkillsStatusBar_SkipsAgentsWithoutSkills(t *testing.T) {
 		if named != has {
 			t.Errorf("%s named in the tally: %v, want %v\n%s", agent.Name, named, has, bar)
 		}
+	}
+}
+
+// pluginSkill is a row whose resolved directory sits in the plugin store —
+// the shape Scan produces after collapsing the agent-tree links onto it.
+func pluginSkill(name, plugin string) skills.Skill {
+	s := testSkill(name, "Claude Code", skills.ScopePlugin, "/home/u/.opentree/plugins/"+plugin+"/skills/"+name)
+	s.Source = plugin
+	return s
+}
+
+// A plugin row has to say which install it came from: "plugin" alone answers
+// where it lives, not which plugin to update or remove when it misbehaves.
+func TestSkillsView_NamesAPluginSkillsSource(t *testing.T) {
+	m := skillsModel(pluginSkill("ponytail", "tools-plugin"))
+	view := m.View()
+	if !strings.Contains(view, "plugin:tools-plugin") {
+		t.Errorf("the row does not name the plugin:\n%s", view)
+	}
+	if !strings.Contains(view, "ro") {
+		t.Errorf("the row does not carry the read-only tag:\n%s", view)
+	}
+}
+
+// x on a plugin row must refuse, not confirm: the row's directory is the
+// store's copy, the one every agent's link resolves to, and deleting it would
+// gut the plugin while its entry stayed installed.
+func TestSkillsDelete_RefusesAPluginSkill(t *testing.T) {
+	m := skillsModel(pluginSkill("ponytail", "tools-plugin"))
+	got, cmd := m.updateSkills(keyMsg("x"))
+	if got.skillsTab.deleting != nil {
+		t.Fatal("x opened a delete confirmation on a plugin's skill")
+	}
+	if cmd == nil {
+		t.Fatal("the refusal says nothing about what to do instead")
+	}
+}
+
+// A plugin's copy never appears in a same-name delete picker either — the
+// key was aimed at the user's own copy, and a tick must not be able to reach
+// into the store.
+func TestSkillsDeleteTargets_ExcludeThePluginsCopy(t *testing.T) {
+	mine := testSkill("deploy", "Claude Code", skills.ScopeUser, "/home/u/.claude/skills/deploy")
+	m := skillsModel(mine, pluginSkill("deploy", "tools-plugin"))
+	targets := m.deleteTargets(mine)
+	if len(targets) != 1 || targets[0].Dir != mine.Dir {
+		t.Errorf("deleteTargets = %+v, want only the user's own copy", targets)
 	}
 }

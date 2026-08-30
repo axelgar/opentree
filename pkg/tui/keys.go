@@ -170,10 +170,10 @@ var keys = keyMap{
 		key.WithKeys("c"),
 		key.WithHelp("c", "copy all"),
 	),
-	// Three places now, walked in the order the bar draws them.
+	// Four places now, walked in the order the bar draws them.
 	Tab: key.NewBinding(
 		key.WithKeys("tab", "left", "right"),
-		key.WithHelp("tab/←→", "skills · servers"),
+		key.WithHelp("tab/←→", "skills · plugins · servers"),
 	),
 	Quit: key.NewBinding(
 		// esc is the way out of the workspace list; from Skills it only steps

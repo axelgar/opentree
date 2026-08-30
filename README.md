@@ -23,6 +23,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **🐛 Issue Workflow**: Create a workspace directly from a GitHub issue number
 - **✅ CI Status**: Live CI check status displayed per workspace
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
+- **🔌 Agent Plugins**: Install a plugin from the open [Agent Plugins](https://agent-plugins.org) standard once, and every agent in every worktree can use the skills it bundles
 - **🧹 Clean Lifecycle**: Archive workspaces after merge, keeping your repo tidy
 - **⌨️ Shell Completion**: Tab completion for workspace names in bash, zsh, and fish
 
@@ -69,7 +70,7 @@ go install github.com/axelgar/opentree/cmd/opentree@latest
 opentree uninstall
 ```
 
-Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
+Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the plugins installed under `~/.opentree/plugins`, the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
 
 It never touches a repository. The worktrees under `<repo>/.opentree` are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
 
@@ -93,6 +94,7 @@ opentree pr feat/add-auth        # Create GitHub PR
 opentree delete feat/add-auth    # Clean up workspace
 opentree skills list             # See every agent skill on this machine
 opentree skills sync             # Give every agent and workspace the repo's skills
+opentree plugins add <git-url>   # Install an Agent Plugin once, for every agent
 ```
 
 ## Usage
@@ -129,7 +131,7 @@ opentree
 - `/` - Filter workspaces by name
 - `s` - Cycle sort order (name → age → activity → PR)
 - `E` - Toggle error log
-- `tab` - Switch between Workspaces, Skills and Servers
+- `tab` - Switch between Workspaces, Skills, Plugins and Servers
 - `?` - Toggle full help
 - `q` - Quit
 
@@ -156,6 +158,30 @@ A `git worktree` carries only what git tracks, and most repositories leave
 their skills untracked — so opentree links the repository's skills into each
 workspace it creates. `opentree skills sync` repairs workspaces that predate
 this, and `opentree skills list` prints the same inventory for a script.
+
+### Plugins
+
+opentree is a client of the open [Agent Plugins](https://agent-plugins.org)
+standard: a plugin is a directory with a `plugin.json` manifest, skills under
+`skills/`, and optionally an `mcp.json` naming MCP servers.
+
+```bash
+opentree plugins add https://github.com/someone/their-plugin
+opentree plugins list            # what each plugin declares, secrets masked
+opentree plugins remove <name>   # the store entry and every link into it
+```
+
+Install one and every agent in every worktree can use the skills it bundles:
+the clone lands once per machine in `~/.opentree/plugins`, is validated
+against the spec — a broken manifest refuses the whole plugin, a broken skill
+or server entry costs only itself and is reported — and its skills are linked
+into each agent's own user-scope tree. On the Skills tab they wear their
+provenance (`plugin:<name>` and `ro`); the Plugins tab shows each plugin as a
+unit, with `a` to install, `x` to remove, and every declared MCP server named.
+
+Declared is as far as it goes: opentree lists a plugin's MCP servers with
+their env and header values masked, and neither launches them nor writes them
+into any agent's own configuration. Nothing a plugin ships is executed.
 
 ### Talking to the agent
 
@@ -938,6 +964,7 @@ go build -o opentree ./cmd/opentree
 | `github` | `gh`, for PRs, issues and CI status |
 | `bootstrap` | seeding a worktree, running its setup, and the trust gate over those commands |
 | `skills` | propagating agent skills into worktrees |
+| `plugins` | the Agent Plugins store: install, validate, list, remove |
 | `config` | `opentree.toml` and the agent registry |
 | `notify`, `diag`, `ui`, `fsutil`, `gitutil` | the small shared pieces |
 
