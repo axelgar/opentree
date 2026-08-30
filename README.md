@@ -24,6 +24,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **✅ CI Status**: Live CI check status displayed per workspace
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
 - **🔌 Agent Plugins**: Install a plugin from the open [Agent Plugins](https://agent-plugins.org) standard once, and every agent in every worktree can use the skills it bundles
+- **🗂 ACP Registry**: `opentree agents add <id>` installs any agent the [ACP Registry](https://agentclientprotocol.com/get-started/registry) lists, and it becomes first-class everywhere the built-in four are — picker, chats, fan-outs
 - **🧹 Clean Lifecycle**: Archive workspaces after merge, keeping your repo tidy
 - **⌨️ Shell Completion**: Tab completion for workspace names in bash, zsh, and fish
 
@@ -70,7 +71,7 @@ go install github.com/axelgar/opentree/cmd/opentree@latest
 opentree uninstall
 ```
 
-Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the plugins installed under `~/.opentree/plugins`, the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
+Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the agents installed from the ACP Registry under `~/.opentree/registry` along with its cached index, the plugins installed under `~/.opentree/plugins`, the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
 
 It never touches a repository. The worktrees under `<repo>/.opentree` are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
 
@@ -316,9 +317,14 @@ through the `claude-agent-acp` adapter, which opentree installs on request into
 `~/.opentree/tools` rather than your global npm root — press `A` in the
 dashboard, pick Claude Code, and it offers the download (340MB, needs `node`).
 
-Those four are the whole list. opentree drives agents over ACP and nothing else,
-so an agent without an ACP server has no way in — if one ships support, it
-becomes a single registry entry and everything above applies to it unchanged.
+Those four ship with opentree; the rest of the ecosystem comes from the
+[ACP Registry](https://agentclientprotocol.com/get-started/registry).
+`opentree agents add <id>` installs any agent it lists, and the install is
+first-class everywhere the four are — the picker, chats, fan-outs,
+per-workspace overrides. opentree drives agents over ACP and nothing else, so
+an agent without an ACP server has no way in — but shipping support and one
+registry entry is now the whole path in. See
+[Agents from the ACP Registry](#agents-from-the-acp-registry).
 
 ### Autopilot
 
@@ -806,6 +812,43 @@ opentree agents setup claude   # fetch its ACP adapter, if it needs one
 An agent opentree has no ACP spec for is refused up front, when you create a
 workspace, rather than later inside a chat that cannot start.
 
+### Agents from the ACP Registry
+
+The four built-in agents are a curated list, not a boundary. The
+[ACP Registry](https://agentclientprotocol.com/get-started/registry) — the
+same index Zed and JetBrains install from — lists every agent that ships an
+ACP server, and opentree installs from it:
+
+```bash
+opentree agents search             # what the registry has (add a term to filter)
+opentree agents add devin          # install one, into ~/.opentree/registry
+opentree agents use devin          # it is a normal agent from here on
+opentree agents update             # re-resolve every install against a fresh index
+opentree agents remove devin       # delete the install
+```
+
+Installing executes code, so nothing is fetched before you have seen exactly
+what will happen: an npm-distributed agent shows the full install command —
+pinned version, opentree's own prefix, npm's install scripts disabled, the
+same posture as the Claude Code adapter — and a binary-distributed one shows
+the archive URL and the sha256 it will be held to. Each install lands in its
+own directory under `~/.opentree/registry`, wears a `registry` tag in
+`agents list` and the version the index pinned; `agents update` builds the
+new version beside the old and swaps it in only when complete, so a failed
+update leaves the old agent working.
+
+Everything else is indistinguishable from the built-in four: the dashboard
+picker offers registry agents, `--agents claude,devin,goose` races them, a
+workspace remembers which one it runs, and `opentree doctor` reports them.
+Two honest gaps: a registry entry does not say where its agent keeps skills,
+so the Skills tab leaves registry agents out rather than guessing; and the
+few agents distributed only via PyPI's `uvx` are listed by `agents search`
+but not installable yet.
+
+Ordinary commands never touch the network — the loader reads installed
+agents from disk, and only `agents search`, `add` and `update` fetch the
+index. Offline, the last index this machine saw answers, with its age noted.
+
 ## How It Works
 
 1. **Worktrees**: Git worktrees allow multiple checkouts of the same repo in different directories. Each workspace lives in `.opentree/<branch-name>/`.
@@ -965,6 +1008,7 @@ go build -o opentree ./cmd/opentree
 | `bootstrap` | seeding a worktree, running its setup, and the trust gate over those commands |
 | `skills` | propagating agent skills into worktrees |
 | `plugins` | the Agent Plugins store: install, validate, list, remove |
+| `registry` | the ACP Registry client: the index, its cache, and installed agents |
 | `config` | `opentree.toml` and the agent registry |
 | `notify`, `diag`, `ui`, `fsutil`, `gitutil` | the small shared pieces |
 
