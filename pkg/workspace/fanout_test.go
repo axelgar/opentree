@@ -326,3 +326,38 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+// A registry-installed agent has no binary on PATH — its ACP command is an
+// absolute path under ~/.opentree — and the fan-out gate must accept it the
+// way `opentree new --agent` does, or the feature multiplies for the built-in
+// four only.
+func TestCreateFanout_AcceptsARegistryInstalledAgent(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	bin := filepath.Join(t.TempDir(), "reg-agent")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := config.PredefinedAgents
+	config.PredefinedAgents = append(append([]config.PredefinedAgent{}, prev...), config.PredefinedAgent{
+		Name: "Reg Agent", Command: "reg-agent",
+		ACP:    config.ACPSpec{Command: bin},
+		Origin: &config.RegistryOrigin{ID: "reg-agent", Version: "1.0.0"},
+	})
+	t.Cleanup(func() { config.PredefinedAgents = prev })
+
+	svc, mock := fanoutService(t, "opencode")
+
+	created, err := svc.CreateFanout("feat/x", "main", []string{"opencode", "reg-agent"})
+	if err != nil {
+		t.Fatalf("CreateFanout: %v", err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created %d siblings, want 2", len(created))
+	}
+	args := strings.Join(mock.createWindowArgs[1], " ")
+	if want := "chat feat/x-reg-agent --agent reg-agent"; args != want {
+		t.Errorf("window args = %q, want %q", args, want)
+	}
+}

@@ -966,7 +966,7 @@ func TestPrompt_SendsTextBlock(t *testing.T) {
 }
 
 func TestSpawn_MissingBinary(t *testing.T) {
-	_, err := Spawn(context.Background(), "opentree-no-such-agent", nil, t.TempDir(), Handlers{})
+	_, err := Spawn(context.Background(), "opentree-no-such-agent", nil, t.TempDir(), nil, Handlers{})
 	if err == nil {
 		t.Fatal("expected an error spawning a binary that does not exist")
 	}
@@ -984,7 +984,7 @@ func TestSpawn_HandshakeWithStubAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := Spawn(context.Background(), script, nil, dir, Handlers{})
+	client, err := Spawn(context.Background(), script, nil, dir, nil, Handlers{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -1026,7 +1026,7 @@ func TestSpawn_CancelledContextKillsTheWholeGroup(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	client, err := Spawn(ctx, script, nil, dir, Handlers{})
+	client, err := Spawn(ctx, script, nil, dir, nil, Handlers{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -1052,7 +1052,7 @@ func TestClose_IsSafeToCallTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := Spawn(context.Background(), script, nil, dir, Handlers{})
+	client, err := Spawn(context.Background(), script, nil, dir, nil, Handlers{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -1061,5 +1061,36 @@ func TestClose_IsSafeToCallTwice(t *testing.T) {
 	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestSpawn_PassesTheEnvironmentThrough(t *testing.T) {
+	// A stub that answers initialize with its own environment variable in the
+	// agent name, proving env reaches the subprocess rather than the parent's
+	// being inherited unchanged.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stub-agent")
+	body := "#!/bin/sh\nread -r line\n" +
+		`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,` +
+		`"agentInfo":{"name":"%s"},"authMethods":[]}}\n' "$OPENTREE_SPAWN_ENV"` + "\nsleep 5\n"
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := append(os.Environ(), "OPENTREE_SPAWN_ENV=from-the-spec")
+	client, err := Spawn(context.Background(), script, nil, dir, env, Handlers{})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := client.Initialize(ctx, "opentree", "test")
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if resp.AgentInfo == nil || resp.AgentInfo.Name != "from-the-spec" {
+		t.Errorf("AgentInfo = %+v, want the spawned process to see OPENTREE_SPAWN_ENV", resp.AgentInfo)
 	}
 }

@@ -29,6 +29,12 @@ func (a PredefinedAgent) ResolveACPCommand() string {
 	if name == "" {
 		return ""
 	}
+	// A registry install records its command as an absolute path already;
+	// joining that under the tools prefix would manufacture a path nothing
+	// ever wrote to.
+	if filepath.IsAbs(name) {
+		return name
+	}
 	if dir := ToolsDir(); dir != "" {
 		managed := filepath.Join(dir, "bin", name)
 		if info, err := os.Stat(managed); err == nil && !info.IsDir() {
@@ -45,7 +51,12 @@ func (a PredefinedAgent) ACPInstalled() bool {
 		return false
 	}
 	if filepath.IsAbs(cmd) {
-		return true
+		// An absolute answer used to be proof of existence, because only the
+		// stat above could produce one. A registry agent's spec is absolute
+		// before any stat, so existence has to be checked rather than implied
+		// — a deleted install must not keep reporting itself ready.
+		info, err := os.Stat(cmd)
+		return err == nil && !info.IsDir()
 	}
 	_, err := exec.LookPath(cmd)
 	return err == nil

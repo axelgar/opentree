@@ -32,7 +32,7 @@ func Probe(ctx context.Context, agent config.PredefinedAgent, cwd string) (map[s
 	// not be held up by whether anyone is listening yet.
 	commands := make(chan []acp.Command, 4)
 
-	client, err := acp.Spawn(ctx, agent.ResolveACPCommand(), agent.ACPArgs(cwd), cwd, acp.Handlers{
+	client, err := acp.Spawn(ctx, agent.ResolveACPCommand(), agent.ACPArgs(cwd), cwd, agent.ACPEnv(), acp.Handlers{
 		Update: func(u acp.SessionUpdate) {
 			if u.Type == acp.UpdateCommands {
 				select {
