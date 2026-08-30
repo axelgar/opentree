@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,10 +10,15 @@ import (
 
 var AgentsCmd = &cobra.Command{
 	Use:   "agents",
-	Short: "Manage predefined coding agents",
-	Long: fmt.Sprintf(`View and select from predefined coding agents.
+	Short: "Manage the coding agents opentree can drive",
+	// The help deliberately does not enumerate the agents: this string is
+	// built at package init, before registry installs join the runtime
+	// registry, so a baked-in list here would silently miss them. `agents
+	// list` reads the registry when it runs, which is the difference.
+	Long: `View, select and install coding agents.
 
-Available agents: %s.`, strings.Join(config.AgentNames(), ", ")),
+The predefined agents ship with opentree; ` + "`opentree agents list`" + ` names
+them, along with anything installed from the ACP Registry.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
@@ -30,8 +34,8 @@ var agentsListCmd = &cobra.Command{
 			cfg = config.Default()
 		}
 
-		fmt.Printf("%-18s %-12s %-10s %s\n", "NAME", "COMMAND", "STATUS", "DESCRIPTION")
-		fmt.Printf("%-18s %-12s %-10s %s\n", "----", "-------", "------", "-----------")
+		fmt.Printf("%-18s %-12s %-10s %-16s %s\n", "NAME", "COMMAND", "STATUS", "SOURCE", "DESCRIPTION")
+		fmt.Printf("%-18s %-12s %-10s %-16s %s\n", "----", "-------", "------", "------", "-----------")
 
 		for _, agent := range config.PredefinedAgents {
 			status := "not found"
@@ -44,7 +48,16 @@ var agentsListCmd = &cobra.Command{
 				name += " *"
 			}
 
-			fmt.Printf("%-18s %-12s %-10s %s\n", name, agent.Command, status, agent.Description)
+			// Where the agent came from decides what maintains it: built-ins
+			// move with opentree releases, registry installs with `agents
+			// update` — so the list says which is which, with the version the
+			// registry pinned.
+			source := "built-in"
+			if agent.Origin != nil {
+				source = "registry " + agent.Origin.Version
+			}
+
+			fmt.Printf("%-18s %-12s %-10s %-16s %s\n", name, agent.Command, status, source, agent.Description)
 		}
 		return nil
 	},

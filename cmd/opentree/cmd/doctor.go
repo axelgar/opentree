@@ -14,6 +14,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/diag"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/registry"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
 )
@@ -62,6 +63,22 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 		line("gh", ghStatus())
 		line("node", toolVersion("node", "--version"))
 
+		// Above the repository check: the registry store is per machine, and
+		// a report run outside any repo should still say what is installed.
+		// Reads only — the promise on the tin covers this section too, so
+		// nothing here asks the network what the index says today.
+		section("registry")
+		records, problems := registry.Installed()
+		if len(records) == 0 && len(problems) == 0 {
+			line("agents", "none installed — `opentree agents add <id>` installs from the ACP Registry")
+		}
+		for _, r := range records {
+			line("  "+r.Entry.ID, describeRegistryInstall(r))
+		}
+		for _, p := range problems {
+			line("problem", p)
+		}
+
 		// Everything below needs a repository. Saying so once beats eight
 		// lines each explaining that they could not look.
 		repoRoot, err := gitutil.RepoRoot()
@@ -108,7 +125,16 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 				line("registry", cfg.Agent.Command+" — not an agent opentree knows how to drive")
 			} else {
 				line("name", agent.Name)
-				line("command", describeTool(agent.Command))
+				switch {
+				case agent.Origin != nil:
+					// A registry agent's command is a path under ~/.opentree,
+					// not a name on PATH — describeTool would report a healthy
+					// install as missing.
+					line("command", describeFile(agent.ACP.Command))
+					line("source", "registry "+agent.Origin.Version+"  ("+agent.Origin.Dir+")")
+				default:
+					line("command", describeTool(agent.Command))
+				}
 				if spec := agent.ACPPackageSpec(); spec != "" {
 					line("adapter", spec)
 					line("adapter binary", describeAdapter(*agent))
@@ -205,6 +231,18 @@ func ghStatus() string {
 		return v + "  NOT AUTHENTICATED — run `gh auth login`"
 	}
 	return v + "  authenticated"
+}
+
+// describeRegistryInstall is one installed registry agent on one line: the
+// version the index pinned, and whether the command it recorded is still
+// there. The record naming a path and the path holding a binary are two
+// different claims, and the state where they disagree is exactly the one
+// somebody would be writing in about.
+func describeRegistryInstall(r registry.Record) string {
+	if info, err := os.Stat(r.Command); err != nil || info.IsDir() {
+		return r.Entry.Version + "  " + r.Command + "  MISSING — `opentree agents update " + r.Entry.ID + "` reinstalls it"
+	}
+	return r.Entry.Version + "  " + r.Command
 }
 
 // describeAdapter locates the ACP adapter the way opentree locates it, which is

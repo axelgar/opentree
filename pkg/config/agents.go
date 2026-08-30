@@ -435,15 +435,6 @@ func UnknownAgentError(command string) error {
 		command, knownAgentCommands())
 }
 
-// AgentNames returns display names of all predefined agents.
-func AgentNames() []string {
-	names := make([]string, len(PredefinedAgents))
-	for i, a := range PredefinedAgents {
-		names[i] = a.Name
-	}
-	return names
-}
-
 // IsInstalled checks whether the agent can be launched at all: its command on
 // PATH, or — for a registry install, whose ACP command is recorded as an
 // absolute path under ~/.opentree — the file that path names. The absolute

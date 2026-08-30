@@ -10,6 +10,7 @@ import (
 
 	"github.com/axelgar/opentree/cmd/opentree/cmd"
 	"github.com/axelgar/opentree/pkg/diag"
+	"github.com/axelgar/opentree/pkg/registry"
 	"github.com/axelgar/opentree/pkg/tui"
 )
 
@@ -87,6 +88,16 @@ func main() {
 		component = os.Args[1]
 	}
 	diag.Init(component)
+
+	// Registry agents join the runtime registry here — after the log exists,
+	// before anything looks an agent up. This is the only append the program
+	// ever makes: FindAgent and the picker hand out pointers into the slice,
+	// so a later append could move it out from under them. Problems are for
+	// the log and doctor, not stderr — a broken install must not shout over
+	// every unrelated command.
+	for _, p := range registry.LoadInstalled() {
+		diag.Log(component, "registry agent skipped", "problem", p)
+	}
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

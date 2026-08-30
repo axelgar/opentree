@@ -15,6 +15,7 @@ import (
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/plugins"
+	"github.com/axelgar/opentree/pkg/registry"
 	"github.com/axelgar/opentree/pkg/skills"
 )
 
@@ -34,12 +35,13 @@ var UninstallCmd = &cobra.Command{
 	Short: "Remove what opentree installed outside your repositories",
 	Long: `Remove the files opentree wrote into your home directory.
 
-There are five of them: the agent adapters opentree fetches into its own npm
+There are six of them: the agent adapters opentree fetches into its own npm
 prefix at ~/.opentree/tools (a few hundred megabytes each, and by far the
-largest thing it leaves behind), the plugins installed into ~/.opentree/plugins,
-the record of which setup and run commands this machine has approved, the shell
-completion script, and the global config file. Everything present is listed
-with its size before anything is removed.
+largest thing it leaves behind), the agents installed from the ACP Registry
+into ~/.opentree/registry along with its cached index, the plugins installed
+into ~/.opentree/plugins, the record of which setup and run commands this
+machine has approved, the shell completion script, and the global config file.
+Everything present is listed with its size before anything is removed.
 
 Three things are deliberately left alone. Repositories: the worktrees under
 <repo>/.opentree hold work in progress, and only 'opentree delete <branch>'
@@ -121,6 +123,7 @@ func uninstallPlan() ([]artefact, error) {
 
 	candidates := []artefact{
 		{label: "agent adapters", path: config.ToolsDir()},
+		{label: "registry agents and index cache", path: registry.Dir()},
 		{label: "installed plugins", path: plugins.Dir()},
 		{label: "approved setup and run commands", path: bootstrap.TrustPath()},
 		{label: "global config", path: config.GlobalConfigPath()},

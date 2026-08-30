@@ -44,16 +44,6 @@ func TestFindAgent_NotFound(t *testing.T) {
 	}
 }
 
-func TestAgentNames(t *testing.T) {
-	names := AgentNames()
-	if len(names) != len(PredefinedAgents) {
-		t.Errorf("AgentNames() returned %d names, want %d", len(names), len(PredefinedAgents))
-	}
-	if names[0] != "OpenCode" {
-		t.Errorf("first name = %q, want %q", names[0], "OpenCode")
-	}
-}
-
 // The registry is the list of agents opentree can drive, so every entry has to
 // carry a way to start it over ACP. An entry without one would be offered in
 // the picker and then fail to open a chat.
