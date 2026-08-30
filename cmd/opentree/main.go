@@ -74,6 +74,7 @@ func init() {
 	rootCmd.AddCommand(cmd.SetupCmd)
 	rootCmd.AddCommand(cmd.SeedCmd)
 	rootCmd.AddCommand(cmd.SkillsCmd)
+	rootCmd.AddCommand(cmd.PluginsCmd)
 	rootCmd.AddCommand(cmd.NotifyCmd)
 	rootCmd.AddCommand(cmd.DoctorCmd)
 }
