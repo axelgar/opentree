@@ -44,8 +44,13 @@ func TestTab_SwitchesBetweenPlaces(t *testing.T) {
 		t.Error("Skills tab did not render")
 	}
 
-	// Three places, walked in the order the bar draws them, wrapping round to
+	// Four places, walked in the order the bar draws them, wrapping round to
 	// the list rather than stopping at the end.
+	next, _ = m.Update(keyMsg("tab"))
+	m = next.(Model)
+	if m.tab != tabPlugins {
+		t.Fatal("tab did not go on to the Plugins tab")
+	}
 	next, _ = m.Update(keyMsg("tab"))
 	m = next.(Model)
 	if m.tab != tabServers {

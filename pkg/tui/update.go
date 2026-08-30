@@ -89,8 +89,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tab == tabSkills {
 			return m.updateSkills(msg)
 		}
-		// The Servers tab owns its keys the same way, and for the same reason:
-		// none of the workspace dialogs can be open behind it.
+		// The Plugins and Servers tabs own their keys the same way, and for the
+		// same reason: none of the workspace dialogs can be open behind them.
+		if m.tab == tabPlugins {
+			return m.updatePlugins(msg)
+		}
 		if m.tab == tabServers {
 			return m.updateServers(msg)
 		}
@@ -1055,6 +1058,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The frontmatter is what may have changed, so the row is re-read.
 		return m, m.scanSkillsCmd
+
+	case pluginsScannedMsg:
+		m.pluginsTab.list = msg.list
+		if m.pluginsTab.cursor >= len(msg.list) {
+			m.pluginsTab.cursor = max(len(msg.list)-1, 0)
+		}
+
+	case pluginInstalledMsg:
+		m.pluginsTab.busy = false
+		if msg.err != nil {
+			return m, tea.Batch(scanPluginsCmd, m.transientErrCmd(msg.err.Error()))
+		}
+		// Both inventories moved: the store gained a plugin, and the agents'
+		// trees gained its skills.
+		installed := "installed " + msg.plugin.Name
+		if msg.linked > 0 {
+			installed += ", linked " + plural(msg.linked, "skill") + " into the agents' trees"
+		}
+		return m, tea.Batch(scanPluginsCmd, m.scanSkillsCmd, m.noticeCmd(installed))
+
+	case pluginRemovedMsg:
+		m.pluginsTab.busy = false
+		if msg.err != nil {
+			return m, tea.Batch(scanPluginsCmd, m.transientErrCmd(msg.err.Error()))
+		}
+		return m, tea.Batch(scanPluginsCmd, m.scanSkillsCmd, m.noticeCmd("removed "+msg.name))
+
+	case pluginEditedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("editor: " + msg.err.Error())
+		}
+		// The manifest is what may have changed, so the row is re-read.
+		return m, scanPluginsCmd
 
 	case skillsRelinkedMsg:
 		var done []string

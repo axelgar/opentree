@@ -851,7 +851,10 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "tab", "right":
-		m.tab = tabServers
+		// Rescanned on the way in, like every entry to the Plugins tab: the
+		// store changes from the CLI as well as from here.
+		m.tab = tabPlugins
+		return m, scanPluginsCmd
 	case "shift+tab", "left":
 		m.tab = tabWorkspaces
 	case "esc":
@@ -1305,7 +1308,8 @@ func (m Model) tabBar() string {
 		return tabInactiveStyle.Render(label)
 	}
 	gap := tabInactiveStyle.Render("  ")
-	return name("Workspaces", tabWorkspaces) + gap + name("Skills", tabSkills) + gap + name("Servers", tabServers)
+	return name("Workspaces", tabWorkspaces) + gap + name("Skills", tabSkills) +
+		gap + name("Plugins", tabPlugins) + gap + name("Servers", tabServers)
 }
 
 func plural(n int, noun string) string {

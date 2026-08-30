@@ -69,6 +69,9 @@ func (m Model) View() string {
 	if m.tab == tabSkills {
 		return m.skillsView()
 	}
+	if m.tab == tabPlugins {
+		return m.pluginsView()
+	}
 	if m.tab == tabServers {
 		return m.serversView()
 	}
