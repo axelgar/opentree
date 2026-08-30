@@ -84,6 +84,8 @@ func TestUninstallPlan_ListsOnlyWhatIsActuallyThere(t *testing.T) {
 	home := homeWithNothingInIt(t)
 	tools := filepath.Join(home, ".opentree", "tools")
 	writeUnder(t, filepath.Join(tools, "lib", "node_modules", "adapter", "index.js"), strings.Repeat("x", 4096))
+	store := filepath.Join(home, ".opentree", "plugins")
+	writeUnder(t, filepath.Join(store, "a-plugin", "plugin.json"), `{}`)
 	trust := filepath.Join(home, ".opentree", "trust.json")
 	writeUnder(t, trust, `{"repos":{}}`)
 
@@ -96,7 +98,7 @@ func TestUninstallPlan_ListsOnlyWhatIsActuallyThere(t *testing.T) {
 	for _, a := range plan {
 		got = append(got, a.path)
 	}
-	want := []string{tools, trust}
+	want := []string{tools, store, trust}
 	if len(got) != len(want) {
 		t.Fatalf("plan = %v, want exactly %v", got, want)
 	}
