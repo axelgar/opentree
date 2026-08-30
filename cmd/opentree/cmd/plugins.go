@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/axelgar/opentree/pkg/plugins"
+	"github.com/axelgar/opentree/pkg/skills"
 )
 
 var PluginsCmd = &cobra.Command{
@@ -49,6 +50,16 @@ and is reported here.`,
 			fmt.Printf("⚠ %s\n", problem)
 		}
 		fmt.Printf("  %s, %s\n", plural(len(p.Skills), "skill"), plural(len(p.Servers), "MCP server"))
+
+		// The links are what make the install mean something: without them the
+		// plugin's skills sit in the store where no agent looks.
+		linked, err := skills.LinkPlugins()
+		if err != nil {
+			return err
+		}
+		for _, link := range linked {
+			fmt.Printf("✓ Linked %s\n", link)
+		}
 		return nil
 	},
 }
@@ -105,10 +116,26 @@ copy rather than holding one of its own.`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: pluginCompletions,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := plugins.Remove(args[0]); err != nil {
+		var doomed *plugins.Plugin
+		for _, p := range plugins.Installed() {
+			if p.Name == args[0] {
+				doomed = &p
+				break
+			}
+		}
+		if doomed == nil {
+			return fmt.Errorf("%s is not installed", args[0])
+		}
+		// Links first, store second: a store entry can be deleted again after a
+		// failed unlink, but links into a deleted store are dangling entries in
+		// the agents' own trees with nothing left to resolve them by.
+		if err := skills.UnlinkPlugin(doomed.Dir); err != nil {
 			return err
 		}
-		fmt.Printf("✓ Removed %s\n", args[0])
+		if err := plugins.Remove(doomed.Name); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Removed %s\n", doomed.Name)
 		return nil
 	},
 }

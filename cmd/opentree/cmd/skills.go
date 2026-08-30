@@ -117,6 +117,18 @@ creates from now on.`,
 			}
 		}
 
+		// Plugin skills are repaired here too: their links live in the user
+		// trees rather than any worktree, but "make every agent see every skill
+		// it should" is exactly the promise this command makes.
+		fromPlugins, err := skills.LinkPlugins()
+		if err != nil {
+			return err
+		}
+		for _, link := range fromPlugins {
+			fmt.Printf("✓ Linked %s\n", link)
+		}
+		done += len(fromPlugins)
+
 		if done == 0 {
 			fmt.Println("Nothing to sync.")
 		}

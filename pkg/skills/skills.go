@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/plugins"
 )
 
 // Scope is where a skill lives, which decides who can see it.
@@ -28,11 +29,19 @@ const (
 	// ScopeRepo is this repository's own tree — the one a fresh worktree misses
 	// unless the skills are committed.
 	ScopeRepo
+	// ScopePlugin is the machine-wide plugin store. As visible as ScopeUser —
+	// the links land in the user trees — but the directory belongs to an
+	// installed plugin, so it is the plugin's commands that manage it, not the
+	// skill's own delete.
+	ScopePlugin
 )
 
 func (s Scope) String() string {
-	if s == ScopeRepo {
+	switch s {
+	case ScopeRepo:
 		return "repo"
+	case ScopePlugin:
+		return "plugin"
 	}
 	return "user"
 }
@@ -47,6 +56,11 @@ type Skill struct {
 	// so a skill installed once is commonly usable from all of them.
 	Agents []string
 	Scope  Scope
+	// Source names the plugin that installed this skill, for ScopePlugin only.
+	// The rest of the row cannot say it: the skill reaches the agents through
+	// links in their own trees, and only the resolved directory remembers that
+	// a plugin owns it.
+	Source string `json:",omitempty"`
 	// States is each agent's effective availability, keyed by agent name. An
 	// agent reading the same file can still have been told to ignore it, so
 	// this is per agent rather than per skill.
@@ -159,9 +173,14 @@ func Scan(repoRoot string) []Skill {
 		overrides[agent.Name] = readOverrides(agent.Skills, repoRoot)
 	}
 
+	// Resolved like every skill directory, so a store reached through a
+	// symlinked home still matches the resolved paths compared against it.
+	store := resolve(plugins.Dir())
+
 	for _, tree := range Trees(repoRoot) {
 		for _, skill := range read(tree) {
 			skill.Dir = resolve(skill.Dir)
+			attributePlugin(&skill, store)
 			if i, seen := index[skill.Dir]; seen {
 				out[i].Agents = mergeAgents(out[i].Agents, skill.Agents)
 				applyStates(&out[i], overrides)
