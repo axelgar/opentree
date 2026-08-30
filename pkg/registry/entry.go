@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 )
 
 // Entry is one agent as the registry describes it: identity, a pinned
@@ -51,6 +52,21 @@ type BinaryTarget struct {
 	Cmd     string            `json:"cmd"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+}
+
+// PlatformKey is this machine in the registry's vocabulary. The registry
+// spells architectures the toolchain way (x86_64, aarch64) where Go spells
+// them its own (amd64, arm64); an unknown combination is returned unmapped,
+// so the refusal that follows names something the user can recognise.
+func PlatformKey() string {
+	arch := runtime.GOARCH
+	switch arch {
+	case "amd64":
+		arch = "x86_64"
+	case "arm64":
+		arch = "aarch64"
+	}
+	return runtime.GOOS + "-" + arch
 }
 
 // idPattern is the registry's own constraint on ids, re-checked here because

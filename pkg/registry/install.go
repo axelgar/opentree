@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,8 +20,11 @@ type Plan struct {
 	IndexURL string
 	Dir      string // agents/<id>, the directory the install owns
 
-	Kind    string // "npm"
-	NpmArgv []string
+	// Exactly one of the two shapes below is filled; Kind says which.
+	Kind     string // "npm" or "binary"
+	NpmArgv  []string
+	Target   BinaryTarget
+	Platform string
 }
 
 // NewPlan resolves how this entry installs on this machine, preferring npm:
@@ -43,9 +47,32 @@ func NewPlan(e Entry, indexURL string) (Plan, error) {
 		return p, nil
 	}
 	if len(e.Distribution.Binary) > 0 {
-		return Plan{}, fmt.Errorf("%s ships only binary builds, which opentree cannot install yet", e.ID)
+		platform := PlatformKey()
+		target, ok := e.Distribution.Binary[platform]
+		if !ok {
+			return Plan{}, fmt.Errorf("%s ships no build for %s (it has: %s)",
+				e.ID, platform, strings.Join(binaryPlatforms(e), ", "))
+		}
+		if _, err := treeCommand(target.Cmd); err != nil {
+			return Plan{}, err
+		}
+		p.Kind = "binary"
+		p.Target = target
+		p.Platform = platform
+		return p, nil
 	}
 	return Plan{}, fmt.Errorf("%s is distributed via uvx, which opentree does not support yet", e.ID)
+}
+
+// binaryPlatforms is the platforms an entry does ship, sorted, for the
+// refusal that names them.
+func binaryPlatforms(e Entry) []string {
+	platforms := make([]string, 0, len(e.Distribution.Binary))
+	for p := range e.Distribution.Binary {
+		platforms = append(platforms, p)
+	}
+	sort.Strings(platforms)
+	return platforms
 }
 
 // Describe is the consent body: what the entry is, and exactly what will
@@ -56,7 +83,21 @@ func NewPlan(e Entry, indexURL string) (Plan, error) {
 func (p Plan) Describe() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s (%s, %s)\n", p.Entry.Name, p.Entry.Description, p.Entry.Version, p.Kind)
-	fmt.Fprintf(&b, "opentree will run:\n\n  %s\n", strings.Join(p.NpmArgv, " "))
+	switch p.Kind {
+	case "npm":
+		fmt.Fprintf(&b, "opentree will run:\n\n  %s\n", strings.Join(p.NpmArgv, " "))
+	case "binary":
+		fmt.Fprintf(&b, "opentree will download:\n\n  %s\n", p.Target.Archive)
+		if p.Target.SHA256 != "" {
+			fmt.Fprintf(&b, "  sha256: %s\n", strings.ToLower(p.Target.SHA256))
+		} else {
+			// Said out loud rather than left implicit: an entry without a
+			// digest is trusting the host, and the person answering y should
+			// know that is what they are agreeing to.
+			fmt.Fprintf(&b, "  sha256: not published — verified only by https\n")
+		}
+		fmt.Fprintf(&b, "\nand extract it into %s\n", p.Dir)
+	}
 	return b.String()
 }
 
@@ -89,6 +130,8 @@ func (p Plan) install(ctx context.Context) (Record, error) {
 	switch p.Kind {
 	case "npm":
 		return p.installNpm(ctx)
+	case "binary":
+		return p.installBinary(ctx)
 	}
 	return Record{}, fmt.Errorf("unknown install kind %q", p.Kind)
 }
