@@ -348,8 +348,18 @@ func untar(tr *tar.Reader, dst string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := linkTarget(dst, target, hdr.Linkname); err != nil {
-				return err
+			// The guard sits here rather than in linkTarget, which unzip
+			// uses: the analysis that watches archive linknames reach
+			// os.Symlink follows a branch in the same function and loses the
+			// same check behind a helper's error return — and a guard the
+			// analysis cannot see keeps a red alert on every future change
+			// to this file.
+			if hdr.Linkname == "" || filepath.IsAbs(hdr.Linkname) {
+				return fmt.Errorf("archive member %q links to %q — absolute links are refused", hdr.Name, hdr.Linkname)
+			}
+			resolved := filepath.Join(filepath.Dir(target), hdr.Linkname) // #nosec G305 -- joined only to be compared against the root on the next line, never used as a path
+			if resolved != dst && !strings.HasPrefix(resolved, filepath.Clean(dst)+string(os.PathSeparator)) {
+				return fmt.Errorf("archive member %q links outside the extraction directory (%q)", hdr.Name, hdr.Linkname)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
