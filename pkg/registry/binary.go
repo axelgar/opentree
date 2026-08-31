@@ -175,6 +175,12 @@ func treeCommand(cmd string) (string, error) {
 // still refused — a link is data until something follows it, and the thing
 // that follows it runs as the user.
 func extract(kind, archive, dst string) error {
+	// dst exists before the first member lands: confined resolves member
+	// paths against it, and a root that is not there yet cannot anchor the
+	// comparison.
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
 	f, err := os.Open(archive) // #nosec G304 -- the file download just wrote, under ~/.opentree
 	if err != nil {
 		return err
@@ -244,9 +250,13 @@ func (b *budget) write(dst string, r io.Reader, executable bool) error {
 	return nil
 }
 
-// entryPath vets one member name and returns where it lands. Every name is
-// cleaned and must stay local; nothing an archive says places a file outside
-// dst.
+// entryPath vets one member name and returns where it lands. Two gates, both
+// before anything touches disk. The lexical one: the name is cleaned and must
+// stay local, so nothing an archive says places a file outside dst by
+// spelling. The physical one: the member's parent directory is resolved with
+// the symlinks already extracted — this package allows in-tree relative
+// links, and a path that is innocent as text can still ride an earlier
+// member's link somewhere else entirely. Only the resolved place counts.
 func entryPath(dst, name string) (string, error) {
 	rel := filepath.Clean(strings.TrimPrefix(filepath.ToSlash(name), "./"))
 	if rel == "." {
@@ -255,7 +265,37 @@ func entryPath(dst, name string) (string, error) {
 	if filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
 		return "", fmt.Errorf("archive member %q escapes the extraction directory", name)
 	}
-	return filepath.Join(dst, rel), nil
+	target := filepath.Join(dst, rel)
+	if err := confined(dst, target); err != nil {
+		return "", fmt.Errorf("archive member %q: %w", name, err)
+	}
+	return target, nil
+}
+
+// confined refuses a target whose deepest already-existing ancestor resolves
+// outside dst. Ancestors that do not exist yet cannot be links — the MkdirAll
+// that follows creates them as real directories — so resolving the existing
+// part of the chain is resolving all there is to resolve.
+func confined(dst, target string) error {
+	realDst, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return err
+	}
+	ancestor := filepath.Dir(target)
+	for {
+		resolved, err := filepath.EvalSymlinks(ancestor)
+		if err == nil {
+			if resolved != realDst && !strings.HasPrefix(resolved, realDst+string(os.PathSeparator)) {
+				return fmt.Errorf("resolves outside the extraction directory")
+			}
+			return nil
+		}
+		next := filepath.Dir(ancestor)
+		if next == ancestor {
+			return nil
+		}
+		ancestor = next
+	}
 }
 
 // linkTarget vets a symlink: relative, and still inside the tree when

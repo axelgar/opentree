@@ -314,3 +314,40 @@ func TestTreeCommand_StaysInside(t *testing.T) {
 		}
 	}
 }
+
+// confined is the physical half of the member gate: the lexical checks all
+// reason about spelling, and an earlier member's in-tree symlink changes
+// what a later spelling means. A parent that resolves outside the tree is
+// refused whatever the path says.
+func TestConfined_RefusesAParentThatResolvesOutside(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "tree")
+	outside := filepath.Join(root, "outside")
+	for _, dir := range []string{dst, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(dst, "leak")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := confined(dst, filepath.Join(dst, "leak", "boom")); err == nil {
+		t.Error("a member whose parent resolves outside the tree was allowed")
+	}
+	if err := confined(dst, filepath.Join(dst, "ok", "deep", "file")); err != nil {
+		t.Errorf("a member under not-yet-created real directories was refused: %v", err)
+	}
+
+	// An in-tree link is the case this package deliberately allows, and it
+	// must keep working: the resolved place is still inside.
+	if err := os.MkdirAll(filepath.Join(dst, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(dst, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if err := confined(dst, filepath.Join(dst, "alias", "file")); err != nil {
+		t.Errorf("an in-tree alias was refused: %v", err)
+	}
+}
