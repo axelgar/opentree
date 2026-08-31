@@ -298,15 +298,19 @@ func confined(dst, target string) error {
 	}
 }
 
-// linkTarget vets a symlink: relative, and still inside the tree when
-// resolved from the link's own directory.
-func linkTarget(name, target string) error {
-	if target == "" || filepath.IsAbs(target) {
-		return fmt.Errorf("archive member %q links to %q — absolute links are refused", name, target)
+// linkTarget vets a symlink member: the linkname must be relative, and the
+// place it points to — resolved from the link's own directory — must still
+// sit under root. The check is spelled as a prefix comparison against the
+// root rather than the equivalent filepath.IsLocal, deliberately: this is
+// the shape static analysis recognises as the guard on symlink extraction,
+// and a guard only a human can see is half a guard.
+func linkTarget(root, target, linkname string) error {
+	if linkname == "" || filepath.IsAbs(linkname) {
+		return fmt.Errorf("archive links to %q — absolute links are refused", linkname)
 	}
-	joined := filepath.Clean(filepath.Join(filepath.Dir(filepath.Clean(name)), target))
-	if !filepath.IsLocal(joined) {
-		return fmt.Errorf("archive member %q links outside the archive (%q)", name, target)
+	resolved := filepath.Join(filepath.Dir(target), linkname)
+	if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+		return fmt.Errorf("archive links outside the extraction directory (%q)", linkname)
 	}
 	return nil
 }
@@ -344,7 +348,7 @@ func untar(tr *tar.Reader, dst string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := linkTarget(hdr.Name, hdr.Linkname); err != nil {
+			if err := linkTarget(dst, target, hdr.Linkname); err != nil {
 				return err
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -393,7 +397,7 @@ func unzip(zr *zip.Reader, dst string) error {
 			if err != nil {
 				return err
 			}
-			if err := linkTarget(f.Name, string(link)); err != nil {
+			if err := linkTarget(dst, target, string(link)); err != nil {
 				return err
 			}
 			if err := os.Symlink(string(link), target); err != nil {
