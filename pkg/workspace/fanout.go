@@ -3,7 +3,6 @@ package workspace
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -65,12 +64,12 @@ func (s *Service) CreateFanout(base, baseBranch string, agents []string) ([]*sta
 
 	var missing []string
 	for _, a := range resolved {
-		if _, err := exec.LookPath(a.Command); err != nil {
+		if !a.IsInstalled() {
 			missing = append(missing, a.Command)
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("cannot fan out: not installed: %s — every agent must be on PATH before any sibling is created", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("cannot fan out: not installed: %s — every agent must be installed before any sibling is created", strings.Join(missing, ", "))
 	}
 	if err := bootstrap.ValidateSeed(s.repoRoot, s.cfg.Workspace.Seed); err != nil {
 		return nil, err

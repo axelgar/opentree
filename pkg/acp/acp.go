@@ -131,10 +131,16 @@ type outResponse struct {
 // already in the stderr ring by then, and the caller is tearing down.
 const cancelGrace = time.Second
 
-// Spawn starts an agent process in dir and begins serving its stdio.
-func Spawn(ctx context.Context, name string, args []string, dir string, h Handlers) (*Client, error) {
+// Spawn starts an agent process in dir and begins serving its stdio. env is
+// the full process environment, or nil to inherit the caller's — the registry
+// entries that need a variable set build theirs with ACPEnv, and everything
+// else passes nil rather than a copy that stops tracking the parent.
+func Spawn(ctx context.Context, name string, args []string, dir string, env []string, h Handlers) (*Client, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = env
+	}
 	// Own process group. Agents spawn their own children — shells for tool
 	// calls, MCP servers — and killing only the direct child orphans those to
 	// init, leaving them holding the worktree after the chat is gone.

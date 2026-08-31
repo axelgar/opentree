@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,6 +22,23 @@ type PredefinedAgent struct {
 	ACP         ACPSpec
 	Skills      SkillsSpec
 	Brand       BrandSpec
+
+	// Origin is where a registry-installed agent came from, and nil for the
+	// built-in entries above this comment's pay grade. It is deliberately the
+	// only mark of the difference: everything that treats the two kinds
+	// differently — `agents list`, doctor, the picker's refusals — keys on
+	// this one field, so the difference cannot drift apart across the program.
+	Origin *RegistryOrigin
+}
+
+// RegistryOrigin identifies an install from the ACP Registry. It lives in
+// pkg/config rather than the registry package because the agent registry is
+// the thing being annotated: config must not import the machinery that feeds
+// it.
+type RegistryOrigin struct {
+	ID      string // the registry id, which is also the agent's Command
+	Version string // the entry's version as installed
+	Dir     string // the install directory under ~/.opentree/registry/agents
 }
 
 // BrandSpec is the agent's identity on screen, grouped the way ACPSpec and
@@ -76,6 +96,13 @@ type ACPSpec struct {
 	// authentication is required but leaves the remedy to the agent, whose own
 	// answer is "run this in a terminal" — which opentree happens to own.
 	AuthCommand []string
+
+	// Env is set in the ACP server's environment on top of the caller's own.
+	// Registry entries use it to pin behaviour the protocol depends on —
+	// switching an agent's self-updater off, or turning its ACP mode on — so
+	// launching without it would start a different agent than the entry
+	// describes. The predefined agents leave it empty.
+	Env map[string]string
 }
 
 // SkillsSpec is where an agent reads its skills from. Skills are a filesystem
@@ -331,6 +358,27 @@ func (a PredefinedAgent) ACPArgs(worktree string) []string {
 	return args
 }
 
+// ACPEnv is the process environment for the agent's ACP server: the caller's
+// own, extended by the spec's variables. Nil when the spec adds nothing, so an
+// exec.Cmd handed the result inherits the parent environment instead of
+// carrying a copy that stops tracking it. The appends are sorted because a
+// map's order isn't one, and the environment ends up in logs and tests.
+func (a PredefinedAgent) ACPEnv() []string {
+	if len(a.ACP.Env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(a.ACP.Env))
+	for k := range a.ACP.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := os.Environ()
+	for _, k := range keys {
+		env = append(env, k+"="+a.ACP.Env[k])
+	}
+	return env
+}
+
 // FindAgent performs a case-insensitive lookup by Name or Command, falling back
 // to a match on any single word of the Name (so "copilot" resolves to
 // "GitHub Copilot"). Returns nil if no match is found.
@@ -387,17 +435,16 @@ func UnknownAgentError(command string) error {
 		command, knownAgentCommands())
 }
 
-// AgentNames returns display names of all predefined agents.
-func AgentNames() []string {
-	names := make([]string, len(PredefinedAgents))
-	for i, a := range PredefinedAgents {
-		names[i] = a.Name
-	}
-	return names
-}
-
-// IsInstalled checks whether the agent's command binary is on PATH.
+// IsInstalled checks whether the agent can be launched at all: its command on
+// PATH, or — for a registry install, whose ACP command is recorded as an
+// absolute path under ~/.opentree — the file that path names. The absolute
+// case stats rather than trusts, because an install deleted out from under
+// its record must stop counting as installed the moment it is gone.
 func (a PredefinedAgent) IsInstalled() bool {
+	if filepath.IsAbs(a.ACP.Command) {
+		info, err := os.Stat(a.ACP.Command)
+		return err == nil && !info.IsDir()
+	}
 	_, err := exec.LookPath(a.Command)
 	return err == nil
 }

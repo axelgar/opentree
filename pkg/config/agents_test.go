@@ -44,16 +44,6 @@ func TestFindAgent_NotFound(t *testing.T) {
 	}
 }
 
-func TestAgentNames(t *testing.T) {
-	names := AgentNames()
-	if len(names) != len(PredefinedAgents) {
-		t.Errorf("AgentNames() returned %d names, want %d", len(names), len(PredefinedAgents))
-	}
-	if names[0] != "OpenCode" {
-		t.Errorf("first name = %q, want %q", names[0], "OpenCode")
-	}
-}
-
 // The registry is the list of agents opentree can drive, so every entry has to
 // carry a way to start it over ACP. An entry without one would be offered in
 // the picker and then fail to open a chat.
@@ -194,5 +184,90 @@ func TestPredefinedAgents_AllBranded(t *testing.T) {
 		if a.Brand.Mark == "" || a.Brand.Colour == "" {
 			t.Errorf("%s has no mark or colour", a.Name)
 		}
+	}
+}
+
+func TestACPEnv_NilWhenTheSpecAddsNothing(t *testing.T) {
+	a := PredefinedAgent{Command: "opencode"}
+	// nil rather than a copy of os.Environ(): exec.Cmd treats nil as "inherit",
+	// which keeps tracking the parent instead of freezing a snapshot.
+	if env := a.ACPEnv(); env != nil {
+		t.Errorf("ACPEnv() = %d entries, want nil for an empty spec", len(env))
+	}
+}
+
+func TestACPEnv_ExtendsTheCallersEnvironmentSorted(t *testing.T) {
+	t.Setenv("OPENTREE_TEST_MARKER", "kept")
+	a := PredefinedAgent{ACP: ACPSpec{Env: map[string]string{
+		"ZZ_LAST": "z", "AA_FIRST": "a",
+	}}}
+	env := a.ACPEnv()
+	if len(env) < 3 {
+		t.Fatalf("ACPEnv() = %d entries, want the caller's environment plus two", len(env))
+	}
+	// The spec's variables land after the inherited ones, in sorted order, so
+	// they win over an inherited duplicate and appear deterministically in logs.
+	if env[len(env)-2] != "AA_FIRST=a" || env[len(env)-1] != "ZZ_LAST=z" {
+		t.Errorf("tail = %v, want AA_FIRST=a then ZZ_LAST=z", env[len(env)-2:])
+	}
+	var kept bool
+	for _, kv := range env {
+		if kv == "OPENTREE_TEST_MARKER=kept" {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Error("the caller's own environment was dropped")
+	}
+}
+
+func TestIsInstalled_AbsoluteACPCommandIsStatted(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "agent-server")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := PredefinedAgent{Command: "no-such-command-on-path", ACP: ACPSpec{Command: bin}}
+	if !a.IsInstalled() {
+		t.Error("an existing absolute ACP command should count as installed without a PATH lookup")
+	}
+
+	// A deleted install must stop counting the moment it is gone — the record
+	// naming the path is not the install.
+	if err := os.Remove(bin); err != nil {
+		t.Fatal(err)
+	}
+	if a.IsInstalled() {
+		t.Error("a missing absolute ACP command still reported installed")
+	}
+
+	a.ACP.Command = dir
+	if a.IsInstalled() {
+		t.Error("a directory is not a launchable command")
+	}
+}
+
+func TestResolveACPCommand_AbsolutePassesThrough(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	abs := filepath.Join(t.TempDir(), "tree", "bin", "agent")
+	a := PredefinedAgent{Command: "reg-agent", ACP: ACPSpec{Command: abs}}
+	if got := a.ResolveACPCommand(); got != abs {
+		t.Errorf("ResolveACPCommand() = %q, want the absolute path back untouched", got)
+	}
+}
+
+func TestACPInstalled_AbsolutePathMustExist(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "agent")
+	a := PredefinedAgent{Command: "reg-agent", ACP: ACPSpec{Command: bin}}
+	if a.ACPInstalled() {
+		t.Error("ACPInstalled() true for a path nothing ever wrote to")
+	}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !a.ACPInstalled() {
+		t.Error("ACPInstalled() false for an existing install")
 	}
 }

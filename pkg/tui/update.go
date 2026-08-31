@@ -136,8 +136,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				agent := agents[m.agentCursor]
 				switch status, _ := m.readiness(agent); status {
 				case agentNotFound:
+					// The remedy differs by where the agent comes from: a
+					// built-in is installed however its vendor says, a
+					// registry agent by the command that put it there.
+					remedy := fmt.Sprintf("install %s first", agent.Command)
+					if agent.Origin != nil {
+						remedy = fmt.Sprintf("`opentree agents update %s` reinstalls it", agent.Origin.ID)
+					}
 					return m, m.transientErrCmd(fmt.Sprintf(
-						"%s is not installed — install %s first", agent.Name, agent.Command))
+						"%s is not installed — %s", agent.Name, remedy))
 				case agentAdapterMissing:
 					// A download this size is asked about, not sprung. The
 					// selection is recorded now and honoured once the adapter

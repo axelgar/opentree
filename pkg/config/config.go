@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -40,11 +39,15 @@ func (a AgentConfig) Validate() error {
 	if a.Command == "" {
 		return fmt.Errorf("agent command is empty")
 	}
-	if FindAgent(a.Command) == nil {
+	agent := FindAgent(a.Command)
+	if agent == nil {
 		return UnknownAgentError(a.Command)
 	}
-	if _, err := exec.LookPath(a.Command); err != nil {
-		return fmt.Errorf("agent command %q not found on PATH — install it or set [agent] command in opentree.toml (known agents: %s)", a.Command, knownAgentCommands())
+	// IsInstalled rather than a PATH lookup: a registry-installed agent lives
+	// under ~/.opentree and is never on PATH, and this check is the one that
+	// decides whether a workspace may be created at all.
+	if !agent.IsInstalled() {
+		return fmt.Errorf("agent command %q is not installed — install it or set [agent] command in opentree.toml (known agents: %s)", a.Command, knownAgentCommands())
 	}
 	return nil
 }

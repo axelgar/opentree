@@ -148,7 +148,7 @@ func Run(ctx context.Context, opts Options) error {
 		diag.Log("chat", "launching agent",
 			"workspace", opts.Workspace, "generation", gen, "binary", opts.acpBinary(),
 			"args", strings.Join(opts.Agent.ACPArgs(opts.Cwd), " "), "cwd", opts.Cwd)
-		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Agent.ACPArgs(opts.Cwd), opts.Cwd, handlers)
+		client, err := acp.Spawn(ctx, opts.acpBinary(), opts.Agent.ACPArgs(opts.Cwd), opts.Cwd, opts.Agent.ACPEnv(), handlers)
 		if err != nil {
 			// Spawn already names the command; wrapping again produced
 			// "failed to start X: start X: exec: ...".
