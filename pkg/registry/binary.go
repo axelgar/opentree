@@ -298,6 +298,45 @@ func confined(dst, target string) error {
 	}
 }
 
+// archiveLink is one symlink an archive asked for: where it was created,
+// and what its header said it points to.
+type archiveLink struct {
+	path, linkname string
+}
+
+// resolveLinks is the last word on every symlink the archive created, once
+// the whole tree is on disk. The per-member checks reason about spelling;
+// only now, with every target extracted, can each link be actually resolved
+// — a chain assembled out of order, or a link whose meaning changed as later
+// members landed, is invisible any earlier. A link that resolves outside
+// the tree fails the archive; one that resolves to nothing is removed and
+// the extraction continues, because a link to nothing serves nobody and
+// failing a release over one would refuse archives that work everywhere
+// else.
+func resolveLinks(dst string, links []archiveLink) error {
+	if len(links) == 0 {
+		return nil
+	}
+	root, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return err
+	}
+	for _, l := range links {
+		joined := filepath.Join(filepath.Dir(l.path), l.linkname) // #nosec G305 -- handed to EvalSymlinks below, whose answer is only compared against the root
+		resolved, err := filepath.EvalSymlinks(joined)
+		if err != nil {
+			if removeErr := os.Remove(l.path); removeErr != nil {
+				return removeErr
+			}
+			continue
+		}
+		if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+			return fmt.Errorf("archive link %s resolves outside the extraction directory", filepath.Base(l.path))
+		}
+	}
+	return nil
+}
+
 // linkTarget vets a symlink member: the linkname must be relative, and the
 // place it points to — resolved from the link's own directory — must still
 // sit under root. The check is spelled as a prefix comparison against the
@@ -317,10 +356,11 @@ func linkTarget(root, target, linkname string) error {
 
 func untar(tr *tar.Reader, dst string) error {
 	var b budget
+	var links []archiveLink
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return resolveLinks(dst, links)
 		}
 		if err != nil {
 			return err
@@ -348,18 +388,8 @@ func untar(tr *tar.Reader, dst string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			// The guard sits here rather than in linkTarget, which unzip
-			// uses: the analysis that watches archive linknames reach
-			// os.Symlink follows a branch in the same function and loses the
-			// same check behind a helper's error return — and a guard the
-			// analysis cannot see keeps a red alert on every future change
-			// to this file.
-			if hdr.Linkname == "" || filepath.IsAbs(hdr.Linkname) {
-				return fmt.Errorf("archive member %q links to %q — absolute links are refused", hdr.Name, hdr.Linkname)
-			}
-			resolved := filepath.Join(filepath.Dir(target), hdr.Linkname) // #nosec G305 -- joined only to be compared against the root on the next line, never used as a path
-			if resolved != dst && !strings.HasPrefix(resolved, filepath.Clean(dst)+string(os.PathSeparator)) {
-				return fmt.Errorf("archive member %q links outside the extraction directory (%q)", hdr.Name, hdr.Linkname)
+			if err := linkTarget(dst, target, hdr.Linkname); err != nil {
+				return err
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
@@ -367,6 +397,7 @@ func untar(tr *tar.Reader, dst string) error {
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return err
 			}
+			links = append(links, archiveLink{path: target, linkname: hdr.Linkname})
 		default:
 			// Hard links, devices, FIFOs: nothing a release archive needs,
 			// and each is its own way to write somewhere unexpected. Skipped
@@ -377,6 +408,7 @@ func untar(tr *tar.Reader, dst string) error {
 
 func unzip(zr *zip.Reader, dst string) error {
 	var b budget
+	var links []archiveLink
 	for _, f := range zr.File {
 		target, err := entryPath(dst, f.Name)
 		if err != nil {
@@ -413,6 +445,7 @@ func unzip(zr *zip.Reader, dst string) error {
 			if err := os.Symlink(string(link), target); err != nil {
 				return err
 			}
+			links = append(links, archiveLink{path: target, linkname: string(link)})
 			continue
 		}
 		// The mode is applied from the header because zip is exactly where
@@ -424,5 +457,5 @@ func unzip(zr *zip.Reader, dst string) error {
 			return err
 		}
 	}
-	return nil
+	return resolveLinks(dst, links)
 }

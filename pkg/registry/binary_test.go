@@ -351,3 +351,33 @@ func TestConfined_RefusesAParentThatResolvesOutside(t *testing.T) {
 		t.Errorf("an in-tree alias was refused: %v", err)
 	}
 }
+
+// resolveLinks is the whole-tree pass the per-member spelling checks cannot
+// make: with everything on disk, every link either resolves inside the tree,
+// resolves to nothing (and is removed — a link to nothing serves nobody), or
+// fails the archive.
+func TestInstallBinary_ResolvesLinksOnceTheTreeIsComplete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// The link arrives before its target — the out-of-order shape a
+	// per-member resolution would wrongly refuse — plus one dangling link.
+	archive := makeTarGz(t,
+		tarMember{name: "bin/agent", link: "agent-1.0"},
+		tarMember{name: "bin/agent-1.0", body: []byte("#!/bin/sh\nexit 0\n"), mode: 0o755},
+		tarMember{name: "bin/stale", link: "gone-1.0"},
+	)
+	srv := archiveSite(t, map[string][]byte{"/agent.tar.gz": archive})
+	plan, err := NewPlan(binaryEntry(srv.URL+"/agent.tar.gz", sha256hex(archive), "./bin/agent"), DefaultIndexURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := plan.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(rec.Command); err != nil || filepath.Base(resolved) != "agent-1.0" {
+		t.Errorf("command resolves to %q (%v), want the versioned binary", resolved, err)
+	}
+	if _, err := os.Lstat(filepath.Join(plan.Dir, "tree", "bin", "stale")); !os.IsNotExist(err) {
+		t.Error("the dangling link survived extraction")
+	}
+}
