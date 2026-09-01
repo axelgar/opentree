@@ -79,19 +79,6 @@ func (m Model) View() string {
 		return m.serversView()
 	}
 
-	// Adapter download confirmation, for both keys that can start one. Enter on
-	// an agent whose adapter is missing means "use this agent" and i means "get
-	// it ready for later", but 300MB off a package registry is asked about
-	// rather than sprung either way.
-	if m.agentInstallConfirm != nil {
-		return m.adapterConfirmView()
-	}
-
-	// Agent selection overlay
-	if m.agentSelecting {
-		return m.agentPickerView()
-	}
-
 	// Agent permission dialog. The options are the ones the agent offered, so
 	// the list never presents a choice the agent will refuse.
 	if m.answering && m.answerPerm != nil {

@@ -547,7 +547,7 @@ func TestSkillsTab_SwallowsWorkspaceKeys(t *testing.T) {
 	for _, k := range []string{"n", "i", "p", "o", "A", "s", "m"} {
 		next, _ := m.Update(keyMsg(k))
 		got := next.(Model)
-		if got.creating || got.prCreating || got.agentSelecting || got.prompting {
+		if got.creating || got.prCreating || got.prompting {
 			t.Errorf("%q opened a workspace dialog from the Skills tab", k)
 		}
 		if got.tab != tabSkills {

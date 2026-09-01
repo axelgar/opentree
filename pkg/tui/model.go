@@ -150,12 +150,8 @@ type Model struct {
 	diffScrollOffset int
 	diffWsName       string
 
-	// agent selection overlay
-	agentSelecting bool
-	agentCursor    int
-
-	// confirming a 300MB adapter download, and the agent to switch to once it
-	// lands
+	// confirming a 300MB adapter download, asked for from the Agents tab,
+	// and the agent to switch to once it lands
 	agentInstallConfirm *config.PredefinedAgent
 	agentPendingSelect  *config.PredefinedAgent
 	// agentPendingPath is the config file the pending selection writes to:

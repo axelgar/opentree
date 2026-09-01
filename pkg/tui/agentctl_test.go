@@ -531,31 +531,24 @@ func TestAgentReadiness_AdapterMissingIsItsOwnState(t *testing.T) {
 	}
 }
 
-func TestAgentPicker_InstallKey(t *testing.T) {
-	m := newTestModel()
-	m.agentSelecting = true
-
+func TestAgentsTab_InstallKeyExplainsNoAdapter(t *testing.T) {
 	// Land on an agent that needs no adapter: the key should say so rather
 	// than silently doing nothing.
-	for i := range config.PredefinedAgents {
-		if config.PredefinedAgents[i].Command == "opencode" {
-			m.agentCursor = i
-		}
-	}
+	m := pickerOn(t, agentReady)
+	cursorOn(t, &m, "opencode")
 	m, _ = applyUpdate(m, keyMsg("i"))
 	if m.err == nil {
 		t.Error("expected an explanation for an agent with no adapter")
 	}
-	if !m.agentSelecting {
-		t.Error("the picker should stay open when nothing was installed")
+	if m.tab != tabAgents {
+		t.Error("the tab should stay when nothing was installed")
 	}
 }
 
-func TestAgentPicker_ShowsInstallHint(t *testing.T) {
-	m := newTestModel()
-	m.agentSelecting = true
-	if !strings.Contains(m.View(), "i install adapter") {
-		t.Errorf("the picker should advertise the install key\ngot: %s", m.View())
+func TestAgentsTab_ShowsInstallHint(t *testing.T) {
+	m := pickerOn(t, agentReady)
+	if !strings.Contains(m.View(), "i adapter") {
+		t.Errorf("the tab should advertise the install key\ngot: %s", m.View())
 	}
 }
 
@@ -600,15 +593,19 @@ func readinessOf(status string) func(config.PredefinedAgent) (string, bool) {
 	return func(config.PredefinedAgent) (string, bool) { return status, status == agentReady }
 }
 
-// pickerOn opens the agent picker with the cursor on Claude Code, whose
-// readiness is stubbed so the test does not depend on this machine.
+// pickerOn opens the Agents tab with the cursor on Claude Code, whose
+// readiness is stubbed so the test does not depend on this machine. HOME is
+// empty so the store holds nothing, and the working directory is disposable
+// because selecting persists to config.
 func pickerOn(t *testing.T, status string) Model {
 	t.Helper()
-	t.Chdir(t.TempDir()) // selecting persists to config; keep it out of the repo
+	emptyHome(t)
+	snapshotAgentList(t)
 	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 1 // Claude Code
+	m.tab = tabAgents
 	m.agentReadiness = readinessOf(status)
+	m.reloadAgents()
+	cursorOn(t, &m, "claude")
 	return m
 }
 
@@ -623,16 +620,15 @@ func TestEnter_UninstalledAgentIsRefused(t *testing.T) {
 	if m.cfg.Agent.Command != before {
 		t.Errorf("agent = %q, want it unchanged at %q", m.cfg.Agent.Command, before)
 	}
-	if !m.agentSelecting {
-		t.Error("the picker should stay open so another agent can be chosen")
+	if m.tab != tabAgents {
+		t.Error("the tab should stay so another agent can be chosen")
 	}
 	if m.err == nil || !strings.Contains(m.err.Error(), "not installed") {
 		t.Errorf("err = %v, want it to say the agent is not installed", m.err)
 	}
-	// The overlay covers the list, so the message has to appear on the overlay
-	// itself or enter reads as a dead key.
+	// The refusal has to be on screen, or enter reads as a dead key.
 	if !strings.Contains(m.View(), "not installed") {
-		t.Errorf("the picker should show why enter was refused\ngot:\n%s", m.View())
+		t.Errorf("the tab should show why enter was refused\ngot:\n%s", m.View())
 	}
 }
 
@@ -660,9 +656,6 @@ func TestEnter_ReadyAgentIsSelected(t *testing.T) {
 	m := pickerOn(t, agentReady)
 	m, _ = applyUpdate(m, keyMsg("enter"))
 
-	if m.agentSelecting {
-		t.Error("the picker should close")
-	}
 	if m.cfg.Agent.Command != "claude" {
 		t.Errorf("agent = %q, want claude", m.cfg.Agent.Command)
 	}
@@ -807,7 +800,6 @@ func TestWheel_LeavesDialogsAlone(t *testing.T) {
 		"deleting":       func(m *Model) { m.deleting = true },
 		"promoting":      func(m *Model) { m.promoting = true },
 		"filtering":      func(m *Model) { m.filtering = true },
-		"agent picker":   func(m *Model) { m.agentSelecting = true },
 		"answering":      func(m *Model) { m.answering = true },
 		"prompting":      func(m *Model) { m.prompting = true },
 		"error log":      func(m *Model) { m.showErrLog = true },

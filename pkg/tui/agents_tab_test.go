@@ -187,7 +187,7 @@ func TestAgentsTab_SwallowsWorkspaceKeys(t *testing.T) {
 	m := agentsModel(t)
 	for _, k := range []string{"n", "p", "o", "A", "s", "m", "d"} {
 		got, _ := m.updateAgents(keyMsg(k))
-		if got.creating || got.prCreating || got.agentSelecting || got.prompting || got.tab != tabAgents {
+		if got.creating || got.prCreating || got.prompting || got.tab != tabAgents {
 			t.Errorf("key %q leaked into the workspace handler", k)
 		}
 	}

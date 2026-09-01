@@ -16,10 +16,10 @@ import (
 
 // The Agents tab is where `opentree agents` lives in the dashboard: every
 // agent this machine knows — the built-in four and whatever was installed
-// from the ACP Registry — with the same verbs the command line has. The A
-// picker on the workspace list stays the quick switch; this is the place
-// you come back to when the question is "what have I got, and what else is
-// there".
+// from the ACP Registry — with the same verbs the command line has. It
+// replaced the A picker the workspace list used to open: one list that can
+// switch, install, update and remove beats a second one that could only
+// switch.
 //
 // Wording is the command line's, on purpose. A person who has read the
 // README's registry section, or run `agents add` once, should meet the same
@@ -296,8 +296,8 @@ func (m Model) updateAgents(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// useAgent is enter (this repository) and g (everywhere): the readiness
-// branching the picker's enter does, with the same remedies.
+// useAgent is enter (this repository) and g (everywhere): readiness first,
+// because recording a choice that cannot start helps nobody.
 func (m Model) useAgent(configPath string) (Model, tea.Cmd) {
 	row, ok := m.currentAgentRow()
 	if !ok {
@@ -591,8 +591,8 @@ func updateSummary(upToDate, unlisted []string) string {
 }
 
 // handleRegistryRan is the outcome of an install or update. Both reload the
-// runtime list — the store changed, and the picker and the next chat should
-// see it — and then U's queue, if any, asks about the next one.
+// runtime list — the store changed, and the next chat should see it — and
+// then U's queue, if any, asks about the next one.
 func (m Model) handleRegistryRan(msg registryRanMsg) (Model, tea.Cmd) {
 	m.agentsTab.busy = false
 	m.reloadAgents()
@@ -670,7 +670,7 @@ func (m Model) agentsView() string {
 	return appStyle.Render(s.String())
 }
 
-// Column widths, the picker's plus a source column.
+// Column widths.
 const (
 	agentNameWidth   = 20
 	agentCmdWidth    = 14
@@ -680,7 +680,7 @@ const (
 
 // renderAgentRow draws one agent: mark and name, command, readiness, where
 // it came from, and the description in whatever room is left. Padded before
-// styling, as the picker does, so escape codes never widen a column.
+// styling, so escape codes never widen a column.
 func (m Model) renderAgentRow(row agentRow, selected bool) string {
 	style, cursor := itemStyle, "  "
 	if selected {

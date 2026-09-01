@@ -1339,124 +1339,6 @@ func TestCreatedWorkspaceMsg_ClearsCreatingState(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Agent selection overlay
-// ---------------------------------------------------------------------------
-
-func TestAgentSelection_AKeyEntersMode(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m, _ = applyUpdate(m, keyMsg("A"))
-
-	if !m.agentSelecting {
-		t.Error("expected agentSelecting=true after pressing A")
-	}
-}
-
-func TestAgentSelection_CursorStartsOnActiveAgent(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	// Default agent is opencode (index 0)
-	m, _ = applyUpdate(m, keyMsg("A"))
-
-	if m.agentCursor != 0 {
-		t.Errorf("agentCursor = %d, want 0 (OpenCode is default)", m.agentCursor)
-	}
-}
-
-func TestAgentSelection_DownMovescursor(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 0
-
-	m, _ = applyUpdate(m, keyMsg("j"))
-
-	if m.agentCursor != 1 {
-		t.Errorf("agentCursor = %d, want 1 after down", m.agentCursor)
-	}
-}
-
-func TestAgentSelection_UpMovescursor(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 1
-
-	m, _ = applyUpdate(m, keyMsg("k"))
-
-	if m.agentCursor != 0 {
-		t.Errorf("agentCursor = %d, want 0 after up", m.agentCursor)
-	}
-}
-
-func TestAgentSelection_UpClampsAtZero(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 0
-
-	m, _ = applyUpdate(m, keyMsg("k"))
-
-	if m.agentCursor != 0 {
-		t.Errorf("agentCursor = %d, want 0 (clamped)", m.agentCursor)
-	}
-}
-
-func TestAgentSelection_EscCancels(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 2
-
-	m, _ = applyUpdate(m, keyMsg("esc"))
-
-	if m.agentSelecting {
-		t.Error("expected agentSelecting=false after esc")
-	}
-}
-
-func TestAgentSelection_EnterSelectsAgent(t *testing.T) {
-	// Selecting an agent persists it via config.FindConfigFile(); chdir to a
-	// temp dir so the write can't reformat this repo's own opentree.toml.
-	t.Chdir(t.TempDir())
-	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 1 // Claude Code
-	// Enter now depends on whether the agent can actually run, which otherwise
-	// makes this test agree or disagree based on what is installed here.
-	m.agentReadiness = alwaysReady
-
-	m, _ = applyUpdate(m, keyMsg("enter"))
-
-	if m.agentSelecting {
-		t.Error("expected agentSelecting=false after enter")
-	}
-	if m.cfg.Agent.Command != "claude" {
-		t.Errorf("cfg.Agent.Command = %q, want %q", m.cfg.Agent.Command, "claude")
-	}
-}
-
-func alwaysReady(config.PredefinedAgent) (string, bool) { return agentReady, true }
-
-func TestAgentSelection_ViewShowsOverlay(t *testing.T) {
-	m := newTestModel(testWS("ws"))
-	m.agentSelecting = true
-	m.agentCursor = 0
-
-	view := m.View()
-
-	if !strings.Contains(view, "Select Agent") {
-		t.Errorf("View() does not contain 'Select Agent'\ngot: %s", view)
-	}
-	if !strings.Contains(view, "OpenCode") {
-		t.Errorf("View() does not contain 'OpenCode'\ngot: %s", view)
-	}
-	if !strings.Contains(view, "Claude Code") {
-		t.Errorf("View() does not contain 'Claude Code'\ngot: %s", view)
-	}
-	if !strings.Contains(view, "(active)") {
-		t.Errorf("View() does not show '(active)' for current agent\ngot: %s", view)
-	}
-	if !strings.Contains(view, "▶") {
-		t.Errorf("View() does not show selection indicator\ngot: %s", view)
-	}
-}
-
 // ---- Async identity regressions ----
 
 // Regression: prContentGeneratedMsg carried no workspace identity, so a slow
@@ -2103,7 +1985,6 @@ func TestDialogs_AreCentredCards(t *testing.T) {
 		{"create", func(m Model) Model { m.creating = true; return m }, "Create New Workspace"},
 		{"issue", func(m Model) Model { m.creating, m.issueMode = true, true; return m }, "GitHub Issue"},
 		{"prompt", func(m Model) Model { m.prompting, m.promptWs = true, "ws"; return m }, "Message agent"},
-		{"agents", func(m Model) Model { m.agentSelecting = true; return m }, "Select Agent"},
 		{"pr", func(m Model) Model { m.prCreating, m.prBranch, m.prBase = true, "b", "main"; return m }, "Create PR"},
 		{"prGen", func(m Model) Model { m.prGenerating, m.prBranch, m.prBase = true, "b", "main"; return m }, "Create PR"},
 	} {
