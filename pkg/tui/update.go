@@ -89,93 +89,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tab == tabSkills {
 			return m.updateSkills(msg)
 		}
-		// The Plugins and Servers tabs own their keys the same way, and for the
-		// same reason: none of the workspace dialogs can be open behind them.
+		// The Agents, Plugins and Servers tabs own their keys the same way, and
+		// for the same reason: none of the workspace dialogs can be open behind
+		// them.
+		if m.tab == tabAgents {
+			return m.updateAgents(msg)
+		}
 		if m.tab == tabPlugins {
 			return m.updatePlugins(msg)
 		}
 		if m.tab == tabServers {
 			return m.updateServers(msg)
-		}
-
-		// Confirming an adapter download, however it was asked for. Both keys
-		// that can start one arrive here, and they differ only in what happens
-		// afterwards: a pending selection means enter asked for it and the
-		// switch is waiting on the install, no pending selection means i did
-		// and the adapter is being fetched for later.
-		if m.agentInstallConfirm != nil {
-			agent := *m.agentInstallConfirm
-			switch msg.String() {
-			case "y", "Y", "enter":
-				m.agentInstallConfirm = nil
-				m.agentSelecting = false
-				return m, m.installAdapterCmd(agent)
-			case "n", "esc", "q":
-				m.agentInstallConfirm = nil
-				m.agentPendingSelect = nil
-			}
-			return m, nil
-		}
-
-		// Agent selection mode
-		if m.agentSelecting {
-			agents := config.PredefinedAgents
-			switch msg.String() {
-			case "up", "k":
-				if m.agentCursor > 0 {
-					m.agentCursor--
-				}
-			case "down", "j":
-				if m.agentCursor < len(agents)-1 {
-					m.agentCursor++
-				}
-			case "enter":
-				// Enter means "use this agent", so it does whatever that takes
-				// — including fetching an adapter — rather than recording a
-				// choice that cannot start.
-				agent := agents[m.agentCursor]
-				switch status, _ := m.readiness(agent); status {
-				case agentNotFound:
-					// The remedy differs by where the agent comes from: a
-					// built-in is installed however its vendor says, a
-					// registry agent by the command that put it there.
-					remedy := fmt.Sprintf("install %s first", agent.Command)
-					if agent.Origin != nil {
-						remedy = fmt.Sprintf("`opentree agents update %s` reinstalls it", agent.Origin.ID)
-					}
-					return m, m.transientErrCmd(fmt.Sprintf(
-						"%s is not installed — %s", agent.Name, remedy))
-				case agentAdapterMissing:
-					// A download this size is asked about, not sprung. The
-					// selection is recorded now and honoured once the adapter
-					// lands; declining takes it back.
-					m.agentInstallConfirm = &agents[m.agentCursor]
-					m.agentPendingSelect = &agents[m.agentCursor]
-					return m, nil
-				}
-				m.agentSelecting = false
-				if errMsg := m.selectAgent(agent); errMsg != "" {
-					return m, m.transientErrCmd(errMsg)
-				}
-			case "i":
-				// Installing without switching to it, for preparing ahead. It
-				// goes through the same confirmation enter does: the download
-				// is the same hundreds of megabytes off the same registry
-				// whichever key asked for it, and a keystroke away from the
-				// list is exactly where an unattended install should not be.
-				agent := agents[m.agentCursor]
-				if len(agent.ACPInstallCommand()) == 0 {
-					return m, m.transientErrCmd(fmt.Sprintf("%s needs no adapter", agent.Name))
-				}
-				if agent.ACPInstalled() {
-					return m, m.transientErrCmd(fmt.Sprintf("%s is already installed", agent.ACPCommand()))
-				}
-				m.agentInstallConfirm = &agents[m.agentCursor]
-				return m, nil
-			case "esc", "q":
-				m.agentSelecting = false
-			}
-			return m, nil
 		}
 
 		// Diff view mode
@@ -450,8 +374,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tab = tabServers
 				return m, nil
 			}
-			m.tab = tabSkills
-			return m, m.scanSkillsCmd
+			m.tab = tabAgents
+			m.reloadAgents()
+			return m, nil
 		case msg.String() == "esc" && m.filterQuery != "":
 			m.filterQuery = ""
 			m.cursor = 0
@@ -616,17 +541,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			// The reshuffle alone is ambiguous about what changed; name it.
 			return m, m.noticeCmd("sorted by " + sortModeNames[m.sortMode])
-		case key.Matches(msg, m.keys.Agent):
-			m.agentSelecting = true
-			m.agentCursor = 0
-			// Position cursor on the currently active agent
-			for i, a := range config.PredefinedAgents {
-				if a.IsActive(m.cfg) {
-					m.agentCursor = i
-					break
-				}
-			}
-			return m, nil
 		case key.Matches(msg, m.keys.Answer):
 			if len(visible) == 0 {
 				return m, nil
@@ -1000,8 +914,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case adapterInstalledMsg:
-		pending := m.agentPendingSelect
-		m.agentPendingSelect = nil
+		pending, path := m.agentPendingSelect, m.agentPendingPath
+		m.agentPendingSelect, m.agentPendingPath = nil, ""
 		if msg.err != nil {
 			return m, afterExec(m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err)))
 		}
@@ -1009,7 +923,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Enter meant "use this agent"; the install was only what stood in the
 		// way, so finish the job.
 		if pending != nil {
-			if errMsg := m.selectAgent(*pending); errMsg != "" {
+			if path == "" {
+				path = config.FindConfigFile()
+			}
+			if errMsg := m.selectAgentIn(*pending, path); errMsg != "" {
 				return m, afterExec(m.transientErrCmd(errMsg))
 			}
 			m.notice += ", now using " + pending.Name
@@ -1065,6 +982,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The frontmatter is what may have changed, so the row is re-read.
 		return m, m.scanSkillsCmd
+
+	case registryIndexMsg:
+		return m.handleRegistryIndex(msg)
+
+	case registryRanMsg:
+		return m.handleRegistryRan(msg)
+
+	case registryRemovedMsg:
+		return m.handleRegistryRemoved(msg)
 
 	case pluginsScannedMsg:
 		m.pluginsTab.list = msg.list
@@ -1210,7 +1136,7 @@ const wheelLines = 3
 // visible, so the change would only be discovered later as a surprise.
 func (m Model) busyWithDialog() bool {
 	return m.creating || m.deleting || m.promoting || m.filtering || m.prCreating || m.prGenerating ||
-		m.agentSelecting || m.agentInstallConfirm != nil || m.answering || m.prompting ||
+		m.agentInstallConfirm != nil || m.answering || m.prompting ||
 		m.showErrLog
 }
 

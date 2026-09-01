@@ -58,9 +58,10 @@ var sortModeNames = []string{"name", "age", "activity", "PR"}
 // an inventory you come back to.
 const (
 	tabWorkspaces = 0
-	tabSkills     = 1
-	tabPlugins    = 2
-	tabServers    = 3
+	tabAgents     = 1
+	tabSkills     = 2
+	tabPlugins    = 3
+	tabServers    = 4
 )
 
 // Model is the main Bubble Tea model for the opentree TUI.
@@ -149,14 +150,15 @@ type Model struct {
 	diffScrollOffset int
 	diffWsName       string
 
-	// agent selection overlay
-	agentSelecting bool
-	agentCursor    int
-
-	// confirming a 300MB adapter download, and the agent to switch to once it
-	// lands
+	// confirming a 300MB adapter download, asked for from the Agents tab,
+	// and the agent to switch to once it lands
 	agentInstallConfirm *config.PredefinedAgent
 	agentPendingSelect  *config.PredefinedAgent
+	// agentPendingPath is the config file the pending selection writes to:
+	// "" for the repository's, or the global one when the Agents tab's g
+	// asked. The adapter install must not quietly narrow "everywhere" to
+	// "here".
+	agentPendingPath string
 
 	// agentReadiness overrides the real check in tests; nil uses it.
 	agentReadiness func(config.PredefinedAgent) (string, bool)
@@ -184,6 +186,10 @@ type Model struct {
 
 	// which top-level place is showing
 	tab int
+
+	// agentsTab is the Agents tab's own state, defined beside its behaviour
+	// in agents.go.
+	agentsTab agentsTab
 
 	// skillsTab is the Skills tab's own state, defined beside its behaviour
 	// in skills.go.

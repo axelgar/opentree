@@ -296,6 +296,37 @@ func TestLoadInstalled_ADeadInstallIsNotInstalled(t *testing.T) {
 	}
 }
 
+func TestLoadInstalled_ReplacesRatherThanAppends(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	snapshotAgents(t)
+	builtins := len(config.PredefinedAgents)
+	installFake(t, fixtureEntry(t, "devin"), nil, nil)
+
+	// The dashboard reloads after every install and removal, so a second
+	// load must describe the store, not add to the first load's answer.
+	LoadInstalled()
+	LoadInstalled()
+	if got := len(config.PredefinedAgents); got != builtins+1 {
+		t.Fatalf("two loads left %d agents, want %d (built-ins plus one)", got, builtins+1)
+	}
+	for _, a := range config.PredefinedAgents[:builtins] {
+		if a.Origin != nil {
+			t.Errorf("%s: a built-in lost its place to a registry agent", a.Name)
+		}
+	}
+
+	if err := Remove("devin"); err != nil {
+		t.Fatal(err)
+	}
+	LoadInstalled()
+	if got := len(config.PredefinedAgents); got != builtins {
+		t.Errorf("after removal the list holds %d agents, want %d", got, builtins)
+	}
+	if config.FindAgent("devin") != nil {
+		t.Error("a removed install still resolves after the reload")
+	}
+}
+
 func TestBrandFor_DeterministicAndPlain(t *testing.T) {
 	a, b := brandFor("devin"), brandFor("devin")
 	if a.Colour != b.Colour {

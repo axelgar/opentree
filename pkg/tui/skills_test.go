@@ -34,17 +34,27 @@ func skillsModel(list ...skills.Skill) Model {
 }
 
 func TestTab_SwitchesBetweenPlaces(t *testing.T) {
+	emptyHome(t) // entering Agents reads the registry store
+	snapshotAgentList(t)
 	m := newTestModel(testWS("alpha"))
 	next, _ := m.Update(keyMsg("tab"))
 	m = next.(Model)
+	if m.tab != tabAgents {
+		t.Fatal("tab did not open the Agents tab")
+	}
+	if !strings.Contains(m.View(), "Claude Code") {
+		t.Error("Agents tab did not render")
+	}
+	next, _ = m.Update(keyMsg("tab"))
+	m = next.(Model)
 	if m.tab != tabSkills {
-		t.Fatal("tab did not open the Skills tab")
+		t.Fatal("tab did not go on to the Skills tab")
 	}
 	if !strings.Contains(m.View(), "No skills installed") {
 		t.Error("Skills tab did not render")
 	}
 
-	// Four places, walked in the order the bar draws them, wrapping round to
+	// Five places, walked in the order the bar draws them, wrapping round to
 	// the list rather than stopping at the end.
 	next, _ = m.Update(keyMsg("tab"))
 	m = next.(Model)
@@ -64,11 +74,13 @@ func TestTab_SwitchesBetweenPlaces(t *testing.T) {
 
 // Arrows walk the tab bar the way it looks like they should.
 func TestArrows_SwitchBetweenPlaces(t *testing.T) {
+	emptyHome(t)
+	snapshotAgentList(t)
 	m := newTestModel(testWS("alpha"))
 	next, _ := m.Update(keyMsg("right"))
 	m = next.(Model)
-	if m.tab != tabSkills {
-		t.Fatal("right did not open the Skills tab")
+	if m.tab != tabAgents {
+		t.Fatal("right did not open the Agents tab")
 	}
 	next, _ = m.Update(keyMsg("left"))
 	if next.(Model).tab != tabWorkspaces {
@@ -535,7 +547,7 @@ func TestSkillsTab_SwallowsWorkspaceKeys(t *testing.T) {
 	for _, k := range []string{"n", "i", "p", "o", "A", "s", "m"} {
 		next, _ := m.Update(keyMsg(k))
 		got := next.(Model)
-		if got.creating || got.prCreating || got.agentSelecting || got.prompting {
+		if got.creating || got.prCreating || got.prompting {
 			t.Errorf("%q opened a workspace dialog from the Skills tab", k)
 		}
 		if got.tab != tabSkills {

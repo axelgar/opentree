@@ -26,7 +26,6 @@ type keyMap struct {
 	Select  key.Binding
 	Filter  key.Binding
 	Sort    key.Binding
-	Agent   key.Binding
 	Answer  key.Binding
 	Stop    key.Binding
 	Msg     key.Binding
@@ -55,7 +54,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.Compare, k.Promote, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
 		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
-		{k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
+		{k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -128,10 +127,6 @@ var keys = keyMap{
 		key.WithKeys("s"),
 		key.WithHelp("s", "cycle sort"),
 	),
-	Agent: key.NewBinding(
-		key.WithKeys("A"),
-		key.WithHelp("A", "switch agent"),
-	),
 	Answer: key.NewBinding(
 		key.WithKeys("a"),
 		key.WithHelp("a", "answer agent"),
@@ -170,10 +165,10 @@ var keys = keyMap{
 		key.WithKeys("c"),
 		key.WithHelp("c", "copy all"),
 	),
-	// Four places now, walked in the order the bar draws them.
+	// Five places now, walked in the order the bar draws them.
 	Tab: key.NewBinding(
 		key.WithKeys("tab", "left", "right"),
-		key.WithHelp("tab/←→", "skills · plugins · servers"),
+		key.WithHelp("tab/←→", "agents · skills · plugins · servers"),
 	),
 	Quit: key.NewBinding(
 		// esc is the way out of the workspace list; from Skills it only steps

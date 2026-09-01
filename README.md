@@ -24,7 +24,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **✅ CI Status**: Live CI check status displayed per workspace
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
 - **🔌 Agent Plugins**: Install a plugin from the open [Agent Plugins](https://agent-plugins.org) standard once, and every agent in every worktree can use the skills it bundles
-- **🗂 ACP Registry**: `opentree agents add <id>` installs any agent the [ACP Registry](https://agentclientprotocol.com/get-started/registry) lists, and it becomes first-class everywhere the built-in four are — picker, chats, fan-outs
+- **🗂 ACP Registry**: `opentree agents add <id>`, or `a` on the dashboard's Agents tab, installs any agent the [ACP Registry](https://agentclientprotocol.com/get-started/registry) lists, and it becomes first-class everywhere the built-in four are — chats, fan-outs, per-workspace overrides
 - **🧹 Clean Lifecycle**: Archive workspaces after merge, keeping your repo tidy
 - **⌨️ Shell Completion**: Tab completion for workspace names in bash, zsh, and fish
 
@@ -132,7 +132,7 @@ opentree
 - `/` - Filter workspaces by name
 - `s` - Cycle sort order (name → age → activity → PR)
 - `E` - Toggle error log
-- `tab` - Switch between Workspaces, Skills, Plugins and Servers
+- `tab` - Switch between Workspaces, Agents, Skills, Plugins and Servers
 - `?` - Toggle full help
 - `q` - Quit
 
@@ -140,12 +140,30 @@ Each row also carries what its agent is doing — working, waiting on a
 permission, stopped — plus cost and context use, read live from the chat's
 control socket. Open PRs show **CI check status** badges.
 
+### Agents
+
+Press `tab` once for every agent this machine knows — the built-in four and
+whatever was installed from the ACP Registry — with its readiness, where it
+came from, and which one this repository uses. It is `opentree agents` as a
+place rather than a set of commands:
+
+- `enter` - Use this agent for the repository (`g` for everywhere)
+- `a` - Browse the ACP Registry and install an agent (`/` filters the list)
+- `u` - Update the selected registry agent (`U` checks every one)
+- `i` - Fetch a built-in agent's ACP adapter
+- `x` - Remove a registry agent, or clear a broken install
+- `r` - Rescan the store, without touching the network
+
+Every install shows the same consent card the command line prints — what will
+run or what will be downloaded, and where — before anything is fetched. See
+[Agents from the ACP Registry](#agents-from-the-acp-registry).
+
 ### Skills
 
 Skills are a filesystem convention rather than anything an agent exposes over
 its API — a directory holding a `SKILL.md` — so opentree reads them directly.
-Press `tab` for the inventory: every skill on the machine, which agents can
-actually use each one, and what each agent will do with it.
+Press `tab` twice for the inventory: every skill on the machine, which agents
+can actually use each one, and what each agent will do with it.
 
 - `enter` - Open the SKILL.md in `$EDITOR`
 - `a` - Add a skill from a git URL
@@ -314,8 +332,8 @@ is queued rather than refused.
 **Which agents.** OpenCode, GitHub Copilot CLI and Gemini CLI serve ACP
 themselves, so having the binary is the whole setup. Claude Code is reached
 through the `claude-agent-acp` adapter, which opentree installs on request into
-`~/.opentree/tools` rather than your global npm root — press `A` in the
-dashboard, pick Claude Code, and it offers the download (340MB, needs `node`).
+`~/.opentree/tools` rather than your global npm root — open the dashboard's
+Agents tab, pick Claude Code, and it offers the download (340MB, needs `node`).
 
 Those four ship with opentree; the rest of the ecosystem comes from the
 [ACP Registry](https://agentclientprotocol.com/get-started/registry).
@@ -799,9 +817,9 @@ To use one of the others instead of OpenCode:
 command = "claude"            # or "copilot", or "gemini"
 ```
 
-Or press `A` in the dashboard to pick from the agents you have installed — it
-writes the same config, and offers to fetch the ACP adapter if the agent needs
-one. From the CLI:
+Or press `tab` in the dashboard for the Agents tab and pick one — it writes
+the same config, and offers to fetch the ACP adapter if the agent needs one.
+From the CLI:
 
 ```bash
 opentree agents list           # what's installed, and which is active
@@ -837,9 +855,15 @@ own directory under `~/.opentree/registry`, wears a `registry` tag in
 new version beside the old and swaps it in only when complete, so a failed
 update leaves the old agent working.
 
-Everything else is indistinguishable from the built-in four: the dashboard
-picker offers registry agents, `--agents claude,devin,goose` races them, a
-workspace remembers which one it runs, and `opentree doctor` reports them.
+The dashboard's Agents tab is the same feature without leaving the
+terminal you are already in: `a` fetches the index and lists it, `enter` on
+an entry shows the same consent card `agents add` prints and installs on
+`y`, `u` and `U` are `agents update`, `x` is `agents remove`. An agent
+installed there is a row the moment the install finishes — no restart.
+
+Everything else is indistinguishable from the built-in four:
+`--agents claude,devin,goose` races them, a workspace remembers which one it
+runs, and `opentree doctor` reports them.
 Two honest gaps: a registry entry does not say where its agent keeps skills,
 so the Skills tab leaves registry agents out rather than guessing; and the
 few agents distributed only via PyPI's `uvx` are listed by `agents search`
@@ -943,8 +967,8 @@ Install OpenCode from [github.com/anomalyco/opencode](https://github.com/anomaly
 
 ### The chat says the agent needs an adapter
 
-Claude Code speaks ACP through `claude-agent-acp`. Press `A` in the dashboard,
-select Claude Code, and accept the download — it installs to `~/.opentree/tools`
+Claude Code speaks ACP through `claude-agent-acp`. Open the dashboard's Agents
+tab, select Claude Code, and accept the download — it installs to `~/.opentree/tools`
 and needs `node` on your PATH. If you already have the package installed
 globally, opentree uses that instead of fetching a second copy.
 
@@ -997,7 +1021,7 @@ go build -o opentree ./cmd/opentree
 
 | package | what it owns |
 | --- | --- |
-| `tui` | the dashboard: the workspace list, the Skills and Servers tabs |
+| `tui` | the dashboard: the workspace list, the Agents, Skills, Plugins and Servers tabs |
 | `chat` | the conversation view, and the control socket the dashboard reaches it through |
 | `acp` | the Agent Client Protocol client — the agent subprocess and its stdio |
 | `workspace` | a workspace's lifecycle, over the four below it |
