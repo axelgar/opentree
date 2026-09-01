@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"strings"
+
+	"github.com/axelgar/opentree/pkg/config"
 )
 
 // Entry is one agent as the registry describes it: identity, a pinned
@@ -115,4 +118,40 @@ func (e Entry) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Via names how an entry arrives, in opentree's order of preference. uvx is
+// listed but marked: hiding those entries would make the registry look
+// smaller than it is, and the honest answer is "exists, not supported yet".
+func (e Entry) Via() string {
+	var kinds []string
+	if e.Distribution.Npx != nil {
+		kinds = append(kinds, "npm")
+	}
+	if len(e.Distribution.Binary) > 0 {
+		kinds = append(kinds, "binary")
+	}
+	if e.Distribution.Uvx != nil {
+		kinds = append(kinds, "uvx*")
+	}
+	return strings.Join(kinds, "+")
+}
+
+// Status is what this machine already has under the entry's name: the
+// built-in agent that shadows it, the installed version, or nothing.
+// FindAgent sees registry installs too — the loader ran first — so one
+// lookup answers for both kinds.
+func Status(e Entry) string {
+	agent := config.FindAgent(e.ID)
+	if agent == nil {
+		agent = config.FindAgent(e.Name)
+	}
+	switch {
+	case agent == nil:
+		return ""
+	case agent.Origin != nil:
+		return "installed " + agent.Origin.Version
+	default:
+		return "built-in"
+	}
 }

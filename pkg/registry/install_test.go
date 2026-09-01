@@ -181,6 +181,26 @@ func TestPlanRun_NpmInstallCommitsARecord(t *testing.T) {
 	}
 }
 
+func TestPlanRun_ReportsToTheWritersItIsGiven(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fakeNpm(t, `echo "added 1 package"; echo "npm warn deprecated" >&2; `+fakeNpmSuccess)
+	plan, err := NewPlan(fixtureEntry(t, "auggie"), DefaultIndexURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errs strings.Builder
+	plan.Stdout, plan.Stderr = &out, &errs
+	if _, err := plan.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out.String(), "added 1 package") {
+		t.Errorf("stdout = %q, want npm's output captured", out.String())
+	}
+	if !strings.Contains(errs.String(), "deprecated") {
+		t.Errorf("stderr = %q, want npm's warnings captured", errs.String())
+	}
+}
+
 func TestPlanRun_AFailedInstallLeavesNothing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fakeNpm(t, "exit 1")
