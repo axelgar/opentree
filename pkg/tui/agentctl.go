@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
@@ -283,18 +284,134 @@ func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd
 	}
 }
 
-// selectAgent makes an agent the configured one and persists it. Returns an
-// error message for the caller to surface, or "" on success.
+// selectAgent makes an agent the configured one for this repository and
+// persists it. Returns an error message for the caller to surface, or "" on
+// success.
 func (m *Model) selectAgent(agent config.PredefinedAgent) string {
+	return m.selectAgentIn(agent, config.FindConfigFile())
+}
+
+// selectAgentIn is selectAgent with the config file named: the repository's
+// (the everyday case) or the global one (`agents use --global`), which the
+// Agents tab offers under g.
+func (m *Model) selectAgentIn(agent config.PredefinedAgent, path string) string {
 	m.cfg.Agent.Command = agent.Command
 	// Persist only the agent key (not the merged config), and surface failures
 	// instead of silently losing the selection.
-	if err := config.SetKeys(config.FindConfigFile(), map[string]any{
+	if err := config.SetKeys(path, map[string]any{
 		"agent.command": m.cfg.Agent.Command,
 	}); err != nil {
 		return fmt.Sprintf("failed to save agent selection: %v", err)
 	}
 	return ""
+}
+
+// handleAdapterConfirm answers the adapter download card, however it was
+// asked for. Both keys that can start one arrive here, and they differ only
+// in what happens afterwards: a pending selection means enter asked for it
+// and the switch is waiting on the install, no pending selection means i did
+// and the adapter is being fetched for later. The workspace list and the
+// Agents tab both draw the card, so both answer it through this one place.
+func (m Model) handleAdapterConfirm(msg tea.KeyMsg) (Model, tea.Cmd) {
+	agent := *m.agentInstallConfirm
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.agentInstallConfirm = nil
+		m.agentSelecting = false
+		return m, m.installAdapterCmd(agent)
+	case "n", "esc", "q":
+		m.agentInstallConfirm = nil
+		m.agentPendingSelect = nil
+		m.agentPendingPath = ""
+	}
+	return m, nil
+}
+
+// adapterConfirmView is the adapter download card, for both keys that can
+// start one. Enter on an agent whose adapter is missing means "use this
+// agent" and i means "get it ready for later", but 300MB off a package
+// registry is asked about rather than sprung either way.
+func (m Model) adapterConfirmView() string {
+	agent := *m.agentInstallConfirm
+	size := ""
+	if agent.ACP.InstallSize != "" {
+		size = " (" + agent.ACP.InstallSize + ", needs node)"
+	}
+	// The command is spelled out in full because the verb alone is not
+	// something anyone can honestly agree to. The pinned version, the
+	// prefix that keeps this out of the user's global npm root and the
+	// refusal to run install hooks are the entire difference between this
+	// and handing npm the machine, and none of the three is visible from
+	// the word "install".
+	body := fmt.Sprintf("%s\n%s\n\n%s",
+		confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
+			agent.ACPCommand()+size+"."),
+		confirmLabelStyle.Render("It writes nothing outside the prefix named here, and runs:"),
+		strings.Join(agent.ACPInstallCommand(), " "),
+	)
+	// Enter armed this with the agent it means to switch to; i armed it
+	// with nothing, and promising a switch that will not happen is worse
+	// than a shorter label.
+	verb := "install"
+	if m.agentPendingSelect != nil {
+		verb = "install and use"
+	}
+	footer := fmt.Sprintf("%s %s  •  %s %s",
+		confirmKeyStyle.Render("y"), confirmLabelStyle.Render(verb),
+		confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
+	)
+	return m.dialogCard("Install adapter for "+agent.Name+"?", body, footer, dialogAccent)
+}
+
+// agentPickerView is the A overlay: every agent, its readiness, and enter to
+// switch.
+func (m Model) agentPickerView() string {
+	var sb strings.Builder
+	for i, agent := range config.PredefinedAgents {
+		cursor := "  "
+		style := itemStyle
+		if i == m.agentCursor {
+			cursor = "▶ "
+			style = selectedItemStyle
+		}
+
+		name := agent.Name
+		if agent.IsActive(m.cfg) {
+			name += " (active)"
+		}
+
+		status, ready := m.readiness(agent)
+		statusSt := lipgloss.NewStyle().Foreground(ui.Faint)
+		switch {
+		case ready:
+			statusSt = successStyle
+		case status == agentAdapterMissing:
+			statusSt = warnStyle
+		}
+
+		// Pad before styling: the escape codes count toward %-16s otherwise
+		// and the column stops lining up. The description takes whatever the
+		// card has left, so a narrow terminal shortens it rather than
+		// wrapping one agent onto two rows and breaking the column.
+		head := fmt.Sprintf("%s%-18s %-14s %-15s ", cursor, name, agent.Command, "")
+		// The card's interior, less the row style's own border and padding.
+		room := m.dialogMaxWidth() - 2*dialogPadding - 3 - lipgloss.Width(head)
+		line := fmt.Sprintf("%s%-18s %-14s %s %s",
+			cursor, name, agent.Command, statusSt.Render(fmt.Sprintf("%-15s", status)),
+			ui.Truncate(agent.Description, max(room, 8)))
+		sb.WriteString(style.Render(line))
+		if i < len(config.PredefinedAgents)-1 {
+			sb.WriteString("\n")
+		}
+	}
+	// The card covers the list, so a refusal has nowhere else to appear —
+	// without this, enter on an unusable agent looks like a dead key.
+	if m.err != nil {
+		sb.WriteString("\n\n" + dangerStyle.Render(m.err.Error()))
+	}
+	return m.dialogCard("Select Agent", sb.String(),
+		dialogHintStyle.Render("↑/↓ navigate • Enter select • i install adapter • Esc cancel"),
+		dialogAccent)
 }
 
 // installAdapterCmd fetches an agent's ACP adapter, handing the terminal to the

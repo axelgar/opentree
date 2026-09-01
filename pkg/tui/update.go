@@ -89,8 +89,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tab == tabSkills {
 			return m.updateSkills(msg)
 		}
-		// The Plugins and Servers tabs own their keys the same way, and for the
-		// same reason: none of the workspace dialogs can be open behind them.
+		// The Agents, Plugins and Servers tabs own their keys the same way, and
+		// for the same reason: none of the workspace dialogs can be open behind
+		// them.
+		if m.tab == tabAgents {
+			return m.updateAgents(msg)
+		}
 		if m.tab == tabPlugins {
 			return m.updatePlugins(msg)
 		}
@@ -104,17 +108,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// switch is waiting on the install, no pending selection means i did
 		// and the adapter is being fetched for later.
 		if m.agentInstallConfirm != nil {
-			agent := *m.agentInstallConfirm
-			switch msg.String() {
-			case "y", "Y", "enter":
-				m.agentInstallConfirm = nil
-				m.agentSelecting = false
-				return m, m.installAdapterCmd(agent)
-			case "n", "esc", "q":
-				m.agentInstallConfirm = nil
-				m.agentPendingSelect = nil
-			}
-			return m, nil
+			return m.handleAdapterConfirm(msg)
 		}
 
 		// Agent selection mode
@@ -450,8 +444,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tab = tabServers
 				return m, nil
 			}
-			m.tab = tabSkills
-			return m, m.scanSkillsCmd
+			m.tab = tabAgents
+			m.reloadAgents()
+			return m, nil
 		case msg.String() == "esc" && m.filterQuery != "":
 			m.filterQuery = ""
 			m.cursor = 0
@@ -1000,8 +995,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case adapterInstalledMsg:
-		pending := m.agentPendingSelect
-		m.agentPendingSelect = nil
+		pending, path := m.agentPendingSelect, m.agentPendingPath
+		m.agentPendingSelect, m.agentPendingPath = nil, ""
 		if msg.err != nil {
 			return m, afterExec(m.transientErrCmd(fmt.Sprintf("failed to install %s: %v", msg.adapter, msg.err)))
 		}
@@ -1009,7 +1004,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Enter meant "use this agent"; the install was only what stood in the
 		// way, so finish the job.
 		if pending != nil {
-			if errMsg := m.selectAgent(*pending); errMsg != "" {
+			if path == "" {
+				path = config.FindConfigFile()
+			}
+			if errMsg := m.selectAgentIn(*pending, path); errMsg != "" {
 				return m, afterExec(m.transientErrCmd(errMsg))
 			}
 			m.notice += ", now using " + pending.Name
@@ -1065,6 +1063,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The frontmatter is what may have changed, so the row is re-read.
 		return m, m.scanSkillsCmd
+
+	case registryIndexMsg:
+		return m.handleRegistryIndex(msg)
+
+	case registryRanMsg:
+		return m.handleRegistryRan(msg)
+
+	case registryRemovedMsg:
+		return m.handleRegistryRemoved(msg)
 
 	case pluginsScannedMsg:
 		m.pluginsTab.list = msg.list

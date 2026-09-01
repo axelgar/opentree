@@ -69,6 +69,9 @@ func (m Model) View() string {
 	if m.tab == tabSkills {
 		return m.skillsView()
 	}
+	if m.tab == tabAgents {
+		return m.agentsView()
+	}
 	if m.tab == tabPlugins {
 		return m.pluginsView()
 	}
@@ -81,85 +84,12 @@ func (m Model) View() string {
 	// it ready for later", but 300MB off a package registry is asked about
 	// rather than sprung either way.
 	if m.agentInstallConfirm != nil {
-		agent := *m.agentInstallConfirm
-		size := ""
-		if agent.ACP.InstallSize != "" {
-			size = " (" + agent.ACP.InstallSize + ", needs node)"
-		}
-		// The command is spelled out in full because the verb alone is not
-		// something anyone can honestly agree to. The pinned version, the
-		// prefix that keeps this out of the user's global npm root and the
-		// refusal to run install hooks are the entire difference between this
-		// and handing npm the machine, and none of the three is visible from
-		// the word "install".
-		body := fmt.Sprintf("%s\n%s\n\n%s",
-			confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
-				agent.ACPCommand()+size+"."),
-			confirmLabelStyle.Render("It writes nothing outside the prefix named here, and runs:"),
-			strings.Join(agent.ACPInstallCommand(), " "),
-		)
-		// Enter armed this with the agent it means to switch to; i armed it
-		// with nothing, and promising a switch that will not happen is worse
-		// than a shorter label.
-		verb := "install"
-		if m.agentPendingSelect != nil {
-			verb = "install and use"
-		}
-		footer := fmt.Sprintf("%s %s  •  %s %s",
-			confirmKeyStyle.Render("y"), confirmLabelStyle.Render(verb),
-			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
-		)
-		return m.dialogCard("Install adapter for "+agent.Name+"?", body, footer, dialogAccent)
+		return m.adapterConfirmView()
 	}
 
 	// Agent selection overlay
 	if m.agentSelecting {
-		var sb strings.Builder
-		for i, agent := range config.PredefinedAgents {
-			cursor := "  "
-			style := itemStyle
-			if i == m.agentCursor {
-				cursor = "▶ "
-				style = selectedItemStyle
-			}
-
-			name := agent.Name
-			if agent.IsActive(m.cfg) {
-				name += " (active)"
-			}
-
-			status, ready := m.readiness(agent)
-			statusSt := lipgloss.NewStyle().Foreground(ui.Faint)
-			switch {
-			case ready:
-				statusSt = successStyle
-			case status == agentAdapterMissing:
-				statusSt = warnStyle
-			}
-
-			// Pad before styling: the escape codes count toward %-16s otherwise
-			// and the column stops lining up. The description takes whatever the
-			// card has left, so a narrow terminal shortens it rather than
-			// wrapping one agent onto two rows and breaking the column.
-			head := fmt.Sprintf("%s%-18s %-14s %-15s ", cursor, name, agent.Command, "")
-			// The card's interior, less the row style's own border and padding.
-			room := m.dialogMaxWidth() - 2*dialogPadding - 3 - lipgloss.Width(head)
-			line := fmt.Sprintf("%s%-18s %-14s %s %s",
-				cursor, name, agent.Command, statusSt.Render(fmt.Sprintf("%-15s", status)),
-				ui.Truncate(agent.Description, max(room, 8)))
-			sb.WriteString(style.Render(line))
-			if i < len(config.PredefinedAgents)-1 {
-				sb.WriteString("\n")
-			}
-		}
-		// The card covers the list, so a refusal has nowhere else to appear —
-		// without this, enter on an unusable agent looks like a dead key.
-		if m.err != nil {
-			sb.WriteString("\n\n" + dangerStyle.Render(m.err.Error()))
-		}
-		return m.dialogCard("Select Agent", sb.String(),
-			dialogHintStyle.Render("↑/↓ navigate • Enter select • i install adapter • Esc cancel"),
-			dialogAccent)
+		return m.agentPickerView()
 	}
 
 	// Agent permission dialog. The options are the ones the agent offered, so
