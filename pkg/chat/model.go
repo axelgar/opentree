@@ -547,6 +547,11 @@ type Model struct {
 	settings settings
 	sessions sessions
 	login    login
+	copying  copying
+
+	// flash is the status line's own notice, timed: what the last key did,
+	// gone before it is in the way.
+	flash flash
 
 	// titled is whether the current conversation already has a name in the
 	// ledger, which stops the first prompt of a resumed session from renaming
@@ -775,6 +780,7 @@ const (
 	overlayStopped
 	overlaySettings
 	overlaySessions
+	overlayCopy
 	overlayHelp
 )
 
@@ -815,6 +821,8 @@ func (m Model) overlay() overlay {
 		return overlaySettings
 	case m.sessions.open:
 		return overlaySessions
+	case m.copying.open:
+		return overlayCopy
 	case m.showHelp:
 		return overlayHelp
 	}
@@ -847,6 +855,7 @@ func init() {
 		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
 		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
 		overlaySessions:   {Model.handleSessionsKey, Model.sessionsHeight, Model.sessionsView},
+		overlayCopy:       {Model.handleCopyKey, Model.copyHeight, Model.copyView},
 		overlayHelp:       {Model.handleHelpKey, Model.helpHeight, Model.helpView},
 	}
 }

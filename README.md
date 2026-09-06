@@ -242,6 +242,7 @@ agent's own logo, in its own colours:
 | `ctrl+o` | show or hide the agent's reasoning |
 | `ctrl+x` | expand what the last tool call held back, and fold it again |
 | `ctrl+r` | retry a failed turn — the same message, pasted images included |
+| `ctrl+y` | copy — the last reply, any code block in it, the last tool's output, or the whole conversation as markdown |
 | `shift+drag` | select text with the terminal's own selection — `option+drag` in iTerm2. The chat holds the mouse so the wheel scrolls the conversation, and the modifier is how a terminal keeps a drag for itself |
 | `?` | every key |
 

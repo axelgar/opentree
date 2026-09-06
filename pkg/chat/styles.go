@@ -162,4 +162,9 @@ var (
 	// without competing with the conversation.
 	flagStyle = lipgloss.NewStyle().
 			Foreground(ui.Accent)
+
+	// A flash is a receipt — "copied the last reply" — in the colour a
+	// finished tool row wears, so it reads as done rather than as a flag.
+	flashStyle = lipgloss.NewStyle().
+			Foreground(ui.Success)
 )

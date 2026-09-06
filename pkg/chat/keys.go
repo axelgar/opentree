@@ -22,6 +22,7 @@ type keyMap struct {
 	Expand    key.Binding
 	Retry     key.Binding
 	Paste     key.Binding
+	Copy      key.Binding
 	Help      key.Binding
 
 	// HistoryPrev and HistoryNext walk the messages already sent. They are two
@@ -69,7 +70,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand, k.Retry},
-		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Select, k.Back},
+		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Select, k.Copy, k.Back},
 	}
 }
 
@@ -159,6 +160,12 @@ var keys = keyMap{
 	Paste: key.NewBinding(
 		key.WithKeys("ctrl+v"),
 		key.WithHelp("ctrl+v", "paste"),
+	),
+	// ctrl+y is free — emacs's yank, which the textarea does not bind — and
+	// it is the key the terminal's own selection cannot be: see Select.
+	Copy: key.NewBinding(
+		key.WithKeys("ctrl+y"),
+		key.WithHelp("ctrl+y", "copy"),
 	),
 	// The arrows, which the message box also wants: they only recall from the
 	// edges of what is written, so moving the cursor inside a message still

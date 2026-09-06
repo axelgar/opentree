@@ -435,6 +435,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.relayout(), m.startSession()
 
+	case copiedMsg:
+		return m.copied(msg)
+
+	case flashClearMsg:
+		return m.clearFlash(msg), nil
+
 	case errMsg:
 		m.err = msg.err
 		m.authNeed = msg.auth
@@ -511,6 +517,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Settings):
 		return m.openSettings()
+
+	case key.Matches(msg, m.keys.Copy):
+		return m.openCopy()
 
 	case key.Matches(msg, m.keys.CycleMode):
 		return m.cycleMode()

@@ -459,6 +459,9 @@ func (m Model) awaitingCommands() bool {
 func (m Model) statusLine() string {
 	flags := m.flagsSummary()
 	if len(flags) == 0 {
+		if m.flash.text != "" {
+			return m.flashLine(m.width - 2)
+		}
 		if m.err != nil {
 			return errorStyle.Render("✕ " + m.errorText() + m.retryHint())
 		}
@@ -475,9 +478,24 @@ func (m Model) statusLine() string {
 	if m.err != nil {
 		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText()+m.retryHint(), room))
 	}
+	// A flash outranks both: it is the answer to the key just pressed, and
+	// three seconds from now the error and the help are back.
+	if m.flash.text != "" {
+		left = m.flashLine(room)
+	}
 
 	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// flashLine is the flash as the status line draws it: a receipt in the
+// success colour, a refusal in the error's, trimmed to the room it has.
+func (m Model) flashLine(room int) string {
+	style := flashStyle
+	if m.flash.failed {
+		style = errorStyle
+	}
+	return style.Render(ui.Truncate(m.flash.text, max(room, 1)))
 }
 
 // shortHelp renders as many bindings as fit, dropping whole ones from the end.
