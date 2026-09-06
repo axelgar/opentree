@@ -114,9 +114,24 @@ func (s *Service) WindowStatuses() map[string]string {
 	return result
 }
 
-// WorktreePath returns the filesystem path for a workspace's worktree directory.
+// WorktreePath is where a workspace's worktree is.
+//
+// Where it was made comes first — the path recorded when the workspace was
+// created, as long as something is still there — and only then where the
+// configured base_dir would put it. The two differ for every workspace made
+// before base_dir changed, and the default itself moved out of the working
+// tree, so "where the config says" is wrong for every workspace that
+// predates the move. The manager asks git the same question when the record
+// is missing, for workspaces written before the path was recorded.
 func (s *Service) WorktreePath(name string) string {
-	return filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(name))
+	if s.state != nil {
+		if ws, err := s.state.GetWorkspace(name); err == nil && ws.WorktreeDir != "" {
+			if _, statErr := os.Lstat(ws.WorktreeDir); statErr == nil {
+				return ws.WorktreeDir
+			}
+		}
+	}
+	return s.worktrees.Path(name)
 }
 
 // launchAgentWindow starts the given agent in a new tmux window for name's
@@ -680,10 +695,9 @@ func (s *Service) ownsWindow(w Window) bool {
 	if w.Path == "" {
 		return true
 	}
-	// Worktrees do not have to live inside the repository — base_dir may point
-	// beside it — so both roots count.
-	return under(s.repoRoot, w.Path) ||
-		under(filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir), w.Path)
+	// Worktrees do not live inside the repository by default, and a base_dir
+	// may point anywhere — so both roots count.
+	return under(s.repoRoot, w.Path) || under(s.worktrees.Base(), w.Path)
 }
 
 // under reports whether path is root or something inside it, comparing the

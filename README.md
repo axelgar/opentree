@@ -73,7 +73,7 @@ opentree uninstall
 
 Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the agents installed from the ACP Registry under `~/.opentree/registry` along with its cached index, the plugins installed under `~/.opentree/plugins`, the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
 
-It never touches a repository. The worktrees under `<repo>/.opentree` are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
+It never touches a repository, and it never touches a worktree. The worktrees under `~/.opentree/worktrees` (or wherever `base_dir` points) are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
 
 ## Quick Start
 
@@ -225,7 +225,7 @@ agent's own logo, in its own colours:
 ```
  ▐▛███▜▌    Claude Code
 ▝▜█████▛▘   fix-auth
-  ▘▘ ▝▝     ~/src/myrepo/.opentree/fix-auth
+  ▘▘ ▝▝     ~/.opentree/worktrees/myrepo/fix-auth
 ```
 
 | Key | |
@@ -508,7 +508,7 @@ opentree new feat/x --agents claude,gemini --prompt "task"  # Fan out — see Fa
 
 Creates:
 
-1. Git worktree at `.opentree/<branch-name>/`
+1. Git worktree at `~/.opentree/worktrees/<repo>/<branch-name>/` (see [Where worktrees live](#where-worktrees-live))
 2. New branch (or checks out existing)
 3. tmux window in `opentree-<repo>` session
 4. Launches the configured coding agent in the workspace
@@ -621,7 +621,7 @@ Create `opentree.toml` in your repo root or `~/.config/opentree/opentree.toml`. 
 
 ```toml
 [worktree]
-base_dir = ".opentree"        # Where to store worktrees (relative to repo root)
+base_dir = ".opentree"        # Where worktrees go — unset: ~/.opentree/worktrees/<repo>; relative: inside the repo
 default_base = "main"         # Default base branch
 
 [agent]
@@ -643,6 +643,40 @@ auto_push = true              # Push branch before creating a PR (set false to p
 on      = ["blocked", "stopped"]
 desktop = true
 ```
+
+### Where worktrees live
+
+Outside the repository, by default: `~/.opentree/worktrees/<repo>/<branch>`,
+where `<repo>` is the name of the repository's directory. Worktrees used to go
+under `<repo>/.opentree`, and every tool that walks a project found the extra
+checkouts — test runners collected their tests twice, `tsc` compiled them,
+linters and formatters walked them, watchers rebuilt on every save an agent
+made, and a worktree without its own `node_modules` quietly resolved the
+parent's. Git was the only tool told to look away. Out of the working tree,
+none of them can see a worktree at all.
+
+Two clones with the same directory name get separate directories: the first
+claims `<repo>` with a small `.repo` marker naming it, and the second gets
+`<repo>-<hash>`.
+
+To keep worktrees inside the repository — where a plain `find` will meet them —
+set `base_dir` to a relative path, in the repository's own `opentree.toml` or
+globally:
+
+```toml
+[worktree]
+base_dir = ".opentree"   # inside the repository, as before
+```
+
+An absolute path, or one under `~`, is accepted from the global config only: a
+cloned repository does not get to point opentree at the rest of your
+filesystem. Workspaces made before a change of `base_dir` stay where they were
+made — opentree finds them through git — and `opentree doctor` says where the
+worktrees of the current setting go, and whether that is inside the working
+tree.
+
+`state.json` stays at `<repo>/.opentree/state.json`, which git is told to
+ignore: two small files, and no test runner cares about JSON.
 
 ### Seeding a Worktree
 
@@ -853,7 +887,7 @@ index. Offline, the last index this machine saw answers, with its age noted.
 
 ## How It Works
 
-1. **Worktrees**: Git worktrees allow multiple checkouts of the same repo in different directories. Each workspace lives in `.opentree/<branch-name>/`.
+1. **Worktrees**: Git worktrees allow multiple checkouts of the same repo in different directories. Each workspace lives in `~/.opentree/worktrees/<repo>/<branch-name>/` — outside the working tree, so the project's own tools never see it — unless `base_dir` says otherwise.
 
 2. **tmux Orchestration**: A single tmux session (`opentree-<repo>`) manages all workspaces. Each workspace = one tmux window. Attach to work, detach to switch.
 

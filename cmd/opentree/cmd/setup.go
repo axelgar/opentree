@@ -16,6 +16,7 @@ import (
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
 
 var setupCheck bool
@@ -212,11 +213,11 @@ func checkLine(state, text string) {
 }
 
 // workspaceWorktree is where a workspace's worktree is: what state recorded,
-// falling back to where the config says it would have been put. A workspace
-// created before opentree recorded the path still has one.
+// falling back to where git has it, then to where the config would put one.
+// A workspace created before opentree recorded the path still has one.
 func workspaceWorktree(repoRoot string, cfg *config.Config, ws *state.Workspace) string {
 	if ws.WorktreeDir != "" {
 		return ws.WorktreeDir
 	}
-	return filepath.Join(repoRoot, cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(ws.Name))
+	return worktree.New(repoRoot, cfg.Worktree.BaseDir).Path(ws.Name)
 }

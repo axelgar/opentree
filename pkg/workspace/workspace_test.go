@@ -115,7 +115,7 @@ func TestWorktreePath(t *testing.T) {
 	cfg := config.Default()
 	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
-	svc := &Service{repoRoot: "/repo", cfg: cfg}
+	svc := &Service{repoRoot: "/repo", cfg: cfg, worktrees: worktree.New("/repo", cfg.Worktree.BaseDir)}
 
 	tests := []struct {
 		name string
@@ -138,12 +138,68 @@ func TestWorktreePath_CustomBaseDir(t *testing.T) {
 	cfg := config.Default()
 	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = "worktrees"
-	svc := &Service{repoRoot: "/home/user/project", cfg: cfg}
+	svc := &Service{repoRoot: "/home/user/project", cfg: cfg, worktrees: worktree.New("/home/user/project", cfg.Worktree.BaseDir)}
 
 	got := svc.WorktreePath("my-branch")
 	want := "/home/user/project/worktrees/my-branch"
 	if got != want {
 		t.Errorf("WorktreePath with custom BaseDir = %q, want %q", got, want)
+	}
+}
+
+// TestWorktreePath_DefaultLeavesTheRepository: with nothing configured the
+// worktrees go under the user's own opentree directory, named for the
+// repository — not into the working tree, where every tool that walks the
+// project would find them.
+func TestWorktreePath_DefaultLeavesTheRepository(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := config.Default()
+	useAgent(t, cfg)
+	svc := &Service{repoRoot: "/src/myapp", cfg: cfg, worktrees: worktree.New("/src/myapp", cfg.Worktree.BaseDir)}
+
+	got := svc.WorktreePath("feat/x")
+	want := filepath.Join(home, ".opentree", "worktrees", "myapp", "feat-x")
+	if got != want {
+		t.Errorf("WorktreePath() = %q, want %q", got, want)
+	}
+}
+
+// TestWorktreePath_PrefersWhereTheWorkspaceWasMade: a workspace made under one
+// base_dir and looked up under another is still where it was made. Every
+// workspace that predates the default leaving the working tree is this case.
+func TestWorktreePath_PrefersWhereTheWorkspaceWasMade(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repoRoot := initGitRepo(t)
+	pm := &mockProcessManager{}
+
+	old := config.Default()
+	useAgent(t, old)
+	old.Worktree.BaseDir = ".opentree"
+	before, err := newWithMock(repoRoot, old, pm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := before.Create("feat/legacy", "main")
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	now := config.Default()
+	useAgent(t, now)
+	after, err := newWithMock(repoRoot, now, pm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.WorktreePath("feat/legacy"); got != ws.WorktreeDir {
+		t.Errorf("WorktreePath() = %q, want where it was made, %q", got, ws.WorktreeDir)
+	}
+	// And a new one goes where the config now says, beside nothing.
+	if got := after.WorktreePath("feat/new"); strings.HasPrefix(got, repoRoot) {
+		t.Errorf("a new workspace's path %q is inside the repository", got)
 	}
 }
 
@@ -153,8 +209,21 @@ func isGitAvailable() bool {
 }
 
 // initGitRepo creates a temporary git repository and returns its path.
+// tempHome keeps what opentree writes under ~ — the worktrees, above all —
+// out of the real home directory. A test that has already moved HOME
+// somewhere temporary keeps its choice: the trust file it wrote there has to
+// stay findable.
+func tempHome(t *testing.T) {
+	t.Helper()
+	if home := os.Getenv("HOME"); home != "" && strings.HasPrefix(home, os.TempDir()) {
+		return
+	}
+	t.Setenv("HOME", t.TempDir())
+}
+
 func initGitRepo(t *testing.T) string {
 	t.Helper()
+	tempHome(t)
 	dir := t.TempDir()
 
 	run := func(args ...string) {
@@ -413,6 +482,7 @@ func newWithMock(repoRoot string, cfg *config.Config, pm ProcessManager) (*Servi
 // pushes branchName to origin. Returns the local clone directory.
 func initRepoWithRemote(t *testing.T, branchName string) string {
 	t.Helper()
+	tempHome(t)
 	remoteDir := t.TempDir()
 	localDir := t.TempDir()
 
@@ -804,7 +874,7 @@ func TestSanitizeBranchNameInPath(t *testing.T) {
 	cfg := config.Default()
 	useAgent(t, cfg) // Create validates the agent is one opentree can drive
 	cfg.Worktree.BaseDir = ".opentree"
-	svc := &Service{repoRoot: "/repo", cfg: cfg}
+	svc := &Service{repoRoot: "/repo", cfg: cfg, worktrees: worktree.New("/repo", cfg.Worktree.BaseDir)}
 
 	// Verify that SanitizeBranchName is applied correctly
 	path := svc.WorktreePath("feature/auth:v2")

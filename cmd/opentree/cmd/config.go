@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/axelgar/opentree/pkg/config"
+	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
 
 // configKey is one setting as the CLI sees it: how to describe it, how to read
@@ -61,9 +63,20 @@ var configKeys = []configKey{
 		source: func(s config.ConfigSource) string { return s.AgentCommand },
 	},
 	{
-		name:   "worktree.base_dir",
-		desc:   "Directory to store worktrees",
-		get:    func(c *config.Config) string { return c.Worktree.BaseDir },
+		name: "worktree.base_dir",
+		desc: "Where worktrees go: ~/.opentree/worktrees/<repo> unless set; relative paths are inside the repository",
+		// Unset is opentree's own choice, and the reader asked where the
+		// worktrees go, not what the file says — so the resolved directory
+		// is printed when there is a repository to resolve it against.
+		get: func(c *config.Config) string {
+			if c.Worktree.BaseDir != "" {
+				return c.Worktree.BaseDir
+			}
+			if root, err := gitutil.RepoRoot(); err == nil {
+				return worktree.BaseDir(root, "")
+			}
+			return "~/.opentree/worktrees/<repo>"
+		},
 		source: func(s config.ConfigSource) string { return s.WorktreeBaseDir },
 	},
 	{

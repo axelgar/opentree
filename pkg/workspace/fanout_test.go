@@ -173,7 +173,7 @@ func TestCreateFanout_KeepsEarlierSiblingsOnFailure(t *testing.T) {
 
 	// Occupy the third sibling's worktree directory directly on disk, the
 	// kind of mid-loop failure validation cannot see coming.
-	if err := os.MkdirAll(filepath.Join(svc.repoRoot, ".opentree", "feat-x-gemini"), 0o755); err != nil {
+	if err := os.MkdirAll(svc.WorktreePath("feat/x-gemini"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

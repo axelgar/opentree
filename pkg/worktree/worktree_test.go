@@ -16,7 +16,16 @@ func isGitAvailable() bool {
 // initGitRepo creates a temporary git repository and returns its path.
 func initGitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	return initGitRepoAt(t, t.TempDir())
+}
+
+// initGitRepoAt is initGitRepo in a directory of the caller's choosing, for
+// a test that needs two repositories with one name.
+func initGitRepoAt(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	run := func(args ...string) {
 		t.Helper()
@@ -43,7 +52,7 @@ func initGitRepo(t *testing.T) string {
 // ---- parseWorktrees (pure, no git required) ----
 
 func TestParseWorktrees_Empty(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	wts, err := m.parseWorktrees("")
 	if err != nil {
 		t.Fatalf("parseWorktrees(\"\") error: %v", err)
@@ -55,7 +64,7 @@ func TestParseWorktrees_Empty(t *testing.T) {
 
 func TestParseWorktrees_MainWorktreeExcluded(t *testing.T) {
 	// The main worktree is not under .opentree, so it should be filtered out.
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo
 HEAD abc123
 branch refs/heads/main
@@ -71,7 +80,7 @@ branch refs/heads/main
 }
 
 func TestParseWorktrees_OpentreeWorktreeIncluded(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo/.opentree/feature-auth
 HEAD def456
 branch refs/heads/feature/auth
@@ -93,7 +102,7 @@ branch refs/heads/feature/auth
 }
 
 func TestParseWorktrees_MultipleWorktrees(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo
 HEAD abc123
 branch refs/heads/main
@@ -129,7 +138,7 @@ branch refs/heads/fix/b
 
 func TestParseWorktrees_DetachedHEAD(t *testing.T) {
 	// Detached HEAD worktrees have no branch line.
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo/.opentree/detached
 HEAD abc123
 detached
@@ -148,7 +157,7 @@ detached
 }
 
 func TestParseWorktrees_TrailingNewline(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := "worktree /repo/.opentree/ws1\nHEAD aaa\nbranch refs/heads/ws1\n\n"
 	wts, err := m.parseWorktrees(output)
 	if err != nil {
@@ -1048,15 +1057,15 @@ func TestCreate_AlreadyIgnoredBaseDirectoryIsLeftAlone(t *testing.T) {
 	}
 }
 
-// The documented ../worktrees layout puts the worktrees outside the repository
-// altogether. Git will never look there, so a rule for it would be a line in
-// the user's exclude file that means nothing.
+// A ../worktrees layout puts the worktrees outside the repository altogether.
+// Git will never look there, so a rule for it would be a line in the user's
+// exclude file that means nothing. The state directory's rule still goes in:
+// that one is inside the working tree whatever base_dir says.
 func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
 	}
 	repoDir := initGitRepo(t)
-	before := readExclude(t, repoDir)
 
 	m := New(repoDir, filepath.Join("..", "worktrees"))
 	if err := m.Create("feat/x", "main"); err != nil {
@@ -1067,11 +1076,11 @@ func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
 	}
 
 	after := readExclude(t, repoDir)
-	if after != before {
-		t.Errorf(".git/info/exclude was touched for an out-of-repository base directory:\nbefore:\n%s\nafter:\n%s", before, after)
-	}
 	if strings.Contains(after, "worktrees") {
 		t.Errorf("exclude file names an out-of-repository base directory:\n%s", after)
+	}
+	if n := strings.Count(after, "/.opentree/"); n != 1 {
+		t.Errorf("the state directory's rule appears %d times, want 1:\n%s", n, after)
 	}
 }
 
@@ -1109,7 +1118,9 @@ func TestExcludeBaseDir_OutsideARepositoryWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	m := New(dir, ".opentree")
 
-	m.excludeBaseDir()
+	if entry, ok := m.excludeEntry(); ok {
+		m.exclude(entry, "worktrees")
+	}
 
 	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Errorf("a .git directory was created outside a repository (err = %v)", err)
@@ -1177,5 +1188,152 @@ func TestDelete_TheFallbackOnlyMatchesTheBranchAsked(t *testing.T) {
 	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "feat/kept").Output()
 	if !strings.Contains(string(out), "feat/kept") {
 		t.Error("deleting one workspace removed another's branch")
+	}
+}
+
+// ---- where worktrees go ----
+
+func TestBaseDir_ResolvesEachSpelling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := []struct{ configured, want string }{
+		{"", filepath.Join(home, ".opentree", "worktrees", "myapp")},
+		{".opentree", "/src/myapp/.opentree"},
+		{"build/worktrees", "/src/myapp/build/worktrees"},
+		{"~/wt", filepath.Join(home, "wt")},
+		{"/elsewhere/wt", "/elsewhere/wt"},
+	}
+	for _, c := range cases {
+		if got := BaseDir("/src/myapp", c.configured); got != c.want {
+			t.Errorf("BaseDir(%q) = %q, want %q", c.configured, got, c.want)
+		}
+	}
+}
+
+// The default layout: nothing configured, and the worktree lands under the
+// user's own opentree directory rather than inside the working tree, where
+// every tool that walks the project would meet it.
+func TestCreate_DefaultBaseLeavesTheWorkingTree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoDir := initGitRepo(t)
+	m := New(repoDir, "")
+
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	want := filepath.Join(home, ".opentree", "worktrees", filepath.Base(repoDir), "feat-x")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("no worktree at %s: %v", want, err)
+	}
+	if got := m.Path("feat/x"); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+	if owner, ok := readMarker(m.Base()); !ok || owner != m.repoRoot {
+		t.Errorf("marker = %q, %v; want the repository %q", owner, ok, m.repoRoot)
+	}
+
+	// The working tree has nothing new in it — not a worktree, not a marker.
+	status, err := exec.Command("git", "-C", repoDir, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v\n%s", err, status)
+	}
+	if strings.TrimSpace(string(status)) != "" {
+		t.Errorf("the working tree changed:\n%s", status)
+	}
+}
+
+// Two clones with one directory name must not share a base directory: the
+// second would see the first's worktrees as its own, and delete them.
+func TestCreate_ASecondRepositoryWithTheSameNameGetsItsOwnBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repoA := initGitRepoAt(t, filepath.Join(t.TempDir(), "app"))
+	repoB := initGitRepoAt(t, filepath.Join(t.TempDir(), "app"))
+
+	a := New(repoA, "")
+	if err := a.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create() in the first repository: %v", err)
+	}
+
+	b := New(repoB, "")
+	if b.Base() == a.Base() {
+		t.Fatalf("both repositories resolved to %s", a.Base())
+	}
+	if !strings.HasPrefix(filepath.Base(b.Base()), "app-") {
+		t.Errorf("the second repository's base is %q, want app-<hash>", b.Base())
+	}
+	if err := b.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create() in the second repository: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b.Base(), "feat-x")); err != nil {
+		t.Errorf("the second repository's worktree is not under its own base: %v", err)
+	}
+	// And the first is untouched by all of it.
+	if got := a.Path("feat/x"); !strings.HasPrefix(got, a.Base()) {
+		t.Errorf("the first repository's worktree moved to %q", got)
+	}
+}
+
+// A workspace made under one base_dir and looked up under another is still
+// where it was made — which, since the default left the working tree, is
+// every workspace made before it did.
+func TestPath_FindsAWorktreeMadeUnderAnotherBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repoDir := initGitRepo(t)
+	legacy := New(repoDir, ".opentree")
+	if err := legacy.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	made := legacy.Path("feat/x")
+
+	now := New(repoDir, "")
+	if got := now.Path("feat/x"); got != made {
+		t.Errorf("Path() = %q, want where it was made, %q", got, made)
+	}
+	if _, err := now.Diff("feat/x", "main"); err != nil {
+		t.Errorf("Diff() through the old location: %v", err)
+	}
+	wts, err := now.List()
+	if err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	if len(wts) != 1 || wts[0].Branch != "feat/x" {
+		t.Errorf("List() = %+v, want the worktree under the old layout", wts)
+	}
+	// Somewhere nothing was ever made is where a new one would go.
+	if got := now.Path("feat/new"); !strings.HasPrefix(got, now.Base()) {
+		t.Errorf("Path() for a new branch = %q, want it under %s", got, now.Base())
+	}
+}
+
+// state.json still lives inside the working tree whatever base_dir says, and
+// git has to be told to ignore it even when no worktree is going there.
+func TestCreate_ExcludesTheStateDirectoryWhateverTheBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoDir := initGitRepo(t)
+	m := New(repoDir, "")
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	got := readExclude(t, repoDir)
+	if !strings.Contains(got, "/.opentree/") {
+		t.Errorf(".git/info/exclude does not exclude the state directory:\n%s", got)
+	}
+	if strings.Contains(got, home) {
+		t.Errorf(".git/info/exclude names a directory outside the repository:\n%s", got)
 	}
 }
