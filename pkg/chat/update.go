@@ -527,6 +527,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Copy):
 		return m.openCopy()
 
+	case key.Matches(msg, m.keys.Find):
+		return m.openFind()
+
 	case key.Matches(msg, m.keys.CycleMode):
 		return m.cycleMode()
 
@@ -1368,7 +1371,14 @@ func (m Model) relayout() Model {
 	// and then the agent said something".
 	before := m.viewport.TotalLineCount()
 	m.logLines, m.lineOwner = m.renderLogLines()
-	m.viewport.SetContent(strings.Join(m.paintSelection(m.logLines), "\n"))
+	// A log that grew under an open find box is searched again, so the
+	// matches keep pointing at the rows they were found in.
+	if m.finding.open && m.finding.query != "" && m.finding.lines != len(m.logLines) {
+		m.finding.matches = findMatches(m.logLines, m.finding.query)
+		m.finding.lines = len(m.logLines)
+		m.finding.current = min(m.finding.current, len(m.finding.matches)-1)
+	}
+	m.viewport.SetContent(strings.Join(m.paintSelection(m.paintMatches(m.logLines)), "\n"))
 	switch {
 	case atBottom:
 		m.viewport.GotoBottom()

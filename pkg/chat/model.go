@@ -553,6 +553,7 @@ type Model struct {
 	sessions sessions
 	login    login
 	copying  copying
+	finding  finding
 
 	// flash is the status line's own notice, timed: what the last key did,
 	// gone before it is in the way.
@@ -710,6 +711,8 @@ func newComposer() textarea.Model {
 	ta.CharLimit = 0
 	// Enter sends, so the textarea's own newline binding moves out of the way.
 	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
+	// ctrl+f finds in the conversation; → still moves the cursor.
+	ta.KeyMap.CharacterForward.SetKeys("right")
 	ta.Focus()
 	return ta
 }
@@ -794,6 +797,7 @@ const (
 	overlaySettings
 	overlaySessions
 	overlayCopy
+	overlayFind
 	overlayHelp
 )
 
@@ -836,6 +840,8 @@ func (m Model) overlay() overlay {
 		return overlaySessions
 	case m.copying.open:
 		return overlayCopy
+	case m.finding.open:
+		return overlayFind
 	case m.showHelp:
 		return overlayHelp
 	}
@@ -869,6 +875,7 @@ func init() {
 		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
 		overlaySessions:   {Model.handleSessionsKey, Model.sessionsHeight, Model.sessionsView},
 		overlayCopy:       {Model.handleCopyKey, Model.copyHeight, Model.copyView},
+		overlayFind:       {Model.handleFindKey, Model.findHeight, Model.findView},
 		overlayHelp:       {Model.handleHelpKey, Model.helpHeight, Model.helpView},
 	}
 }

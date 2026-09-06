@@ -250,6 +250,7 @@ agent's own logo, in its own colours:
 | `ctrl+x` | expand what the last tool call held back, and fold it again |
 | `ctrl+r` | retry a failed turn — the same message, pasted images included |
 | `ctrl+y` | copy — the last reply, any code block in it, the last tool's output, or the whole conversation as markdown |
+| `ctrl+f` | find in the conversation — `ctrl+n` / `ctrl+p` step through the matches, `esc` leaves the log where it stands |
 | `drag` | select text — it goes to the clipboard when the button comes up; double-click takes a word, triple-click a row. `shift+drag` (`option+drag` in iTerm2) is the terminal's own selection, which still works |
 | `click` | a permission option answers it; a `… 42 more lines` row opens the way `ctrl+x` does |
 | `?` | every key |

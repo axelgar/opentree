@@ -23,6 +23,7 @@ type keyMap struct {
 	Retry     key.Binding
 	Paste     key.Binding
 	Copy      key.Binding
+	Find      key.Binding
 	Help      key.Binding
 
 	// HistoryPrev and HistoryNext walk the messages already sent. They are two
@@ -69,7 +70,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand, k.Retry},
-		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Select, k.Copy, k.Back},
+		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Find, k.Select, k.Copy, k.Back},
 	}
 }
 
@@ -165,6 +166,13 @@ var keys = keyMap{
 	Copy: key.NewBinding(
 		key.WithKeys("ctrl+y"),
 		key.WithHelp("ctrl+y", "copy"),
+	),
+	// Taken from the textarea, where it moved the cursor one character right
+	// — which → does, and nobody types a chat message with emacs motion keys.
+	// Finding is what ctrl+f means everywhere else a conversation is read.
+	Find: key.NewBinding(
+		key.WithKeys("ctrl+f"),
+		key.WithHelp("ctrl+f", "find"),
 	),
 	// The arrows, which the message box also wants: they only recall from the
 	// edges of what is written, so moving the cursor inside a message still

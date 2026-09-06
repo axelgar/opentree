@@ -172,4 +172,10 @@ var (
 	// terminal, light or dark, whatever colour the text underneath was.
 	selectStyle = lipgloss.NewStyle().
 			Reverse(true)
+
+	// A find match that is not the current one: marked, but not the thing
+	// the eye is being sent to.
+	findMatchStyle = lipgloss.NewStyle().
+			Foreground(ui.Warn).
+			Underline(true)
 )
