@@ -43,13 +43,15 @@ into ~/.opentree/plugins, the record of which setup and run commands this
 machine has approved, the shell completion script, and the global config file.
 Everything present is listed with its size before anything is removed.
 
-Three things are deliberately left alone. Repositories: the worktrees under
-<repo>/.opentree hold work in progress, and only 'opentree delete <branch>'
-takes one of those away. The agents themselves, and any skills opentree
-installed into their directories: those live in your agents' own configuration
-and outlive opentree. And the opentree binary, which belongs to whichever of
-brew, npm or go install put it there — the command to remove it is printed at
-the end.
+Four things are deliberately left alone. Your work: the worktrees under
+~/.opentree/worktrees (or wherever base_dir points) hold work in progress, and
+only 'opentree delete <branch>' takes one of those away; the conversations
+/export wrote under ~/.opentree/exports, and the messages ↑ recalls under
+~/.opentree/history, are yours in the same way. The agents themselves, and any
+skills opentree installed into their directories: those live in your agents'
+own configuration and outlive opentree. And the opentree binary, which belongs
+to whichever of brew, npm or go install put it there — the command to remove it
+is printed at the end.
 
   opentree uninstall --dry-run   list what would go, and stop
   opentree uninstall --yes       do not ask (for scripts)`,

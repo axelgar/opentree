@@ -1,12 +1,16 @@
 package worktree
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
@@ -14,7 +18,20 @@ import (
 // Manager handles git worktree operations
 type Manager struct {
 	repoRoot string
-	baseDir  string
+
+	// base is where this repository's worktrees go, absolute. Resolved once
+	// from the configured base_dir by BaseDir, so nothing below has to know
+	// which of its spellings was used.
+	base string
+
+	// defaulted is whether base is opentree's own choice rather than the
+	// user's, which is the one case the directory is claimed with a marker:
+	// two clones with one name would otherwise share it.
+	defaulted bool
+
+	// fetched is the branches already fetched from origin by this process,
+	// so a fan-out asks once for the base its siblings share.
+	fetched map[string]bool
 }
 
 // New creates a new worktree manager with explicit repo root and base directory.
@@ -27,9 +44,126 @@ func New(repoRoot, baseDir string) *Manager {
 		repoRoot = resolved
 	}
 	return &Manager{
-		repoRoot: repoRoot,
-		baseDir:  baseDir,
+		repoRoot:  repoRoot,
+		base:      BaseDir(repoRoot, baseDir),
+		defaulted: baseDir == "",
 	}
+}
+
+// The layout. Worktrees used to default to <repo>/.opentree, and every tool
+// that walks a project found the extra checkouts: test runners collected
+// their tests, linters linted them, watchers rebuilt on every save an agent
+// made, and node resolved a missing node_modules upward into the parent's.
+// Git was the only tool told to look away. So the default moved out of the
+// working tree, to a directory of opentree's own — beside the adapters, the
+// registry and the plugins it already keeps per machine.
+//
+// stateDir stays where it was: two small files git is told to ignore, which
+// no test runner cares about, read by the dashboard and every chat.
+const (
+	stateDir     = ".opentree"
+	worktreesDir = "worktrees"
+
+	// markerName is the file that says which repository a default base
+	// directory belongs to. The directory is named after the repository's
+	// own directory, and two clones can share a name; the marker is how the
+	// second one finds out and takes a name of its own.
+	markerName = ".repo"
+)
+
+// BaseDir resolves the configured base_dir into the directory the worktrees
+// go in: opentree's own choice when nothing was configured, the user's home
+// for a ~ prefix, an absolute path as it is, and anything else relative to
+// the repository.
+func BaseDir(repoRoot, configured string) string {
+	switch {
+	case configured == "":
+		return defaultBaseDir(repoRoot)
+	case configured == "~" || strings.HasPrefix(configured, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return filepath.Join(repoRoot, stateDir)
+		}
+		return filepath.Join(home, configured[1:])
+	case filepath.IsAbs(configured):
+		return filepath.Clean(configured)
+	}
+	return filepath.Join(repoRoot, configured)
+}
+
+// defaultBaseDir is ~/.opentree/worktrees/<repo>, where <repo> is the
+// repository directory's name — or that name with a hash of the root behind
+// it when a different repository has already claimed the plain one. With no
+// home directory to be had, the worktrees go where they always went.
+//
+// A read, not a claim: this runs on every command, doctor included, and a
+// command that lists workspaces must not create a directory to do it. The
+// claim happens when a worktree is made, in ensureBaseDir.
+func defaultBaseDir(repoRoot string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(repoRoot, stateDir)
+	}
+	root := filepath.Join(home, stateDir, worktreesDir)
+	name := filepath.Base(repoRoot)
+	dir := filepath.Join(root, name)
+	if owner, ok := readMarker(dir); ok && owner != repoRoot {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(repoRoot))
+		dir = filepath.Join(root, fmt.Sprintf("%s-%08x", name, h.Sum32()))
+	}
+	return dir
+}
+
+// readMarker is which repository a base directory belongs to, if it says.
+func readMarker(dir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, markerName))
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(data)), true
+}
+
+// claimBase writes the marker into a default base directory, or refuses a
+// directory another repository has claimed since the path was resolved — the
+// window between the two is one command wide, but a worktree made in another
+// repository's directory would be that repository's to delete.
+func (m *Manager) claimBase() error {
+	if !m.defaulted {
+		return nil
+	}
+	if owner, ok := readMarker(m.base); ok {
+		if owner != m.repoRoot {
+			return fmt.Errorf("%s belongs to %s — run the command again, and opentree will pick a directory of its own", m.base, owner)
+		}
+		return nil
+	}
+	return os.WriteFile(filepath.Join(m.base, markerName), []byte(m.repoRoot+"\n"), 0600)
+}
+
+// Base is where this repository's worktrees go.
+func (m *Manager) Base() string { return m.base }
+
+// Path is where a branch's worktree is: where it was made, when git still
+// has it there, and otherwise where a new one would go.
+//
+// The two differ for every workspace made under one base_dir and looked up
+// under another — which, since the default moved out of the working tree, is
+// every workspace made before the move. Asking git costs a subprocess, so
+// the computed path is tried first and git only consulted when nothing is at
+// it; a workspace in the current layout never pays.
+func (m *Manager) Path(branchName string) string {
+	path, err := m.worktreePath(branchName)
+	if err != nil {
+		return filepath.Join(m.base, gitutil.SanitizeBranchName(branchName))
+	}
+	if _, statErr := os.Lstat(path); statErr == nil {
+		return path
+	}
+	if found, ok := m.worktreeForBranch(branchName); ok {
+		return found
+	}
+	return path
 }
 
 // reservedDirName reports whether a sanitized workspace directory name would
@@ -37,7 +171,7 @@ func New(repoRoot, baseDir string) *Manager {
 // A worktree at .opentree/state.json bricks every subsequent command.
 func reservedDirName(dirName string) bool {
 	switch dirName {
-	case "state.json", "state.lock", "state.json.tmp":
+	case "state.json", "state.lock", "state.json.tmp", markerName:
 		return true
 	}
 	return false
@@ -59,7 +193,7 @@ func reservedDirName(dirName string) bool {
 // worktree lives or the guard is protecting a different path than the one that
 // gets removed.
 func (m *Manager) worktreePath(branchName string) (string, error) {
-	base := filepath.Join(m.repoRoot, m.baseDir)
+	base := m.base
 	dirName := gitutil.SanitizeBranchName(branchName)
 	if reservedDirName(dirName) {
 		return "", fmt.Errorf("workspace name %q is reserved for opentree's state files", branchName)
@@ -74,28 +208,40 @@ func (m *Manager) worktreePath(branchName string) (string, error) {
 	return path, nil
 }
 
-// ensureBaseDir creates the directory the worktrees live in, and on the way
-// makes sure git ignores it.
+// ensureBaseDir creates the directory the worktrees live in, claims it when
+// it is opentree's own, and on the way makes sure git ignores what opentree
+// leaves inside the working tree.
 func (m *Manager) ensureBaseDir() error {
-	opentreeDir := filepath.Join(m.repoRoot, m.baseDir)
-	if err := os.MkdirAll(opentreeDir, 0755); err != nil {
-		return fmt.Errorf("failed to create %s directory: %w", m.baseDir, err)
+	if err := os.MkdirAll(m.base, 0755); err != nil {
+		return fmt.Errorf("failed to create %s directory: %w", m.base, err)
 	}
-	m.excludeBaseDir()
+	if err := m.claimBase(); err != nil {
+		return err
+	}
+	// The state directory always: state.json lives there whatever base_dir
+	// says, and a worktree is about to be recorded in it. The base directory
+	// only when it is inside the working tree, which is the same rule when
+	// the two coincide.
+	m.exclude("/"+stateDir+"/", "state")
+	if entry, ok := m.excludeEntry(); ok {
+		m.exclude(entry, "worktrees")
+	}
 	return nil
 }
 
-// excludeBaseDir asks git to ignore the directory the worktrees live in.
+// exclude asks git to ignore one directory of opentree's inside the working
+// tree, labelled with what it holds so the rule reads in the user's file.
 //
-// The base directory defaults to .opentree inside the repository, so a single
-// `opentree new feat/x` leaves a complete second checkout sitting in the user's
-// working tree. Git notices: `git add -A` warns "adding embedded git
+// The base directory used to default to .opentree inside the repository, so a
+// single `opentree new feat/x` left a complete second checkout sitting in the
+// user's working tree. Git notices: `git add -A` warns "adding embedded git
 // repository" and stages a gitlink — mode 160000, pointing at a commit that
 // exists nowhere but this machine — and whoever checks that branch out gets an
 // empty directory with no way to fill it. Nothing in opentree used to write an
 // ignore rule anywhere, so every repository except the author's own, which has
 // carried the entry by hand for as long as it has existed, met that on its
-// first workspace.
+// first workspace. The default has since left the working tree; the state
+// directory has not, and a base_dir inside the repository is still allowed.
 //
 // The rule goes in .git/info/exclude rather than .gitignore. .gitignore is
 // tracked and belongs to the project: writing to it turns "make me a worktree"
@@ -111,12 +257,7 @@ func (m *Manager) ensureBaseDir() error {
 // not a file, a git too old to answer, no repository at all: none of that is a
 // reason to refuse a worktree the user asked for, and opentree has no log to
 // report it to.
-func (m *Manager) excludeBaseDir() {
-	entry, ok := m.excludeEntry()
-	if !ok {
-		return
-	}
-
+func (m *Manager) exclude(entry, what string) {
 	// Ask git rather than read the file. The rule may already be in force from
 	// an earlier run, from the project's own .gitignore, or from a global
 	// core.excludesFile, and a second copy of a rule that already works is
@@ -163,21 +304,21 @@ func (m *Manager) excludeBaseDir() {
 		}
 		addition.WriteString("\n")
 	}
-	addition.WriteString("# opentree's worktrees\n")
+	addition.WriteString("# opentree's " + what + "\n")
 	addition.WriteString(entry + "\n")
 	_, _ = f.WriteString(addition.String())
 }
 
 // excludeEntry is the gitignore pattern for the base directory, and whether git
-// has any use for one. The documented ../worktrees layout puts the worktrees
-// outside the repository, where nothing git does will ever look at them.
+// has any use for one. The default layout puts the worktrees outside the
+// repository, where nothing git does will ever look at them.
 func (m *Manager) excludeEntry() (string, bool) {
-	rel, err := filepath.Rel(m.repoRoot, filepath.Join(m.repoRoot, m.baseDir))
+	rel, err := filepath.Rel(m.repoRoot, m.base)
 	if err != nil {
 		return "", false
 	}
 	rel = filepath.ToSlash(rel)
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
 		return "", false
 	}
 	// Anchored, and marked as a directory: "/.opentree/" ignores the one
@@ -218,30 +359,134 @@ func (m *Manager) gitCommonDir() string {
 	return dir
 }
 
-// Create creates a new git worktree for the given branch
+// Create creates a new git worktree for the given branch, fetching the base
+// from origin first.
 func (m *Manager) Create(branchName, baseBranch string) error {
+	_, err := m.CreateFrom(branchName, baseBranch, true)
+	return err
+}
+
+// Start is where a new branch began: the ref it was made from, and — when
+// origin was asked and could not answer — why it is the local one.
+type Start struct {
+	Ref     string
+	Offline string
+}
+
+// Note is the line a caller says about it, or nothing when the branch began
+// where the caller asked and nothing was consulted on the way.
+func (s Start) Note() string {
+	switch {
+	case s.Offline != "":
+		return fmt.Sprintf("could not fetch origin (%s) — branched from the local %s, which may be behind", s.Offline, s.Ref)
+	case strings.HasPrefix(s.Ref, "origin/"):
+		return "fetched " + s.Ref + " first"
+	}
+	return ""
+}
+
+// fetchTimeout bounds the fetch that precedes a branch. A remote that does
+// not answer in this long is one to branch without, and say so, rather than
+// one to wait on: the workspace is what was asked for.
+const fetchTimeout = 15 * time.Second
+
+// CreateFrom creates a new git worktree for the given branch, from the base
+// as origin has it when fetch is set and origin can be reached.
+//
+// The local base is whatever was last pulled, and a workspace made from a
+// main that is a day behind carries a day of merged commits into its PR, or
+// conflicts with them. So the base is fetched first, and the branch made
+// from origin/<base>. Only when the base names a branch: a sha or a tag is
+// what it is wherever it is read. Only when there is an origin to ask. And
+// only best-effort — offline, the branch is made from the local base and
+// the Start says so, because the workspace was the request and the fetch
+// was on the way to it.
+//
+// --no-track, because a branch made from origin/main would otherwise track
+// origin/main: git status would say "up to date with origin/main" about a
+// feature branch, and the agent's `git pull` would merge main into it.
+func (m *Manager) CreateFrom(branchName, baseBranch string, fetch bool) (Start, error) {
+	start := Start{Ref: baseBranch}
 	worktreePath, err := m.worktreePath(branchName)
 	if err != nil {
-		return err
+		return start, err
 	}
 
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
-		return fmt.Errorf("worktree already exists: %s", worktreePath)
+		return start, fmt.Errorf("worktree already exists: %s", worktreePath)
 	}
 
 	if err := m.ensureBaseDir(); err != nil {
-		return err
+		return start, err
+	}
+
+	if fetch && m.hasOrigin() && m.namesBranch(baseBranch) {
+		switch err := m.fetch(baseBranch); {
+		case err != nil:
+			start.Offline = err.Error()
+		case m.remoteBranchExists(baseBranch):
+			start.Ref = "origin/" + baseBranch
+		}
 	}
 
 	// Create git worktree
-	cmd := exec.Command("git", "worktree", "add", "-b", branchName, "--", worktreePath, baseBranch)
+	cmd := exec.Command("git", "worktree", "add", "--no-track", "-b", branchName, "--", worktreePath, start.Ref)
 	cmd.Dir = m.repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create git worktree: %w\nOutput: %s", err, output)
+		return start, fmt.Errorf("failed to create git worktree: %w\nOutput: %s", err, output)
 	}
 
+	return start, nil
+}
+
+// fetch brings origin's copy of a branch up to date, once per process: a
+// fan-out makes three siblings from one base in one command, and the base
+// does not move between them.
+func (m *Manager) fetch(branch string) error {
+	if m.fetched[branch] {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--quiet", "origin", "--", branch)
+	cmd.Dir = m.repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("no answer in %s", fetchTimeout)
+		}
+		if reason, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n"); reason != "" {
+			return errors.New(reason)
+		}
+		return err
+	}
+	if m.fetched == nil {
+		m.fetched = make(map[string]bool)
+	}
+	m.fetched[branch] = true
 	return nil
+}
+
+// hasOrigin reports whether there is an origin to fetch from at all.
+func (m *Manager) hasOrigin() bool {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = m.repoRoot
+	return cmd.Run() == nil
+}
+
+// namesBranch reports whether a base is a branch name — one this repository
+// has, locally or from origin — rather than a sha, a tag or HEAD.
+func (m *Manager) namesBranch(base string) bool {
+	return m.branchExists(base) || m.remoteBranchExists(base)
+}
+
+// remoteBranchExists reports whether origin has a branch by this name, as far
+// as this repository has heard.
+func (m *Manager) remoteBranchExists(branch string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch)
+	cmd.Dir = m.repoRoot
+	return cmd.Run() == nil
 }
 
 // CreateFromRemote creates a new git worktree for a branch that already exists on the remote.
@@ -426,8 +671,7 @@ func (m *Manager) worktreeForBranch(branchName string) (string, bool) {
 
 // Push pushes a worktree's branch to origin, setting the upstream.
 func (m *Manager) Push(branchName string) error {
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath := m.Path(branchName)
 
 	// Push the branch by name, not HEAD: if the agent switched branches
 	// inside the worktree, HEAD would push the wrong branch while the PR is
@@ -465,8 +709,7 @@ func defaultBase(baseBranch ...string) string {
 func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) {
 	base := defaultBase(baseBranch...)
 
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath := m.Path(branchName)
 
 	baseCommit := m.resolveBase(branchName, base, worktreePath)
 	// Compare merge-base to working tree (no HEAD) to include uncommitted changes
@@ -483,8 +726,7 @@ func (m *Manager) Diff(branchName string, baseBranch ...string) (string, error) 
 func (m *Manager) DiffFull(branchName string, baseBranch ...string) (string, error) {
 	base := defaultBase(baseBranch...)
 
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath := m.Path(branchName)
 
 	args := []string{"diff", "origin/" + base + "...HEAD"}
 	if baseOutput, err := gitutil.Output(worktreePath, "merge-base", branchName, base); err == nil {
@@ -540,14 +782,28 @@ func (m *Manager) parseWorktrees(output string) ([]Worktree, error) {
 	var current *Worktree
 
 	// Trailing separator so ".opentree" doesn't also match ".opentree-old/x".
-	opentreePrefix := filepath.Join(m.repoRoot, m.baseDir) + string(filepath.Separator)
+	// Two prefixes: where worktrees go now, and where they went before the
+	// default left the working tree — a workspace made under the old layout
+	// is still one of opentree's.
+	prefixes := []string{
+		m.base + string(filepath.Separator),
+		filepath.Join(m.repoRoot, stateDir) + string(filepath.Separator),
+	}
+	managed := func(path string) bool {
+		for _, p := range prefixes {
+			if strings.HasPrefix(path, p) {
+				return true
+			}
+		}
+		return false
+	}
 
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			if current != nil {
-				if strings.HasPrefix(current.Path, opentreePrefix) {
+				if managed(current.Path) {
 					worktrees = append(worktrees, *current)
 				}
 				current = nil
@@ -565,7 +821,7 @@ func (m *Manager) parseWorktrees(output string) ([]Worktree, error) {
 	}
 
 	// Handle last entry
-	if current != nil && strings.HasPrefix(current.Path, opentreePrefix) {
+	if current != nil && managed(current.Path) {
 		worktrees = append(worktrees, *current)
 	}
 
@@ -613,8 +869,7 @@ type FileChange struct {
 func (m *Manager) DiffStats(branchName string, baseBranch ...string) (string, []FileChange, error) {
 	base := defaultBase(baseBranch...)
 
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath := m.Path(branchName)
 
 	// Compute merge-base once.
 	baseCommit := m.resolveBase(branchName, base, worktreePath)
@@ -657,8 +912,7 @@ func (m *Manager) resolveBase(branchName, base, worktreePath string) string {
 
 // DiffUncommitted returns the unified diff of uncommitted changes (HEAD vs working tree).
 func (m *Manager) DiffUncommitted(branchName string) (string, error) {
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath := m.Path(branchName)
 
 	output, err := gitutil.Output(worktreePath, "diff", "HEAD")
 	if err != nil {
@@ -670,8 +924,7 @@ func (m *Manager) DiffUncommitted(branchName string) (string, error) {
 
 // UntrackedFiles returns the paths of untracked (non-ignored) files in a worktree.
 func (m *Manager) UntrackedFiles(branchName string) ([]string, error) {
-	dirName := gitutil.SanitizeBranchName(branchName)
-	worktreePath := filepath.Join(m.repoRoot, m.baseDir, dirName)
+	worktreePath := m.Path(branchName)
 
 	out, err := gitutil.Output(worktreePath, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
@@ -730,4 +983,91 @@ func parseNumstat(output string) []FileChange {
 		})
 	}
 	return files
+}
+
+// SyncResult is what bringing the base into a branch did.
+type SyncResult struct {
+	// Ref is what was merged: origin's copy of the base when it could be
+	// fetched, the local one otherwise.
+	Ref string
+	// Offline is why it was the local one, when origin was asked and could
+	// not answer.
+	Offline string
+	// Updated is whether the branch moved: false when it already had
+	// everything the base has.
+	Updated bool
+	// Conflicts is the files the merge stopped on. The merge is left in
+	// progress in the worktree, markers and all, which is where whoever
+	// resolves it needs it.
+	Conflicts []string
+}
+
+// Note is the line worth saying about where the merge came from, or nothing.
+func (r SyncResult) Note() string {
+	if r.Offline != "" {
+		return fmt.Sprintf("could not fetch origin (%s) — merged the local %s, which may be behind", r.Offline, r.Ref)
+	}
+	return ""
+}
+
+// Sync brings the base into a branch: origin's copy when it can be reached,
+// merged into the worktree. A merge, not a rebase — the branch may already
+// be pushed and under review, and a rebase rewrites what the PR has.
+//
+// Conflicts are not an error. They are the ordinary outcome of two branches
+// touching one file, and the result lists them with the merge left in
+// progress: the agent working in the worktree is the one to resolve them,
+// and it needs the markers in place to do it. An error is a merge that
+// could not begin — uncommitted changes in its way, no such base.
+func (m *Manager) Sync(branchName, base string, fetch bool) (SyncResult, error) {
+	res := SyncResult{Ref: base}
+	path := m.Path(branchName)
+	if _, err := os.Stat(path); err != nil {
+		return res, fmt.Errorf("no worktree for %q at %s", branchName, path)
+	}
+	if fetch && m.hasOrigin() && m.namesBranch(base) {
+		switch err := m.fetch(base); {
+		case err != nil:
+			res.Offline = err.Error()
+		case m.remoteBranchExists(base):
+			res.Ref = "origin/" + base
+		}
+	}
+
+	before := headSHA(path)
+	cmd := exec.Command("git", "merge", "--no-edit", res.Ref)
+	cmd.Dir = path
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if conflicts := conflictedFiles(path); len(conflicts) > 0 {
+			res.Conflicts = conflicts
+			return res, nil
+		}
+		return res, fmt.Errorf("failed to merge %s into %s: %w\nOutput: %s", res.Ref, branchName, err, output)
+	}
+	res.Updated = headSHA(path) != before
+	return res, nil
+}
+
+// conflictedFiles is what a stopped merge stopped on.
+func conflictedFiles(path string) []string {
+	out, err := gitutil.Output(path, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// headSHA is a worktree's HEAD, or "" for one git cannot read.
+func headSHA(path string) string {
+	out, err := gitutil.Output(path, "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

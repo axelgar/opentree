@@ -16,7 +16,16 @@ func isGitAvailable() bool {
 // initGitRepo creates a temporary git repository and returns its path.
 func initGitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	return initGitRepoAt(t, t.TempDir())
+}
+
+// initGitRepoAt is initGitRepo in a directory of the caller's choosing, for
+// a test that needs two repositories with one name.
+func initGitRepoAt(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	run := func(args ...string) {
 		t.Helper()
@@ -43,7 +52,7 @@ func initGitRepo(t *testing.T) string {
 // ---- parseWorktrees (pure, no git required) ----
 
 func TestParseWorktrees_Empty(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	wts, err := m.parseWorktrees("")
 	if err != nil {
 		t.Fatalf("parseWorktrees(\"\") error: %v", err)
@@ -55,7 +64,7 @@ func TestParseWorktrees_Empty(t *testing.T) {
 
 func TestParseWorktrees_MainWorktreeExcluded(t *testing.T) {
 	// The main worktree is not under .opentree, so it should be filtered out.
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo
 HEAD abc123
 branch refs/heads/main
@@ -71,7 +80,7 @@ branch refs/heads/main
 }
 
 func TestParseWorktrees_OpentreeWorktreeIncluded(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo/.opentree/feature-auth
 HEAD def456
 branch refs/heads/feature/auth
@@ -93,7 +102,7 @@ branch refs/heads/feature/auth
 }
 
 func TestParseWorktrees_MultipleWorktrees(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo
 HEAD abc123
 branch refs/heads/main
@@ -129,7 +138,7 @@ branch refs/heads/fix/b
 
 func TestParseWorktrees_DetachedHEAD(t *testing.T) {
 	// Detached HEAD worktrees have no branch line.
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := `worktree /repo/.opentree/detached
 HEAD abc123
 detached
@@ -148,7 +157,7 @@ detached
 }
 
 func TestParseWorktrees_TrailingNewline(t *testing.T) {
-	m := &Manager{repoRoot: "/repo", baseDir: ".opentree"}
+	m := &Manager{repoRoot: "/repo", base: "/repo/.opentree"}
 	output := "worktree /repo/.opentree/ws1\nHEAD aaa\nbranch refs/heads/ws1\n\n"
 	wts, err := m.parseWorktrees(output)
 	if err != nil {
@@ -1048,15 +1057,15 @@ func TestCreate_AlreadyIgnoredBaseDirectoryIsLeftAlone(t *testing.T) {
 	}
 }
 
-// The documented ../worktrees layout puts the worktrees outside the repository
-// altogether. Git will never look there, so a rule for it would be a line in
-// the user's exclude file that means nothing.
+// A ../worktrees layout puts the worktrees outside the repository altogether.
+// Git will never look there, so a rule for it would be a line in the user's
+// exclude file that means nothing. The state directory's rule still goes in:
+// that one is inside the working tree whatever base_dir says.
 func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
 	}
 	repoDir := initGitRepo(t)
-	before := readExclude(t, repoDir)
 
 	m := New(repoDir, filepath.Join("..", "worktrees"))
 	if err := m.Create("feat/x", "main"); err != nil {
@@ -1067,11 +1076,11 @@ func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
 	}
 
 	after := readExclude(t, repoDir)
-	if after != before {
-		t.Errorf(".git/info/exclude was touched for an out-of-repository base directory:\nbefore:\n%s\nafter:\n%s", before, after)
-	}
 	if strings.Contains(after, "worktrees") {
 		t.Errorf("exclude file names an out-of-repository base directory:\n%s", after)
+	}
+	if n := strings.Count(after, "/.opentree/"); n != 1 {
+		t.Errorf("the state directory's rule appears %d times, want 1:\n%s", n, after)
 	}
 }
 
@@ -1109,7 +1118,9 @@ func TestExcludeBaseDir_OutsideARepositoryWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	m := New(dir, ".opentree")
 
-	m.excludeBaseDir()
+	if entry, ok := m.excludeEntry(); ok {
+		m.exclude(entry, "worktrees")
+	}
 
 	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Errorf("a .git directory was created outside a repository (err = %v)", err)
@@ -1177,5 +1188,404 @@ func TestDelete_TheFallbackOnlyMatchesTheBranchAsked(t *testing.T) {
 	out, _ := exec.Command("git", "-C", repoDir, "branch", "--list", "feat/kept").Output()
 	if !strings.Contains(string(out), "feat/kept") {
 		t.Error("deleting one workspace removed another's branch")
+	}
+}
+
+// ---- where worktrees go ----
+
+func TestBaseDir_ResolvesEachSpelling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := []struct{ configured, want string }{
+		{"", filepath.Join(home, ".opentree", "worktrees", "myapp")},
+		{".opentree", "/src/myapp/.opentree"},
+		{"build/worktrees", "/src/myapp/build/worktrees"},
+		{"~/wt", filepath.Join(home, "wt")},
+		{"/elsewhere/wt", "/elsewhere/wt"},
+	}
+	for _, c := range cases {
+		if got := BaseDir("/src/myapp", c.configured); got != c.want {
+			t.Errorf("BaseDir(%q) = %q, want %q", c.configured, got, c.want)
+		}
+	}
+}
+
+// The default layout: nothing configured, and the worktree lands under the
+// user's own opentree directory rather than inside the working tree, where
+// every tool that walks the project would meet it.
+func TestCreate_DefaultBaseLeavesTheWorkingTree(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoDir := initGitRepo(t)
+	m := New(repoDir, "")
+
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+
+	want := filepath.Join(home, ".opentree", "worktrees", filepath.Base(repoDir), "feat-x")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("no worktree at %s: %v", want, err)
+	}
+	if got := m.Path("feat/x"); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+	if owner, ok := readMarker(m.Base()); !ok || owner != m.repoRoot {
+		t.Errorf("marker = %q, %v; want the repository %q", owner, ok, m.repoRoot)
+	}
+
+	// The working tree has nothing new in it — not a worktree, not a marker.
+	status, err := exec.Command("git", "-C", repoDir, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v\n%s", err, status)
+	}
+	if strings.TrimSpace(string(status)) != "" {
+		t.Errorf("the working tree changed:\n%s", status)
+	}
+}
+
+// Two clones with one directory name must not share a base directory: the
+// second would see the first's worktrees as its own, and delete them.
+func TestCreate_ASecondRepositoryWithTheSameNameGetsItsOwnBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repoA := initGitRepoAt(t, filepath.Join(t.TempDir(), "app"))
+	repoB := initGitRepoAt(t, filepath.Join(t.TempDir(), "app"))
+
+	a := New(repoA, "")
+	if err := a.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create() in the first repository: %v", err)
+	}
+
+	b := New(repoB, "")
+	if b.Base() == a.Base() {
+		t.Fatalf("both repositories resolved to %s", a.Base())
+	}
+	if !strings.HasPrefix(filepath.Base(b.Base()), "app-") {
+		t.Errorf("the second repository's base is %q, want app-<hash>", b.Base())
+	}
+	if err := b.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create() in the second repository: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b.Base(), "feat-x")); err != nil {
+		t.Errorf("the second repository's worktree is not under its own base: %v", err)
+	}
+	// And the first is untouched by all of it.
+	if got := a.Path("feat/x"); !strings.HasPrefix(got, a.Base()) {
+		t.Errorf("the first repository's worktree moved to %q", got)
+	}
+}
+
+// A workspace made under one base_dir and looked up under another is still
+// where it was made — which, since the default left the working tree, is
+// every workspace made before it did.
+func TestPath_FindsAWorktreeMadeUnderAnotherBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repoDir := initGitRepo(t)
+	legacy := New(repoDir, ".opentree")
+	if err := legacy.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	made := legacy.Path("feat/x")
+
+	now := New(repoDir, "")
+	if got := now.Path("feat/x"); got != made {
+		t.Errorf("Path() = %q, want where it was made, %q", got, made)
+	}
+	if _, err := now.Diff("feat/x", "main"); err != nil {
+		t.Errorf("Diff() through the old location: %v", err)
+	}
+	wts, err := now.List()
+	if err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	if len(wts) != 1 || wts[0].Branch != "feat/x" {
+		t.Errorf("List() = %+v, want the worktree under the old layout", wts)
+	}
+	// Somewhere nothing was ever made is where a new one would go.
+	if got := now.Path("feat/new"); !strings.HasPrefix(got, now.Base()) {
+		t.Errorf("Path() for a new branch = %q, want it under %s", got, now.Base())
+	}
+}
+
+// state.json still lives inside the working tree whatever base_dir says, and
+// git has to be told to ignore it even when no worktree is going there.
+func TestCreate_ExcludesTheStateDirectoryWhateverTheBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoDir := initGitRepo(t)
+	m := New(repoDir, "")
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	got := readExclude(t, repoDir)
+	if !strings.Contains(got, "/.opentree/") {
+		t.Errorf(".git/info/exclude does not exclude the state directory:\n%s", got)
+	}
+	if strings.Contains(got, home) {
+		t.Errorf(".git/info/exclude names a directory outside the repository:\n%s", got)
+	}
+}
+
+// ---- fetching the base first ----
+
+// advanceOrigin moves origin's main past what the clone at localDir has, from
+// a second clone, the way a colleague's merge does.
+func advanceOrigin(t *testing.T, localDir string) string {
+	t.Helper()
+	remote, err := exec.Command("git", "-C", localDir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		t.Fatalf("remote get-url: %v", err)
+	}
+	other := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = other
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "clone", "--quiet", "--branch", "main", strings.TrimSpace(string(remote)), ".")
+	run("git", "config", "user.email", "test@example.com")
+	run("git", "config", "user.name", "Test")
+	run("git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "merged upstream")
+	run("git", "push", "--quiet", "origin", "HEAD:main")
+	sha, err := exec.Command("git", "-C", other, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	return strings.TrimSpace(string(sha))
+}
+
+func headOf(t *testing.T, dir string) string {
+	t.Helper()
+	sha, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse in %s: %v", dir, err)
+	}
+	return strings.TrimSpace(string(sha))
+}
+
+// The local main is whatever was last pulled. A workspace branched from it
+// starts behind origin, and its PR carries or conflicts with what merged in
+// the meantime — so the base is fetched first, and the branch made from
+// origin's copy.
+func TestCreate_FetchesTheBaseFirst(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	upstream := advanceOrigin(t, localDir)
+	if headOf(t, localDir) == upstream {
+		t.Fatal("the clone already has origin's commit; nothing to fetch")
+	}
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "origin/main" || start.Offline != "" {
+		t.Errorf("start = %+v, want origin/main with nothing offline", start)
+	}
+	if got := headOf(t, m.Path("feat/x")); got != upstream {
+		t.Errorf("the worktree starts at %s, want origin's %s", got, upstream)
+	}
+	if start.Note() != "fetched origin/main first" {
+		t.Errorf("Note() = %q", start.Note())
+	}
+
+	// And it is a branch of its own, not one tracking origin/main: git status
+	// must not call a feature branch "up to date with origin/main".
+	if out, _ := exec.Command("git", "-C", localDir, "config", "branch.feat/x.merge").Output(); strings.TrimSpace(string(out)) != "" {
+		t.Errorf("feat/x tracks %s; a new branch must not track its base", out)
+	}
+}
+
+func TestCreate_NoFetchBranchesFromTheLocalBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	advanceOrigin(t, localDir)
+	local := headOf(t, localDir)
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", false)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "main" || start.Note() != "" {
+		t.Errorf("start = %+v, want the local main and nothing to say", start)
+	}
+	if got := headOf(t, m.Path("feat/x")); got != local {
+		t.Errorf("the worktree starts at %s, want the local %s", got, local)
+	}
+}
+
+// Offline is not a reason to refuse the workspace: the branch is made from
+// the local base, and the Start says so, for the command to repeat.
+func TestCreate_OfflineBranchesFromTheLocalBaseAndSaysSo(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	if out, err := exec.Command("git", "-C", localDir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone")).CombinedOutput(); err != nil {
+		t.Fatalf("set-url: %v\n%s", err, out)
+	}
+	local := headOf(t, localDir)
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "main" || start.Offline == "" {
+		t.Errorf("start = %+v, want the local main with the fetch's failure", start)
+	}
+	if !strings.Contains(start.Note(), "could not fetch origin") || !strings.Contains(start.Note(), "local main") {
+		t.Errorf("Note() = %q", start.Note())
+	}
+	if got := headOf(t, m.Path("feat/x")); got != local {
+		t.Errorf("the worktree starts at %s, want the local %s", got, local)
+	}
+}
+
+// No origin, nothing to ask: no note either, since nothing was tried.
+func TestCreate_WithoutAnOriginSkipsTheFetch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "main" || start.Offline != "" || start.Note() != "" {
+		t.Errorf("start = %+v, want the local main and silence", start)
+	}
+}
+
+// A base that is not a branch — HEAD, a sha, a tag — is what it is wherever
+// it is read, and is not fetched.
+func TestCreate_ABaseThatIsNotABranchIsNotFetched(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	advanceOrigin(t, localDir)
+	local := headOf(t, localDir)
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "HEAD", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "HEAD" || start.Note() != "" {
+		t.Errorf("start = %+v, want HEAD as given", start)
+	}
+	if got := headOf(t, m.Path("feat/x")); got != local {
+		t.Errorf("the worktree starts at %s, want the local HEAD %s", got, local)
+	}
+}
+
+// ---- bringing the base in ----
+
+func commitFile(t *testing.T, dir, name, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", name}, {"commit", "--no-gpg-sign", "-q", "-m", message}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+}
+
+func TestSync_MergesOriginsBaseIntoTheBranch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	m := New(localDir, ".opentree")
+	if _, err := m.CreateFrom("feat/x", "main", false); err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	upstream := advanceOrigin(t, localDir)
+
+	res, err := m.Sync("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("Sync(): %v", err)
+	}
+	if res.Ref != "origin/main" || !res.Updated || len(res.Conflicts) != 0 {
+		t.Errorf("res = %+v, want origin/main merged with no conflicts", res)
+	}
+	if err := exec.Command("git", "-C", m.Path("feat/x"), "merge-base", "--is-ancestor", upstream, "HEAD").Run(); err != nil {
+		t.Error("origin's commit is not in the branch after the sync")
+	}
+
+	again, err := m.Sync("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("second Sync(): %v", err)
+	}
+	if again.Updated {
+		t.Error("a second sync claims to have moved the branch")
+	}
+}
+
+// Conflicts are the ordinary outcome, not an error: listed, with the merge
+// left in progress for whoever resolves it.
+func TestSync_ReportsConflictsAndLeavesTheMergeInProgress(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	commitFile(t, repoDir, "greeting.txt", "hello\n", "greeting")
+	m := New(repoDir, ".opentree")
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	commitFile(t, m.Path("feat/x"), "greeting.txt", "hello from the branch\n", "branch side")
+	commitFile(t, repoDir, "greeting.txt", "hello from main\n", "main side")
+
+	res, err := m.Sync("feat/x", "main", false)
+	if err != nil {
+		t.Fatalf("Sync(): %v", err)
+	}
+	if len(res.Conflicts) != 1 || res.Conflicts[0] != "greeting.txt" {
+		t.Fatalf("Conflicts = %v, want [greeting.txt]", res.Conflicts)
+	}
+	if err := exec.Command("git", "-C", m.Path("feat/x"), "rev-parse", "-q", "--verify", "MERGE_HEAD").Run(); err != nil {
+		t.Error("the merge was not left in progress")
+	}
+	data, _ := os.ReadFile(filepath.Join(m.Path("feat/x"), "greeting.txt"))
+	if !strings.Contains(string(data), "<<<<<<<") {
+		t.Errorf("no conflict markers in the file:\n%s", data)
+	}
+}
+
+func TestSync_RefusesAWorktreeThatIsNotThere(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	m := New(initGitRepo(t), ".opentree")
+	if _, err := m.Sync("feat/nope", "main", false); err == nil {
+		t.Error("Sync() merged into a worktree that does not exist")
 	}
 }

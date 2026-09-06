@@ -17,6 +17,7 @@ import (
 	"github.com/axelgar/opentree/pkg/registry"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/tmux"
+	"github.com/axelgar/opentree/pkg/worktree"
 )
 
 // DoctorCmd is the answer to "what does your machine look like".
@@ -113,7 +114,15 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 			line("effect", "every command is running on defaults")
 		} else {
 			line("agent", cfg.Agent.Command)
-			line("base_dir", cfg.Worktree.BaseDir)
+			line("base_dir", describeBaseDir(cfg.Worktree.BaseDir))
+			line("worktrees", worktree.BaseDir(repoRoot, cfg.Worktree.BaseDir))
+			if insideWorkingTree(repoRoot, worktree.BaseDir(repoRoot, cfg.Worktree.BaseDir)) {
+				// Not an error — it is a supported layout — but the one
+				// setting that explains "my tests run twice". Named here
+				// because nothing else in the tool's output would.
+				line("", "inside the working tree: test runners, linters and watchers will see every worktree")
+				line("", "to move new ones out: opentree config set --global worktree.base_dir \"\"")
+			}
 			line("default_base", cfg.Worktree.DefaultBase)
 			line("run", orNone(cfg.Workspace.Run))
 			line("setup", orNone(strings.Join(cfg.Workspace.Setup, " && ")))
@@ -174,6 +183,25 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 		}
 		return nil
 	},
+}
+
+// describeBaseDir is the base_dir setting as the reader wrote it, or a note
+// that they wrote nothing and what that means.
+func describeBaseDir(configured string) string {
+	if configured == "" {
+		return "(unset — opentree's own: ~/.opentree/worktrees/<repo>)"
+	}
+	return configured
+}
+
+// insideWorkingTree reports whether the worktrees land inside the repository,
+// where every tool that walks the project will meet them.
+func insideWorkingTree(repoRoot, base string) bool {
+	rel, err := filepath.Rel(repoRoot, base)
+	if err != nil {
+		return false
+	}
+	return rel == "." || filepath.IsLocal(rel)
 }
 
 // describeWorkspace is one workspace's line: enough to tell a state entry with

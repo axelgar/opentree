@@ -41,6 +41,12 @@ func fanoutName(base, agent string, taken func(string) bool) string {
 // everything in state is whole either way; a partial group is a functioning
 // group — promote it or delete it like any other.
 func (s *Service) CreateFanout(base, baseBranch string, agents []string) ([]*state.Workspace, error) {
+	return s.CreateFanoutWith(base, baseBranch, agents, CreateOpts{})
+}
+
+// CreateFanoutWith is CreateFanout with the overrides that apply to every
+// sibling; the agent and the group are the fan-out's own to set.
+func (s *Service) CreateFanoutWith(base, baseBranch string, agents []string, opts CreateOpts) ([]*state.Workspace, error) {
 	resolved := make([]*config.PredefinedAgent, 0, len(agents))
 	seen := make(map[string]bool, len(agents))
 	for _, name := range agents {
@@ -98,7 +104,7 @@ func (s *Service) CreateFanout(base, baseBranch string, agents []string) ([]*sta
 
 	created := make([]*state.Workspace, 0, len(resolved))
 	for i, a := range resolved {
-		ws, err := s.CreateWith(names[i], baseBranch, CreateOpts{Agent: a.Command, FanoutGroup: base})
+		ws, err := s.CreateWith(names[i], baseBranch, CreateOpts{Agent: a.Command, FanoutGroup: base, NoFetch: opts.NoFetch})
 		if err != nil {
 			if len(created) == 0 {
 				return nil, fmt.Errorf("failed to create %q: %w", names[i], err)

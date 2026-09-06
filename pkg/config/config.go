@@ -54,6 +54,8 @@ func (a AgentConfig) Validate() error {
 
 // WorktreeConfig configures git worktree behavior
 type WorktreeConfig struct {
+	// BaseDir is where worktrees go: relative to the repository, absolute, or
+	// under ~. Empty leaves the choice to opentree — see pkg/worktree.BaseDir.
 	BaseDir     string `toml:"base_dir"`
 	DefaultBase string `toml:"default_base"`
 }
@@ -152,7 +154,12 @@ func Default() *Config {
 			Command: "opencode",
 		},
 		Worktree: WorktreeConfig{
-			BaseDir:     ".opentree",
+			// Empty is opentree's own choice — ~/.opentree/worktrees/<repo>,
+			// resolved by pkg/worktree, which knows the repository. It used
+			// to be ".opentree" inside the repository, where every tool that
+			// walks a project found the extra checkouts; that spelling is
+			// still honoured for anyone who sets it.
+			BaseDir:     "",
 			DefaultBase: "main",
 		},
 		Tmux: TmuxConfig{

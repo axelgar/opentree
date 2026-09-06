@@ -25,6 +25,7 @@ The branch name is auto-generated from the issue number and title
 			return fmt.Errorf("invalid issue number: %s", args[0])
 		}
 		baseBranch, _ := cmd.Flags().GetString("base")
+		noFetch, _ := cmd.Flags().GetBool("no-fetch")
 
 		cfg, err := config.Load("")
 		if err != nil {
@@ -41,7 +42,7 @@ The branch name is auto-generated from the issue number and title
 			return err
 		}
 
-		ws, err := svc.CreateFromIssue(issueNum, baseBranch)
+		ws, err := svc.CreateFromIssueWith(issueNum, baseBranch, workspace.CreateOpts{NoFetch: noFetch})
 		if err != nil {
 			return err
 		}
@@ -49,6 +50,7 @@ The branch name is auto-generated from the issue number and title
 		fmt.Printf("Issue #%d: %s\n", ws.IssueNumber, ws.IssueTitle)
 		fmt.Printf("Branch:   %s\n\n", ws.Branch)
 		fmt.Printf("✓ Created workspace '%s'\n", ws.Name)
+		printStartNote(ws)
 		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
 		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
 		return nil
@@ -57,4 +59,5 @@ The branch name is auto-generated from the issue number and title
 
 func init() {
 	IssueCmd.Flags().StringP("base", "b", "", "Base branch to create worktree from (default: config default)")
+	IssueCmd.Flags().Bool("no-fetch", false, "Branch from the base as it is here, without fetching origin's first")
 }

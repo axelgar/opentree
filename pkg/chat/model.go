@@ -75,6 +75,15 @@ type Options struct {
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
+	// History is the file the messages typed here are kept in between
+	// chats, so ↑ still finds them after the window has been closed and
+	// reopened. Empty keeps them for this process only.
+	History string
+
+	// Exports is the directory /export writes the conversation into. Empty
+	// leaves the command out.
+	Exports string
+
 	// KnownSessions are the conversations opentree has already opened in this
 	// worktree. They are what /resume offers an agent that cannot enumerate its
 	// own — with one that can, the agent's list is merged over them.
@@ -547,6 +556,19 @@ type Model struct {
 	settings settings
 	sessions sessions
 	login    login
+	copying  copying
+	finding  finding
+
+	// flash is the status line's own notice, timed: what the last key did,
+	// gone before it is in the way.
+	flash flash
+
+	// sel is the mouse selection, and logLines the rendered log it indexes:
+	// the same rows the viewport holds, kept so a cell can be read back as
+	// text without asking the viewport for what it was given.
+	sel       selection
+	logLines  []string
+	lineOwner []int
 
 	// titled is whether the current conversation already has a name in the
 	// ledger, which stops the first prompt of a resumed session from renaming
@@ -674,6 +696,7 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 		input:   newComposer(),
 		help:    help.New(),
 		keys:    keys,
+		history: loadHistory(opts.History),
 	}
 	return m.withAgentInfo(info)
 }
@@ -692,6 +715,8 @@ func newComposer() textarea.Model {
 	ta.CharLimit = 0
 	// Enter sends, so the textarea's own newline binding moves out of the way.
 	ta.KeyMap.InsertNewline.SetKeys(keys.Newline.Keys()...)
+	// ctrl+f finds in the conversation; → still moves the cursor.
+	ta.KeyMap.CharacterForward.SetKeys("right")
 	ta.Focus()
 	return ta
 }
@@ -775,6 +800,8 @@ const (
 	overlayStopped
 	overlaySettings
 	overlaySessions
+	overlayCopy
+	overlayFind
 	overlayHelp
 )
 
@@ -815,6 +842,10 @@ func (m Model) overlay() overlay {
 		return overlaySettings
 	case m.sessions.open:
 		return overlaySessions
+	case m.copying.open:
+		return overlayCopy
+	case m.finding.open:
+		return overlayFind
 	case m.showHelp:
 		return overlayHelp
 	}
@@ -847,6 +878,8 @@ func init() {
 		overlayStopped:    {Model.handleStoppedKey, Model.stoppedHeight, Model.stoppedView},
 		overlaySettings:   {Model.handleSettingsKey, Model.settingsHeight, Model.settingsView},
 		overlaySessions:   {Model.handleSessionsKey, Model.sessionsHeight, Model.sessionsView},
+		overlayCopy:       {Model.handleCopyKey, Model.copyHeight, Model.copyView},
+		overlayFind:       {Model.handleFindKey, Model.findHeight, Model.findView},
 		overlayHelp:       {Model.handleHelpKey, Model.helpHeight, Model.helpView},
 	}
 }

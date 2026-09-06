@@ -212,16 +212,29 @@ const socketNameMax = 32
 // every ordinary workspace keeps the exact path it has now and a chat started
 // by the previous binary stays reachable across the upgrade.
 func SocketPath(repoRoot, workspace string) string {
+	return filepath.Join(socketRoot, repoKey(repoRoot), workspaceFile(workspace))
+}
+
+// repoKey names a repository in a path — "opentree-<hash of its root>" — so
+// two checkouts of one project get directories of their own. Shared by the
+// sockets and the message history, which want the same answer to "which
+// repository" for the same reason.
+func repoKey(repoRoot string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(repoRoot))
+	return fmt.Sprintf("opentree-%08x", h.Sum32())
+}
 
+// workspaceFile is a workspace's name as a file name, shortened past
+// socketNameMax the way SocketPath describes.
+func workspaceFile(workspace string) string {
 	name := strings.NewReplacer("/", "-", ":", "-").Replace(workspace)
 	if len(name) > socketNameMax {
 		n := fnv.New32a()
 		_, _ = n.Write([]byte(name))
 		name = fmt.Sprintf("%s-%08x", name[:socketNameMax-9], n.Sum32())
 	}
-	return filepath.Join(socketRoot, fmt.Sprintf("opentree-%08x", h.Sum32()), name)
+	return name
 }
 
 // ---------------------------------------------------------------------------

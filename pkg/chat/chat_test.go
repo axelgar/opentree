@@ -36,6 +36,13 @@ func bareAgent() *config.PredefinedAgent {
 	return a
 }
 
+// renderLog is the log as one string, for the tests that read it whole. The
+// program itself only ever wants the rows and their owners.
+func (m Model) renderLog() string {
+	lines, _ := m.renderLogLines()
+	return strings.Join(lines, "\n")
+}
+
 // newTestModel builds a Model with no agent behind it. Tests that only exercise
 // in-process logic should use this instead of Run, which spawns a subprocess.
 func newTestModel() Model {

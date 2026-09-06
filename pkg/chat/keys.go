@@ -22,6 +22,8 @@ type keyMap struct {
 	Expand    key.Binding
 	Retry     key.Binding
 	Paste     key.Binding
+	Copy      key.Binding
+	Find      key.Binding
 	Help      key.Binding
 
 	// HistoryPrev and HistoryNext walk the messages already sent. They are two
@@ -30,6 +32,12 @@ type keyMap struct {
 	// then ↓.
 	HistoryPrev key.Binding
 	HistoryNext key.Binding
+
+	// Select is not a key at all: it is the mouse, dragged over the log. It is
+	// listed because the chat takes the mouse for the wheel, and a reader who
+	// has met a full-screen program that swallows a drag has no reason to
+	// try one here unless something says it works.
+	Select key.Binding
 
 	Restart key.Binding
 	Login   key.Binding
@@ -62,7 +70,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand, k.Retry},
-		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
+		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Find, k.Select, k.Copy, k.Back},
 	}
 }
 
@@ -153,6 +161,19 @@ var keys = keyMap{
 		key.WithKeys("ctrl+v"),
 		key.WithHelp("ctrl+v", "paste"),
 	),
+	// ctrl+y is free — emacs's yank, which the textarea does not bind — and
+	// it is the key the terminal's own selection cannot be: see Select.
+	Copy: key.NewBinding(
+		key.WithKeys("ctrl+y"),
+		key.WithHelp("ctrl+y", "copy"),
+	),
+	// Taken from the textarea, where it moved the cursor one character right
+	// — which → does, and nobody types a chat message with emacs motion keys.
+	// Finding is what ctrl+f means everywhere else a conversation is read.
+	Find: key.NewBinding(
+		key.WithKeys("ctrl+f"),
+		key.WithHelp("ctrl+f", "find"),
+	),
 	// The arrows, which the message box also wants: they only recall from the
 	// edges of what is written, so moving the cursor inside a message still
 	// works. Only the first carries help text — one entry describes both.
@@ -168,6 +189,14 @@ var keys = keyMap{
 	Help: key.NewBinding(
 		key.WithKeys("?"),
 		key.WithHelp("?", "keys"),
+	),
+	// The "key" can never arrive as a KeyMsg — bubbletea has no name for a
+	// drag — so this binding only ever matches nothing, and is here to be
+	// listed. It carries the gesture for the same reason Commands does: bubbles
+	// drops a binding with no keys from the help entirely.
+	Select: key.NewBinding(
+		key.WithKeys("drag"),
+		key.WithHelp("drag", "select text"),
 	),
 	Restart: key.NewBinding(
 		key.WithKeys("r"),

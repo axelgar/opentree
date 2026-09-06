@@ -74,8 +74,15 @@ type Model struct {
 
 	workspaces []WorkspaceItem
 	cursor     int
-	width      int
-	height     int
+
+	// lastClick is the previous press on a row, for the double-click that
+	// opens one.
+	lastClick click
+
+	// syncConflict is the merge-conflict dialog, or nil.
+	syncConflict *syncConflict
+	width        int
+	height       int
 
 	// two-step create dialog
 	input            textinput.Model
@@ -259,8 +266,41 @@ type createdWorkspaceMsg struct {
 	wsName      string
 	branch      string
 	worktreeDir string
+	// note is where the branch began, when that is worth saying — origin
+	// could not be fetched, and the base is the local one.
+	note string
 }
 type deletedWorkspaceMsg struct{ names []string }
+
+// syncedMsg is what merging the base into a workspace did.
+type syncedMsg struct {
+	wsName string
+	branch string
+	res    worktree.SyncResult
+}
+
+// resolveAskedMsg is the agent having been handed a stopped merge.
+type resolveAskedMsg struct {
+	wsName string
+	count  int
+}
+
+// syncConflict is a stopped merge waiting on the question of who resolves
+// it, drawn as a dialog.
+type syncConflict struct {
+	wsName string
+	branch string
+	res    worktree.SyncResult
+}
+
+// pathCopiedMsg is the clipboard's answer to y.
+type pathCopiedMsg struct {
+	path string
+	err  error
+}
+
+// editorFinishedMsg is the editor handing the terminal back after e.
+type editorFinishedMsg struct{ err error }
 type promotedWorkspaceMsg struct {
 	winner  string
 	deleted []string

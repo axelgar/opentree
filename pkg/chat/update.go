@@ -191,12 +191,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	// Having captured the mouse, the wheel has to do something: the viewport
-	// scrolls itself, three lines at a time, whatever panel the footer shows.
+	// Having captured the mouse, it has to do something: the wheel scrolls
+	// the viewport, three lines at a time, whatever panel the footer shows,
+	// and a drag selects text — see select.go.
 	case tea.MouseMsg:
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m.relayout(), cmd
+		return m.handleMouse(msg)
 
 	case acpUpdateMsg:
 		m = m.applyUpdate(acp.SessionUpdate(msg))
@@ -435,6 +434,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.relayout(), m.startSession()
 
+	case copiedMsg:
+		return m.copied(msg)
+
+	case shellOpenedMsg:
+		return m.shellOpened(msg)
+
+	case exportedMsg:
+		return m.exported(msg)
+
+	case flashClearMsg:
+		// The receipt and the highlight it was the receipt for go together.
+		return m.clearFlash(msg).clearSelection(), nil
+
 	case errMsg:
 		m.err = msg.err
 		m.authNeed = msg.auth
@@ -490,6 +502,9 @@ func leave() tea.Msg {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// A key means the reader has moved on from whatever the mouse marked.
+	m = m.clearSelection()
+
 	// Whichever panel the footer drew is the one the keys drive. A stopped
 	// agent takes over the keyboard because r and l would otherwise be
 	// swallowed by the textarea, which is useless with nothing to send to.
@@ -511,6 +526,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Settings):
 		return m.openSettings()
+
+	case key.Matches(msg, m.keys.Copy):
+		return m.openCopy()
+
+	case key.Matches(msg, m.keys.Find):
+		return m.openFind()
 
 	case key.Matches(msg, m.keys.CycleMode):
 		return m.cycleMode()
@@ -1352,7 +1373,15 @@ func (m Model) relayout() Model {
 	// place that can tell "the reader scrolled up" from "the reader scrolled up
 	// and then the agent said something".
 	before := m.viewport.TotalLineCount()
-	m.viewport.SetContent(m.renderLog())
+	m.logLines, m.lineOwner = m.renderLogLines()
+	// A log that grew under an open find box is searched again, so the
+	// matches keep pointing at the rows they were found in.
+	if m.finding.open && m.finding.query != "" && m.finding.lines != len(m.logLines) {
+		m.finding.matches = findMatches(m.logLines, m.finding.query)
+		m.finding.lines = len(m.logLines)
+		m.finding.current = min(m.finding.current, len(m.finding.matches)-1)
+	}
+	m.viewport.SetContent(strings.Join(m.paintSelection(m.paintMatches(m.logLines)), "\n"))
 	switch {
 	case atBottom:
 		m.viewport.GotoBottom()

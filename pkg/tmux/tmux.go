@@ -596,11 +596,25 @@ func (c *Controller) enableExtendedKeys() {
 // reading it back is one CutSuffix.
 const RunSuffix = ":run"
 
+// ShellSuffix marks a workspace's shell window, the one that is the user's
+// rather than opentree's: "feat-dark-mode:sh". Same colon, same proof.
+const ShellSuffix = ":sh"
+
+// CreateShellWindow creates a window running the user's shell in workdir —
+// nothing exec'd over it, so the pane is the shell itself and stays open
+// until the shell exits.
+func (c *Controller) CreateShellWindow(name, workdir string) error {
+	_, err := c.newWindow(name, workdir, nil)
+	return err
+}
+
 // sanitizeWindowName converts a branch name to a valid tmux window name,
 // keeping the reserved suffix if it carries one.
 func (c *Controller) sanitizeWindowName(name string) string {
-	if base, ok := strings.CutSuffix(name, RunSuffix); ok {
-		return gitutil.SanitizeBranchName(base) + RunSuffix
+	for _, suffix := range []string{RunSuffix, ShellSuffix} {
+		if base, ok := strings.CutSuffix(name, suffix); ok {
+			return gitutil.SanitizeBranchName(base) + suffix
+		}
 	}
 	return gitutil.SanitizeBranchName(name)
 }

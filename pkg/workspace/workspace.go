@@ -114,9 +114,24 @@ func (s *Service) WindowStatuses() map[string]string {
 	return result
 }
 
-// WorktreePath returns the filesystem path for a workspace's worktree directory.
+// WorktreePath is where a workspace's worktree is.
+//
+// Where it was made comes first — the path recorded when the workspace was
+// created, as long as something is still there — and only then where the
+// configured base_dir would put it. The two differ for every workspace made
+// before base_dir changed, and the default itself moved out of the working
+// tree, so "where the config says" is wrong for every workspace that
+// predates the move. The manager asks git the same question when the record
+// is missing, for workspaces written before the path was recorded.
 func (s *Service) WorktreePath(name string) string {
-	return filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir, gitutil.SanitizeBranchName(name))
+	if s.state != nil {
+		if ws, err := s.state.GetWorkspace(name); err == nil && ws.WorktreeDir != "" {
+			if _, statErr := os.Lstat(ws.WorktreeDir); statErr == nil {
+				return ws.WorktreeDir
+			}
+		}
+	}
+	return s.worktrees.Path(name)
 }
 
 // launchAgentWindow starts the given agent in a new tmux window for name's
@@ -272,6 +287,10 @@ type CreateOpts struct {
 	// FanoutGroup stamps the workspace as one sibling of a fan-out, carrying
 	// the base name the group shares. Empty means an ordinary workspace.
 	FanoutGroup string
+
+	// NoFetch branches from the base as it is here, without asking origin
+	// for a newer one first.
+	NoFetch bool
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
@@ -289,7 +308,8 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 		return nil, err
 	}
 
-	if err := s.worktrees.Create(name, baseBranch); err != nil {
+	start, err := s.worktrees.CreateFrom(name, baseBranch, !opts.NoFetch)
+	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
 	s.seedWorktree(name)
@@ -308,6 +328,7 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 		Agent:       agent,
 		WorktreeDir: worktreePath,
 		FanoutGroup: opts.FanoutGroup,
+		StartNote:   start.Note(),
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
 		// Roll back: a worktree+window with no state entry is invisible to
@@ -324,6 +345,11 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 // name and metadata come from the issue. The user hands the agent the issue
 // context themselves.
 func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Workspace, error) {
+	return s.CreateFromIssueWith(issueNum, baseBranch, CreateOpts{})
+}
+
+// CreateFromIssueWith is CreateFromIssue with per-workspace overrides.
+func (s *Service) CreateFromIssueWith(issueNum int, baseBranch string, opts CreateOpts) (*state.Workspace, error) {
 	if !s.github.IsInstalled() {
 		return nil, fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
 	}
@@ -338,7 +364,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 		baseBranch = s.cfg.Worktree.DefaultBase
 	}
 
-	ws, err := s.Create(branchName, baseBranch)
+	ws, err := s.CreateWith(branchName, baseBranch, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -429,9 +455,11 @@ func (s *Service) Delete(name string) error {
 	// Kill tmux window (ignore error if window doesn't exist), and the server's
 	// window with it: the directory it was serving has just gone, and a dev
 	// server left running against a deleted worktree holds its port and prints
-	// stack traces at nobody.
+	// stack traces at nobody. The shell's too — a shell whose directory has
+	// gone is a prompt that fails every command typed into it.
 	_ = s.process.KillWindow(name)
 	_ = s.process.KillWindow(s.ServerWindow(name))
+	_ = s.process.KillWindow(s.ShellWindow(name))
 
 	if err := s.state.DeleteWorkspace(name); err != nil {
 		return fmt.Errorf("failed to delete workspace state: %w", err)
@@ -505,6 +533,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 		}
 		_ = s.process.KillWindow(name)
 		_ = s.process.KillWindow(s.ServerWindow(name))
+		_ = s.process.KillWindow(s.ShellWindow(name))
 		if err := s.state.DeleteWorkspace(name); err != nil {
 			batch.Failed = append(batch.Failed, DeleteFailure{Name: name, Err: fmt.Errorf("failed to delete workspace state: %w", err)})
 			continue
@@ -621,6 +650,7 @@ func (s *Service) Prune() (PruneResult, error) {
 		}
 		_ = s.process.KillWindow(ws.Name)
 		_ = s.process.KillWindow(s.ServerWindow(ws.Name))
+		_ = s.process.KillWindow(s.ShellWindow(ws.Name))
 		if err := s.state.DeleteWorkspace(ws.Name); err != nil {
 			return result, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
 		}
@@ -647,11 +677,14 @@ func (s *Service) pruneServerWindows() []string {
 	live := make(map[string]bool)
 	for _, ws := range s.state.ListWorkspaces() {
 		live[s.ServerWindow(ws.Name)] = true
+		live[s.ShellWindow(ws.Name)] = true
 	}
 
 	var killed []string
 	for _, w := range windows {
-		if !strings.HasSuffix(w.Name, tmux.RunSuffix) || live[w.Name] {
+		// Shell windows are swept on the same terms: opentree opened them
+		// for a workspace, and the workspace is gone.
+		if (!strings.HasSuffix(w.Name, tmux.RunSuffix) && !strings.HasSuffix(w.Name, tmux.ShellSuffix)) || live[w.Name] {
 			continue
 		}
 		// A run window belonging to another checkout looks exactly like an
@@ -680,30 +713,48 @@ func (s *Service) ownsWindow(w Window) bool {
 	if w.Path == "" {
 		return true
 	}
-	// Worktrees do not have to live inside the repository — base_dir may point
-	// beside it — so both roots count.
-	return under(s.repoRoot, w.Path) ||
-		under(filepath.Join(s.repoRoot, s.cfg.Worktree.BaseDir), w.Path)
+	// Worktrees do not live inside the repository by default, and a base_dir
+	// may point anywhere — so both roots count.
+	return under(s.repoRoot, w.Path) || under(s.worktrees.Base(), w.Path)
 }
 
 // under reports whether path is root or something inside it, comparing the
 // paths as the filesystem resolves them: tmux reports a pane's directory
 // resolved, while a repo root arrives as whatever the user typed.
+//
+// A path that is no longer on disk — a window whose worktree was deleted by
+// hand, which is the case prune exists for — cannot be resolved whole, and on
+// macOS, where every temporary directory sits behind /var → /private/var, a
+// resolved root never matched an unresolved path under it. So each side is
+// resolved as far as it exists and the rest carried over, which gives the two
+// the same spelling whether or not the tail is still there.
 func under(root, path string) bool {
 	if root == "" || path == "" {
 		return false
 	}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	rel, err := filepath.Rel(root, path)
+	rel, err := filepath.Rel(resolveExisting(root), resolveExisting(path))
 	if err != nil {
 		return false
 	}
 	return rel == "." || filepath.IsLocal(rel)
+}
+
+// resolveExisting resolves the symlinks in the longest prefix of path that
+// is on disk, and appends the rest as written. A path that exists resolves
+// whole; one that does not still resolves the directories above it.
+func resolveExisting(path string) string {
+	rest := ""
+	for p := path; ; {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 // killSessionIfOurs stops the tmux session once this repository has nothing

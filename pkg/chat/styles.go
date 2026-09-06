@@ -162,4 +162,20 @@ var (
 	// without competing with the conversation.
 	flagStyle = lipgloss.NewStyle().
 			Foreground(ui.Accent)
+
+	// A flash is a receipt — "copied the last reply" — in the colour a
+	// finished tool row wears, so it reads as done rather than as a flag.
+	flashStyle = lipgloss.NewStyle().
+			Foreground(ui.Success)
+
+	// The mouse selection: inverse video, which reads as a selection on any
+	// terminal, light or dark, whatever colour the text underneath was.
+	selectStyle = lipgloss.NewStyle().
+			Reverse(true)
+
+	// A find match that is not the current one: marked, but not the thing
+	// the eye is being sent to.
+	findMatchStyle = lipgloss.NewStyle().
+			Foreground(ui.Warn).
+			Underline(true)
 )

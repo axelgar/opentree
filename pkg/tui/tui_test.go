@@ -16,6 +16,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/acp"
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/clipboard"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/state"
@@ -728,7 +729,7 @@ func TestErrLog_ReportsAFailedCopy(t *testing.T) {
 	m.showErrLog = true
 	m.errLog = []string{"[12:00] boom"}
 
-	m, _ = applyUpdate(m, errLogCopiedMsg{err: errNoClipboardTool})
+	m, _ = applyUpdate(m, errLogCopiedMsg{err: clipboard.ErrNoTool})
 
 	if view := m.View(); !strings.Contains(view, "copy failed") {
 		t.Errorf("a failed copy was not reported\ngot: %s", view)
