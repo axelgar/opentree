@@ -31,6 +31,13 @@ type keyMap struct {
 	HistoryPrev key.Binding
 	HistoryNext key.Binding
 
+	// Select is not a key at all: it is the terminal's own drag, held with the
+	// modifier that makes the terminal keep a mouse event the program has
+	// asked for. It is listed because the chat takes the mouse for the wheel,
+	// and a reader who tries to drag over an answer finds nothing happens —
+	// and the one gesture that does work is a secret unless something says it.
+	Select key.Binding
+
 	Restart key.Binding
 	Login   key.Binding
 	Back    key.Binding
@@ -62,7 +69,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Commands, k.Mentions, k.Paste, k.HistoryPrev},
 		{k.Cancel, k.CycleMode, k.Settings, k.Thoughts, k.Expand, k.Retry},
-		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Back},
+		{k.ScrollUp, k.ScrollDn, k.PageUp, k.PageDown, k.Select, k.Back},
 	}
 }
 
@@ -168,6 +175,14 @@ var keys = keyMap{
 	Help: key.NewBinding(
 		key.WithKeys("?"),
 		key.WithHelp("?", "keys"),
+	),
+	// The "key" can never arrive as a KeyMsg — bubbletea has no name for a
+	// drag — so this binding only ever matches nothing, and is here to be
+	// listed. It carries the gesture for the same reason Commands does: bubbles
+	// drops a binding with no keys from the help entirely.
+	Select: key.NewBinding(
+		key.WithKeys("shift+drag"),
+		key.WithHelp("shift+drag", "select text"),
 	),
 	Restart: key.NewBinding(
 		key.WithKeys("r"),
