@@ -1,6 +1,8 @@
 # opentree — Usability gaps: design & plan
 
-> Status: **planned, nothing started.**
+> Status: **all thirteen commits implemented.** `make check` green; the
+> race suite green on Linux. Departures from the plan as written are under
+> *Found during implementation*.
 > Scope: the basic things that stop opentree being usable day to day on a real
 > project — not features. Two came from use (text cannot be selected in the
 > chat; the worktrees under `.opentree` collide with the project's own tools).
@@ -167,24 +169,69 @@ selection needs, and `x/ansi.Strip` is already imported by the chat.
 Each commit is green on its own and ships something. Order is by what unblocks
 day-to-day use, not by size.
 
-| # | Scope | Files | Size |
-|---|---|---|---|
-| 1 | **Say what already works.** `?` help and the README gain "shift-drag (option-drag in iTerm2) selects text" beside the scroll keys. | `pkg/chat/keys.go`, `pkg/chat/view.go`, `README.md` | S |
-| 2 | **`pkg/clipboard`** (decision 7). `Write(text)` = platform tool + OSC 52; `pkg/tui` uses it for the error log. Tests: the tool table per platform, the OSC 52 bytes on a fake writer. | `pkg/clipboard/clipboard.go` (new), `pkg/tui/clipboard.go` (moved), `pkg/tui/commands.go` | S |
-| 3 | **`ctrl+y` copy picker** (decision 8). Fenced blocks are cut from the entry's raw markdown, not the rendering, so indentation survives. A notice says what went: "copied 18 lines (go)". | `pkg/chat/copy.go` (new), `keys.go`, `update.go`, `view.go` | M |
-| 4 | **Drag to select in the chat** (decision 6). Press anchors on a viewport cell; motion extends; release copies and the highlight clears a moment later. The highlight is an inverse style painted over the rendered rows. Double- and triple-click. The text = the rendered rows, ANSI stripped, trailing spaces trimmed, joined with newlines. | `pkg/chat/select.go` (new), `update.go`, `view.go`, `styles.go` | L |
-| 5 | **Worktrees outside the working tree** (decisions 1–4). Default base under `~/.opentree/worktrees`; `~` and absolute paths accepted; `.repo` marker; `WorktreePath` honours `state.WorktreeDir`; `doctor` reports the layout; README gains "Where worktrees live". | `pkg/config/config.go`, `pkg/workspace/workspace.go`, `pkg/worktree/worktree.go`, `cmd/opentree/cmd/doctor.go`, `README.md` | M |
-| 6 | **Fetch before branching** (decision 5). `--no-fetch` on `new`, `issue` and `dispatch`; the dashboard's `n` follows `new`. | `pkg/worktree/worktree.go`, `cmd/opentree/cmd/new.go`, `issue.go`, `dispatch.go` | S |
-| 7 | **`path`, `shell`, `t`, `y`, `e`, PATH column** (decisions 11–12). `shell` reuses `CreateAppWindow` with the user's `$SHELL`, and reuses the window when it exists. | `cmd/opentree/cmd/path.go`, `shell.go` (new), `list.go`, `pkg/workspace/shell.go` (new), `pkg/tui/keys.go`, `update.go`, `commands.go`, `pkg/chat/settings.go` | M |
-| 8 | **Clicks** (decision 10). | `pkg/tui/update.go`, `pkg/chat/update.go` | S |
-| 9 | **Persistent history** (decision 13). | `pkg/chat/history.go`, `pkg/chat/model.go` | S |
-| 10 | **`ctrl+f` find** (decision 14). | `pkg/chat/find.go` (new), `keys.go`, `update.go`, `view.go` | M |
-| 11 | **`/export`** (decision 15). Markdown from the entries: user, agent, tool rows with their output, notices as blockquotes. | `pkg/chat/export.go` (new), `pkg/chat/settings.go` | S |
-| 12 | **`sync` and `u`** (decision 16). | `pkg/worktree/worktree.go`, `cmd/opentree/cmd/sync.go` (new), `pkg/tui/keys.go`, `update.go` | M |
-| 13 | **`delete --merged`**, diff viewer paging, the README's archive line (decisions 17–18). | `cmd/opentree/cmd/delete.go`, `pkg/tui/update.go`, `README.md` | S |
+| # | Scope | Files | Size | Status |
+|---|---|---|---|---|
+| 1 | **Say what already works.** `?` help and the README gain "shift-drag (option-drag in iTerm2) selects text" beside the scroll keys. | `pkg/chat/keys.go`, `pkg/chat/view.go`, `README.md` | S | done |
+| 2 | **`pkg/clipboard`** (decision 7). `Write(text)` = platform tool + OSC 52; `pkg/tui` uses it for the error log. Tests: the tool table per platform, the OSC 52 bytes on a fake writer. | `pkg/clipboard/clipboard.go` (new), `pkg/tui/clipboard.go` (moved), `pkg/tui/commands.go` | S | done |
+| 3 | **`ctrl+y` copy picker** (decision 8). Fenced blocks are cut from the entry's raw markdown, not the rendering, so indentation survives. A notice says what went: "copied 18 lines (go)". | `pkg/chat/copy.go` (new), `keys.go`, `update.go`, `view.go` | M | done |
+| 4 | **Drag to select in the chat** (decision 6). Press anchors on a viewport cell; motion extends; release copies and the highlight clears a moment later. The highlight is an inverse style painted over the rendered rows. Double- and triple-click. The text = the rendered rows, ANSI stripped, trailing spaces trimmed, joined with newlines. | `pkg/chat/select.go` (new), `update.go`, `view.go`, `styles.go` | L | done |
+| 5 | **Worktrees outside the working tree** (decisions 1–4). Default base under `~/.opentree/worktrees`; `~` and absolute paths accepted; `.repo` marker; `WorktreePath` honours `state.WorktreeDir`; `doctor` reports the layout; README gains "Where worktrees live". | `pkg/config/config.go`, `pkg/workspace/workspace.go`, `pkg/worktree/worktree.go`, `cmd/opentree/cmd/doctor.go`, `README.md` | M | done |
+| 6 | **Fetch before branching** (decision 5). `--no-fetch` on `new`, `issue` and `dispatch`; the dashboard's `n` follows `new`. | `pkg/worktree/worktree.go`, `cmd/opentree/cmd/new.go`, `issue.go`, `dispatch.go` | S | done |
+| 7 | **`path`, `shell`, `t`, `y`, `e`, PATH column** (decisions 11–12). `shell` reuses `CreateAppWindow` with the user's `$SHELL`, and reuses the window when it exists. | `cmd/opentree/cmd/path.go`, `shell.go` (new), `list.go`, `pkg/workspace/shell.go` (new), `pkg/tui/keys.go`, `update.go`, `commands.go`, `pkg/chat/settings.go` | M | done |
+| 8 | **Clicks** (decision 10). | `pkg/tui/update.go`, `pkg/chat/update.go` | S | done |
+| 9 | **Persistent history** (decision 13). | `pkg/chat/history.go`, `pkg/chat/model.go` | S | done |
+| 10 | **`ctrl+f` find** (decision 14). | `pkg/chat/find.go` (new), `keys.go`, `update.go`, `view.go` | M | done |
+| 11 | **`/export`** (decision 15). Markdown from the entries: user, agent, tool rows with their output, notices as blockquotes. | `pkg/chat/export.go` (new), `pkg/chat/settings.go` | S | done |
+| 12 | **`sync` and `u`** (decision 16). | `pkg/worktree/worktree.go`, `cmd/opentree/cmd/sync.go` (new), `pkg/tui/keys.go`, `update.go` | M | done |
+| 13 | **`delete --merged`**, diff viewer paging, the README's archive line (decisions 17–18). | `cmd/opentree/cmd/delete.go`, `pkg/tui/update.go`, `README.md` | S | done |
 
 Commits 1–5 are the two reported problems, fixed in the order they can ship.
 If the sequence stalls after 5, both are fixed.
+
+### Found during implementation
+
+- **OSC 52 is the fallback, not an addition** (decision 7 as written said
+  "always also"). iTerm2 asks for permission the first time the sequence
+  arrives, and a laptop with pbcopy sitting there has no reason to be asked;
+  the terminal route runs only when no tool could reach the clipboard — over
+  ssh, or on a Linux box with no display. Written with a raw sequence rather
+  than termenv's `Copy`, so the writer can be swapped for a buffer in tests
+  and refused when stdout is not a terminal.
+- **The default base directory claims itself with a marker, as planned, and
+  the tests had to be told about it.** `config.Default()` now resolves to a
+  directory under `$HOME`, so every test that created a workspace with a
+  default config was writing into the real home directory. The workspace
+  test helpers move `HOME` to a temp dir unless a test already did — the
+  trust-file tests had — and the worktree tests set it themselves.
+- **Git is told about the state directory on its own.** The `/.opentree/`
+  exclude rule used to arrive with the worktrees; with the worktrees gone
+  from the working tree, `state.json` would have shown up in `git status`
+  on the first workspace. `ensureBaseDir` writes the state rule always and
+  the base rule only when the base is inside the repository, each labelled.
+- **`WorktreePath` prefers the recorded path, then asks git.** Decision 2
+  named the first half; the second covers workspaces written before the
+  path was recorded, through the manager's `Path`, which stats the computed
+  location and consults `git worktree list` only when nothing is there.
+- **`new` fetches only when the base names a branch.** A sha, a tag or
+  `HEAD` is what it is wherever it is read, and fetching it would have
+  produced an "offline" note about a fetch that had no business happening.
+  `--no-track` on the branch, so a feature branch made from `origin/main`
+  does not report itself "up to date with origin/main".
+- **The chat's `/shell` runs `opentree shell`** rather than talking to tmux:
+  the command already knows the window's name, how to reuse one that
+  exists, and how to move a client to it from inside the session.
+- **Clicks resolve against the rendering, not a model of it.** The
+  dashboard's list renderer records where each row landed; the chat's log
+  renderer says which entry each row belongs to. A permission option is
+  found by the `[key]` its row leads with, so the row and the click cannot
+  disagree.
+- **Find starts from where the reader stands.** Typing lands on the first
+  match at or below the top of the screen, wrapping to the first when
+  nothing is below — searching a conversation you have read is looking
+  for something further on.
+- **Sync leaves a stopped merge in progress.** A conflict is not an error
+  and is not aborted: the markers are what the agent needs to resolve it,
+  and the prompt names the files and asks for `git commit` at the end.
 
 New CLI commands (7, 12) are covered by `scripts/smoke.sh` the moment they
 register — it reads the command list out of `--help`. `make check` runs
