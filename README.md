@@ -128,6 +128,7 @@ opentree
 - `R` - Send the workspace's open PR review comments to its agent
 - `P` - Switch the workspace's autopilot on or off
 - `w` - Start or stop the workspace's dev server
+- `u` - Merge the base branch in (fetched from origin first); conflicts are offered to the agent
 - `t` - Open a shell in the workspace's worktree, in a tmux window beside its chat
 - `y` - Copy the worktree's path to the clipboard
 - `e` - Open the worktree in `$VISUAL`/`$EDITOR`
@@ -621,6 +622,21 @@ The dashboard's badge says CI is red; this is how the agent learns why: the
 failing checks by name, and the tail of each GitHub Actions log — where the
 test runner's summary is. Same delivery as `review`, over the control socket.
 With autopilot on, this happens by itself.
+
+#### Merge the Base In
+
+```bash
+opentree sync <branch-name>          # fetch origin's main and merge it into the branch
+opentree sync <branch-name> --ask    # …and on conflicts, hand the files to the agent
+```
+
+The dashboard's row says `PR open · conflicts`; this is what to do about it.
+The base is fetched from origin first — offline, the local one is merged and
+the command says so — and merged rather than rebased, because the branch may
+already be pushed and under review. Conflicts are not a failure: they are
+listed, the merge is left in progress in the worktree with its markers, and
+`--ask` (or `y` in the dashboard's dialog) sends the agent a prompt naming the
+files and asking it to finish the merge.
 
 #### Delete Workspace
 

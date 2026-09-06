@@ -232,6 +232,24 @@ func (m Model) View() string {
 		}, "\n"))
 	}
 
+	// A stopped merge: which files, and whether the agent takes it from here.
+	if c := m.syncConflict; c != nil {
+		body := []string{
+			confirmLabelStyle.Render(fmt.Sprintf("Merging %s into %s stopped on %s:", c.res.Ref, c.branch, plural(len(c.res.Conflicts), "conflict"))),
+		}
+		for _, f := range c.res.Conflicts {
+			body = append(body, "  "+f)
+		}
+		body = append(body, "",
+			confirmLabelStyle.Render("The merge is left in progress in the worktree, markers in place."),
+			confirmLabelStyle.Render("Hand the files to the agent to resolve?"))
+		footer := fmt.Sprintf("%s %s  •  %s %s",
+			confirmKeyStyle.Render("y"), confirmLabelStyle.Render("ask the agent"),
+			confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("leave it"),
+		)
+		return m.dialogCard("Conflicts in "+c.wsName, strings.Join(body, "\n"), footer, dialogAccent)
+	}
+
 	// Delete confirmation dialog
 	if m.deleting {
 		var titleMsg string

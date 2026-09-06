@@ -1501,3 +1501,91 @@ func TestCreate_ABaseThatIsNotABranchIsNotFetched(t *testing.T) {
 		t.Errorf("the worktree starts at %s, want the local HEAD %s", got, local)
 	}
 }
+
+// ---- bringing the base in ----
+
+func commitFile(t *testing.T, dir, name, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", name}, {"commit", "--no-gpg-sign", "-q", "-m", message}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+}
+
+func TestSync_MergesOriginsBaseIntoTheBranch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	m := New(localDir, ".opentree")
+	if _, err := m.CreateFrom("feat/x", "main", false); err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	upstream := advanceOrigin(t, localDir)
+
+	res, err := m.Sync("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("Sync(): %v", err)
+	}
+	if res.Ref != "origin/main" || !res.Updated || len(res.Conflicts) != 0 {
+		t.Errorf("res = %+v, want origin/main merged with no conflicts", res)
+	}
+	if err := exec.Command("git", "-C", m.Path("feat/x"), "merge-base", "--is-ancestor", upstream, "HEAD").Run(); err != nil {
+		t.Error("origin's commit is not in the branch after the sync")
+	}
+
+	again, err := m.Sync("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("second Sync(): %v", err)
+	}
+	if again.Updated {
+		t.Error("a second sync claims to have moved the branch")
+	}
+}
+
+// Conflicts are the ordinary outcome, not an error: listed, with the merge
+// left in progress for whoever resolves it.
+func TestSync_ReportsConflictsAndLeavesTheMergeInProgress(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	commitFile(t, repoDir, "greeting.txt", "hello\n", "greeting")
+	m := New(repoDir, ".opentree")
+	if err := m.Create("feat/x", "main"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	commitFile(t, m.Path("feat/x"), "greeting.txt", "hello from the branch\n", "branch side")
+	commitFile(t, repoDir, "greeting.txt", "hello from main\n", "main side")
+
+	res, err := m.Sync("feat/x", "main", false)
+	if err != nil {
+		t.Fatalf("Sync(): %v", err)
+	}
+	if len(res.Conflicts) != 1 || res.Conflicts[0] != "greeting.txt" {
+		t.Fatalf("Conflicts = %v, want [greeting.txt]", res.Conflicts)
+	}
+	if err := exec.Command("git", "-C", m.Path("feat/x"), "rev-parse", "-q", "--verify", "MERGE_HEAD").Run(); err != nil {
+		t.Error("the merge was not left in progress")
+	}
+	data, _ := os.ReadFile(filepath.Join(m.Path("feat/x"), "greeting.txt"))
+	if !strings.Contains(string(data), "<<<<<<<") {
+		t.Errorf("no conflict markers in the file:\n%s", data)
+	}
+}
+
+func TestSync_RefusesAWorktreeThatIsNotThere(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	m := New(initGitRepo(t), ".opentree")
+	if _, err := m.Sync("feat/nope", "main", false); err == nil {
+		t.Error("Sync() merged into a worktree that does not exist")
+	}
+}

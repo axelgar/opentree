@@ -38,7 +38,10 @@ type keyMap struct {
 	Shell    key.Binding
 	CopyPath key.Binding
 	Edit     key.Binding
-	ErrLog   key.Binding
+	// Sync pairs with the conflicts badge: the row says the PR conflicts
+	// with its base, and u is what to do about it.
+	Sync   key.Binding
+	ErrLog key.Binding
 	// CopyErrLog is only ever consulted inside the error log, which swallows
 	// every other key. That is why it can share a letter with Stop without
 	// either becoming ambiguous — the log is modal, and the list is not
@@ -60,7 +63,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.Compare, k.Promote, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
-		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
+		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Sync, k.Filter, k.Sort},
 		{k.Shell, k.CopyPath, k.Edit, k.Agent, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
@@ -178,6 +181,11 @@ var keys = keyMap{
 	Edit: key.NewBinding(
 		key.WithKeys("e"),
 		key.WithHelp("e", "open in $EDITOR"),
+	),
+	// u as in update: bring the base in.
+	Sync: key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "merge base in"),
 	),
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),

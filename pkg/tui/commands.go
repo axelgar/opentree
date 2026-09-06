@@ -43,6 +43,32 @@ func (m Model) openShellCmd(name string) tea.Cmd {
 	}
 }
 
+// syncCmd merges the workspace's base into its branch.
+func (m Model) syncCmd(ws WorkspaceItem) tea.Cmd {
+	return func() tea.Msg {
+		res, err := m.svc.Sync(ws.Name, false)
+		if err != nil {
+			return errMsg{fmt.Errorf("%s: %w", ws.Name, err)}
+		}
+		return syncedMsg{wsName: ws.Name, branch: ws.Branch, res: res}
+	}
+}
+
+// askToResolveCmd hands a stopped merge to the workspace's agent, over the
+// chat's socket the way review comments travel.
+func (m Model) askToResolveCmd(c *syncConflict) tea.Cmd {
+	repoRoot, wsName, prompt := m.repoRoot, c.wsName, workspace.SyncConflictPrompt(c.branch, c.res)
+	count := len(c.res.Conflicts)
+	return func() tea.Msg {
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, chat.Command{
+			Type: chat.CommandPrompt, Text: prompt,
+		}); err != nil {
+			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
+		}
+		return resolveAskedMsg{wsName: wsName, count: count}
+	}
+}
+
 // copyPathCmd puts a worktree's path on the clipboard, for the terminal
 // tab, the editor or the file dialog it is about to be pasted into.
 func copyPathCmd(path string) tea.Cmd {

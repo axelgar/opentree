@@ -984,3 +984,90 @@ func parseNumstat(output string) []FileChange {
 	}
 	return files
 }
+
+// SyncResult is what bringing the base into a branch did.
+type SyncResult struct {
+	// Ref is what was merged: origin's copy of the base when it could be
+	// fetched, the local one otherwise.
+	Ref string
+	// Offline is why it was the local one, when origin was asked and could
+	// not answer.
+	Offline string
+	// Updated is whether the branch moved: false when it already had
+	// everything the base has.
+	Updated bool
+	// Conflicts is the files the merge stopped on. The merge is left in
+	// progress in the worktree, markers and all, which is where whoever
+	// resolves it needs it.
+	Conflicts []string
+}
+
+// Note is the line worth saying about where the merge came from, or nothing.
+func (r SyncResult) Note() string {
+	if r.Offline != "" {
+		return fmt.Sprintf("could not fetch origin (%s) — merged the local %s, which may be behind", r.Offline, r.Ref)
+	}
+	return ""
+}
+
+// Sync brings the base into a branch: origin's copy when it can be reached,
+// merged into the worktree. A merge, not a rebase — the branch may already
+// be pushed and under review, and a rebase rewrites what the PR has.
+//
+// Conflicts are not an error. They are the ordinary outcome of two branches
+// touching one file, and the result lists them with the merge left in
+// progress: the agent working in the worktree is the one to resolve them,
+// and it needs the markers in place to do it. An error is a merge that
+// could not begin — uncommitted changes in its way, no such base.
+func (m *Manager) Sync(branchName, base string, fetch bool) (SyncResult, error) {
+	res := SyncResult{Ref: base}
+	path := m.Path(branchName)
+	if _, err := os.Stat(path); err != nil {
+		return res, fmt.Errorf("no worktree for %q at %s", branchName, path)
+	}
+	if fetch && m.hasOrigin() && m.namesBranch(base) {
+		switch err := m.fetch(base); {
+		case err != nil:
+			res.Offline = err.Error()
+		case m.remoteBranchExists(base):
+			res.Ref = "origin/" + base
+		}
+	}
+
+	before := headSHA(path)
+	cmd := exec.Command("git", "merge", "--no-edit", res.Ref)
+	cmd.Dir = path
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if conflicts := conflictedFiles(path); len(conflicts) > 0 {
+			res.Conflicts = conflicts
+			return res, nil
+		}
+		return res, fmt.Errorf("failed to merge %s into %s: %w\nOutput: %s", res.Ref, branchName, err, output)
+	}
+	res.Updated = headSHA(path) != before
+	return res, nil
+}
+
+// conflictedFiles is what a stopped merge stopped on.
+func conflictedFiles(path string) []string {
+	out, err := gitutil.Output(path, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// headSHA is a worktree's HEAD, or "" for one git cannot read.
+func headSHA(path string) string {
+	out, err := gitutil.Output(path, "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}

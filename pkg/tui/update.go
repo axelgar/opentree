@@ -210,6 +210,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// A stopped merge, asking who resolves it.
+		if m.syncConflict != nil {
+			switch msg.String() {
+			case "y", "Y":
+				c := m.syncConflict
+				m.syncConflict = nil
+				return m, m.askToResolveCmd(c)
+			case "n", "esc":
+				m.syncConflict = nil
+			}
+			return m, nil
+		}
+
 		// Delete confirmation mode
 		if m.deleting {
 			switch msg.String() {
@@ -551,6 +564,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
 				return m, m.toggleAutopilotCmd(ws)
+			}
+		case key.Matches(msg, m.keys.Sync):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, tea.Batch(m.syncCmd(ws), m.noticeCmd("merging "+m.baseOr(ws.BaseBranch)+" into "+ws.Name+"…"))
 			}
 		case key.Matches(msg, m.keys.Shell):
 			if len(visible) > 0 {
@@ -1207,6 +1228,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case browserOpenedMsg:
 		return m, m.noticeCmd("opened " + ui.Truncate(msg.url, 60) + " in browser")
 
+	case syncedMsg:
+		switch {
+		case len(msg.res.Conflicts) > 0:
+			m.syncConflict = &syncConflict{wsName: msg.wsName, branch: msg.branch, res: msg.res}
+			return m, nil
+		case msg.res.Updated:
+			return m, tea.Batch(m.loadWorkspacesCmd, m.noticeCmd("merged "+msg.res.Ref+" into "+msg.wsName))
+		}
+		return m, m.noticeCmd(msg.wsName + " already has everything " + msg.res.Ref + " has")
+
+	case resolveAskedMsg:
+		return m, m.noticeCmd(fmt.Sprintf("asked %s's agent to resolve %s", msg.wsName, plural(msg.count, "conflict")))
+
 	case pathCopiedMsg:
 		if msg.err != nil {
 			return m, m.transientErrCmd("copy failed: " + msg.err.Error())
@@ -1250,7 +1284,7 @@ const wheelLines = 3
 func (m Model) busyWithDialog() bool {
 	return m.creating || m.deleting || m.promoting || m.filtering || m.prCreating || m.prGenerating ||
 		m.agentSelecting || m.agentInstallConfirm != nil || m.answering || m.prompting ||
-		m.showErrLog
+		m.showErrLog || m.syncConflict != nil
 }
 
 // handleMouse routes the mouse: the wheel to whatever scrolls, a press to the
