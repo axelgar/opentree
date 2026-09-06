@@ -75,6 +75,11 @@ type Options struct {
 	// SessionID is an existing conversation to resume. Empty starts a new one.
 	SessionID string
 
+	// History is the file the messages typed here are kept in between
+	// chats, so ↑ still finds them after the window has been closed and
+	// reopened. Empty keeps them for this process only.
+	History string
+
 	// KnownSessions are the conversations opentree has already opened in this
 	// worktree. They are what /resume offers an agent that cannot enumerate its
 	// own — with one that can, the agent's list is merged over them.
@@ -686,6 +691,7 @@ func newModel(ctx context.Context, client *acp.Client, info *acp.InitializeRespo
 		input:   newComposer(),
 		help:    help.New(),
 		keys:    keys,
+		history: loadHistory(opts.History),
 	}
 	return m.withAgentInfo(info)
 }

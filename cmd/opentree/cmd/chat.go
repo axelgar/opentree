@@ -76,6 +76,7 @@ func runChat(ctx context.Context, name, version string) error {
 		Agent:      agent,
 		Version:    version,
 		SocketPath: chat.SocketPath(repoRoot, ws.Name),
+		History:    chat.HistoryPath(repoRoot, ws.Name),
 		SessionID:  resumableSession(ws, agent.Command),
 		Setup:      setupPhase(repoRoot, store, ws),
 		Autopilot:  autopilotSpec(repoRoot, store, ws),

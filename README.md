@@ -295,6 +295,9 @@ forward again, and coming back past the newest returns whatever was half typed
 when you started looking — so a prompt worth repeating, or repeating with one
 word changed, is a keypress away rather than a retype. Inside a message the
 arrows still move the cursor: they only recall from its first and last row.
+They are kept per workspace, under `~/.opentree/history`, so a window closed
+and reopened — or a chat restarted after its agent died — still has the last
+two hundred.
 
 **Messages you have not sent yet.** Enter while the agent is still working
 queues the message instead of dropping it: it waits as a `⏳` line above the
