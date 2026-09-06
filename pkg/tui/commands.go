@@ -12,6 +12,7 @@ import (
 
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/clipboard"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/skills"
@@ -28,7 +29,7 @@ func (m Model) copyErrLogCmd() tea.Cmd {
 	entries := append([]string(nil), m.errLog...)
 	text := strings.Join(entries, "\n") + "\n"
 	return func() tea.Msg {
-		if err := copyToClipboard(text); err != nil {
+		if err := clipboard.Write(text); err != nil {
 			return errLogCopiedMsg{err: err}
 		}
 		return errLogCopiedMsg{count: len(entries)}
