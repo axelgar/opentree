@@ -12,6 +12,7 @@ import (
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/workspace"
 )
 
@@ -36,6 +37,7 @@ task; without it the siblings start idle, waiting to be messaged.`,
 		agentOverride, _ := cmd.Flags().GetString("agent")
 		agentsFlag, _ := cmd.Flags().GetStringSlice("agents")
 		promptFlag, _ := cmd.Flags().GetString("prompt")
+		noFetch, _ := cmd.Flags().GetBool("no-fetch")
 
 		if err := newFlagConflict(fromRemote, agentOverride, agentsFlag, promptFlag); err != nil {
 			return err
@@ -77,15 +79,16 @@ task; without it the siblings start idle, waiting to be messaged.`,
 		}
 
 		if len(agentsFlag) > 0 {
-			return runFanout(svc, repoRoot, branchName, baseBranch, agentsFlag, promptFlag)
+			return runFanout(svc, repoRoot, branchName, baseBranch, agentsFlag, promptFlag, noFetch)
 		}
 
-		ws, err := svc.CreateWith(branchName, baseBranch, workspace.CreateOpts{Agent: agentOverride})
+		ws, err := svc.CreateWith(branchName, baseBranch, workspace.CreateOpts{Agent: agentOverride, NoFetch: noFetch})
 		if err != nil {
 			return err
 		}
 
 		fmt.Printf("✓ Created workspace '%s' based on '%s'\n", ws.Name, ws.BaseBranch)
+		printStartNote(ws)
 		fmt.Printf("✓ Launched %s in tmux window\n", ws.Agent)
 		fmt.Printf("\nTo attach: opentree attach %s\n", ws.Name)
 		return nil
@@ -115,7 +118,7 @@ func newFlagConflict(fromRemote bool, agent string, agents []string, prompt stri
 // "workspaces exist, agents launched", and a prompt that could not be sent
 // leaves a workspace the user can attach to and paste into, unlike dispatch,
 // where the prompt is the job and its failure fails the command.
-func runFanout(svc *workspace.Service, repoRoot, base, baseBranch string, agents []string, prompt string) error {
+func runFanout(svc *workspace.Service, repoRoot, base, baseBranch string, agents []string, prompt string, noFetch bool) error {
 	if prompt == "" {
 		stdin, err := stdinPrompt()
 		if err != nil {
@@ -124,9 +127,12 @@ func runFanout(svc *workspace.Service, repoRoot, base, baseBranch string, agents
 		prompt = stdin
 	}
 
-	created, err := svc.CreateFanout(base, baseBranch, agents)
+	created, err := svc.CreateFanoutWith(base, baseBranch, agents, workspace.CreateOpts{NoFetch: noFetch})
 	for _, ws := range created {
 		fmt.Printf("✓ Created workspace '%s' (%s) based on '%s'\n", ws.Name, ws.Agent, ws.BaseBranch)
+	}
+	if len(created) > 0 {
+		printStartNote(created[0]) // one base, fetched once, so one line
 	}
 	if err != nil {
 		return err
@@ -194,6 +200,7 @@ func init() {
 	NewCmd.Flags().String("agent", "", "Agent to run in this workspace instead of the configured one")
 	NewCmd.Flags().StringSlice("agents", nil, "Fan out: one sibling workspace per agent, racing the same task")
 	NewCmd.Flags().String("prompt", "", "Task to send every fan-out sibling (default: piped stdin, if any)")
+	NewCmd.Flags().Bool("no-fetch", false, "Branch from the base as it is here, without fetching origin's first")
 	_ = NewCmd.RegisterFlagCompletionFunc("agent", agentCommandCompletions)
 	_ = NewCmd.RegisterFlagCompletionFunc("agents", agentListCompletions)
 }
@@ -221,4 +228,14 @@ func agentListCompletions(cmd *cobra.Command, args []string, toComplete string) 
 		completions = append(completions, fmt.Sprintf("%s%s\t%s", prefix, a.Command, a.Description))
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+// printStartNote says where the branch began when that is worth a line: that
+// origin was fetched first, or that it could not be and the local base was
+// used — the one thing about a new workspace that is a surprise later if it
+// is not said now.
+func printStartNote(ws *state.Workspace) {
+	if ws.StartNote != "" {
+		fmt.Printf("  %s\n", ws.StartNote)
+	}
 }

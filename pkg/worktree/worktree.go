@@ -1,6 +1,8 @@
 package worktree
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/axelgar/opentree/pkg/gitutil"
 )
@@ -25,6 +28,10 @@ type Manager struct {
 	// user's, which is the one case the directory is claimed with a marker:
 	// two clones with one name would otherwise share it.
 	defaulted bool
+
+	// fetched is the branches already fetched from origin by this process,
+	// so a fan-out asks once for the base its siblings share.
+	fetched map[string]bool
 }
 
 // New creates a new worktree manager with explicit repo root and base directory.
@@ -352,30 +359,134 @@ func (m *Manager) gitCommonDir() string {
 	return dir
 }
 
-// Create creates a new git worktree for the given branch
+// Create creates a new git worktree for the given branch, fetching the base
+// from origin first.
 func (m *Manager) Create(branchName, baseBranch string) error {
+	_, err := m.CreateFrom(branchName, baseBranch, true)
+	return err
+}
+
+// Start is where a new branch began: the ref it was made from, and — when
+// origin was asked and could not answer — why it is the local one.
+type Start struct {
+	Ref     string
+	Offline string
+}
+
+// Note is the line a caller says about it, or nothing when the branch began
+// where the caller asked and nothing was consulted on the way.
+func (s Start) Note() string {
+	switch {
+	case s.Offline != "":
+		return fmt.Sprintf("could not fetch origin (%s) — branched from the local %s, which may be behind", s.Offline, s.Ref)
+	case strings.HasPrefix(s.Ref, "origin/"):
+		return "fetched " + s.Ref + " first"
+	}
+	return ""
+}
+
+// fetchTimeout bounds the fetch that precedes a branch. A remote that does
+// not answer in this long is one to branch without, and say so, rather than
+// one to wait on: the workspace is what was asked for.
+const fetchTimeout = 15 * time.Second
+
+// CreateFrom creates a new git worktree for the given branch, from the base
+// as origin has it when fetch is set and origin can be reached.
+//
+// The local base is whatever was last pulled, and a workspace made from a
+// main that is a day behind carries a day of merged commits into its PR, or
+// conflicts with them. So the base is fetched first, and the branch made
+// from origin/<base>. Only when the base names a branch: a sha or a tag is
+// what it is wherever it is read. Only when there is an origin to ask. And
+// only best-effort — offline, the branch is made from the local base and
+// the Start says so, because the workspace was the request and the fetch
+// was on the way to it.
+//
+// --no-track, because a branch made from origin/main would otherwise track
+// origin/main: git status would say "up to date with origin/main" about a
+// feature branch, and the agent's `git pull` would merge main into it.
+func (m *Manager) CreateFrom(branchName, baseBranch string, fetch bool) (Start, error) {
+	start := Start{Ref: baseBranch}
 	worktreePath, err := m.worktreePath(branchName)
 	if err != nil {
-		return err
+		return start, err
 	}
 
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
-		return fmt.Errorf("worktree already exists: %s", worktreePath)
+		return start, fmt.Errorf("worktree already exists: %s", worktreePath)
 	}
 
 	if err := m.ensureBaseDir(); err != nil {
-		return err
+		return start, err
+	}
+
+	if fetch && m.hasOrigin() && m.namesBranch(baseBranch) {
+		switch err := m.fetch(baseBranch); {
+		case err != nil:
+			start.Offline = err.Error()
+		case m.remoteBranchExists(baseBranch):
+			start.Ref = "origin/" + baseBranch
+		}
 	}
 
 	// Create git worktree
-	cmd := exec.Command("git", "worktree", "add", "-b", branchName, "--", worktreePath, baseBranch)
+	cmd := exec.Command("git", "worktree", "add", "--no-track", "-b", branchName, "--", worktreePath, start.Ref)
 	cmd.Dir = m.repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create git worktree: %w\nOutput: %s", err, output)
+		return start, fmt.Errorf("failed to create git worktree: %w\nOutput: %s", err, output)
 	}
 
+	return start, nil
+}
+
+// fetch brings origin's copy of a branch up to date, once per process: a
+// fan-out makes three siblings from one base in one command, and the base
+// does not move between them.
+func (m *Manager) fetch(branch string) error {
+	if m.fetched[branch] {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--quiet", "origin", "--", branch)
+	cmd.Dir = m.repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("no answer in %s", fetchTimeout)
+		}
+		if reason, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n"); reason != "" {
+			return errors.New(reason)
+		}
+		return err
+	}
+	if m.fetched == nil {
+		m.fetched = make(map[string]bool)
+	}
+	m.fetched[branch] = true
 	return nil
+}
+
+// hasOrigin reports whether there is an origin to fetch from at all.
+func (m *Manager) hasOrigin() bool {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = m.repoRoot
+	return cmd.Run() == nil
+}
+
+// namesBranch reports whether a base is a branch name — one this repository
+// has, locally or from origin — rather than a sha, a tag or HEAD.
+func (m *Manager) namesBranch(base string) bool {
+	return m.branchExists(base) || m.remoteBranchExists(base)
+}
+
+// remoteBranchExists reports whether origin has a branch by this name, as far
+// as this repository has heard.
+func (m *Manager) remoteBranchExists(branch string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch)
+	cmd.Dir = m.repoRoot
+	return cmd.Run() == nil
 }
 
 // CreateFromRemote creates a new git worktree for a branch that already exists on the remote.

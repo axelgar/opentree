@@ -770,10 +770,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			// Creating a workspace means wanting to work in it: go straight
-			// to the chat. Quitting the chat drops back to the list.
+			// to the chat. Quitting the chat drops back to the list, where a
+			// note about the branch's start is still waiting.
+			var note tea.Cmd
+			if msg.note != "" {
+				note = m.noticeCmd(msg.wsName + ": " + msg.note)
+			}
 			return m, tea.Batch(
 				m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false),
 				m.attachWorkspaceCmd(msg.wsName),
+				note,
 			)
 		}
 		return m, nil

@@ -140,7 +140,7 @@ func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir, note: ws.StartNote}
 	}
 }
 
@@ -150,7 +150,7 @@ func (m Model) createWorkspaceFromRemoteCmd(branchName string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir, note: ws.StartNote}
 	}
 }
 
@@ -189,7 +189,7 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir, note: ws.StartNote}
 	}
 }
 

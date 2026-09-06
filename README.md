@@ -504,7 +504,14 @@ opentree new feat/user-auth           # Create workspace with branch
 opentree new fix/login-bug --base dev # Branch off 'dev' instead of 'main'
 opentree new feat/x --agent claude    # Run claude here, whatever the config says
 opentree new feat/x --agents claude,gemini --prompt "task"  # Fan out — see Fan-out
+opentree new feat/x --no-fetch        # Branch from the local base as it is
 ```
+
+The base is fetched from origin first, and the branch made from `origin/<base>`:
+a `main` last pulled yesterday would otherwise start the workspace a day behind,
+and its PR would carry or conflict with commits already merged. Offline, the
+command says so and branches from the local base; `--no-fetch` skips the fetch
+on purpose. `issue` and `dispatch` do the same.
 
 Creates:
 

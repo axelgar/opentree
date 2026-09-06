@@ -287,6 +287,10 @@ type CreateOpts struct {
 	// FanoutGroup stamps the workspace as one sibling of a fan-out, carrying
 	// the base name the group shares. Empty means an ordinary workspace.
 	FanoutGroup string
+
+	// NoFetch branches from the base as it is here, without asking origin
+	// for a newer one first.
+	NoFetch bool
 }
 
 // Create creates a new workspace: git worktree, tmux window with agent, and state entry.
@@ -304,7 +308,8 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 		return nil, err
 	}
 
-	if err := s.worktrees.Create(name, baseBranch); err != nil {
+	start, err := s.worktrees.CreateFrom(name, baseBranch, !opts.NoFetch)
+	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
 	s.seedWorktree(name)
@@ -323,6 +328,7 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 		Agent:       agent,
 		WorktreeDir: worktreePath,
 		FanoutGroup: opts.FanoutGroup,
+		StartNote:   start.Note(),
 	}
 	if err := s.state.AddWorkspace(ws); err != nil {
 		// Roll back: a worktree+window with no state entry is invisible to
@@ -339,6 +345,11 @@ func (s *Service) CreateWith(name, baseBranch string, opts CreateOpts) (*state.W
 // name and metadata come from the issue. The user hands the agent the issue
 // context themselves.
 func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Workspace, error) {
+	return s.CreateFromIssueWith(issueNum, baseBranch, CreateOpts{})
+}
+
+// CreateFromIssueWith is CreateFromIssue with per-workspace overrides.
+func (s *Service) CreateFromIssueWith(issueNum int, baseBranch string, opts CreateOpts) (*state.Workspace, error) {
 	if !s.github.IsInstalled() {
 		return nil, fmt.Errorf("gh CLI is not installed — install it from https://cli.github.com/")
 	}
@@ -353,7 +364,7 @@ func (s *Service) CreateFromIssue(issueNum int, baseBranch string) (*state.Works
 		baseBranch = s.cfg.Worktree.DefaultBase
 	}
 
-	ws, err := s.Create(branchName, baseBranch)
+	ws, err := s.CreateWith(branchName, baseBranch, opts)
 	if err != nil {
 		return nil, err
 	}

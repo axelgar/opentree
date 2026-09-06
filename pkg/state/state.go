@@ -73,6 +73,13 @@ type Workspace struct {
 	MergeConflicts bool      `json:"merge_conflicts,omitempty"`
 	RemoteDeleted  bool      `json:"remote_deleted,omitempty"`
 
+	// StartNote is what the command that made the workspace should say about
+	// where its branch began — that origin was fetched first, or that it
+	// could not be and the local base was used. For that command only, and
+	// so never written: a note about one moment means nothing on the next
+	// read.
+	StartNote string `json:"-"`
+
 	// AdoptedBranch is a branch opentree found rather than made: `opentree new`
 	// from a branch that already existed locally, checked out into a worktree.
 	// Deleting the workspace deletes the branch, which is right for a branch

@@ -1337,3 +1337,167 @@ func TestCreate_ExcludesTheStateDirectoryWhateverTheBase(t *testing.T) {
 		t.Errorf(".git/info/exclude names a directory outside the repository:\n%s", got)
 	}
 }
+
+// ---- fetching the base first ----
+
+// advanceOrigin moves origin's main past what the clone at localDir has, from
+// a second clone, the way a colleague's merge does.
+func advanceOrigin(t *testing.T, localDir string) string {
+	t.Helper()
+	remote, err := exec.Command("git", "-C", localDir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		t.Fatalf("remote get-url: %v", err)
+	}
+	other := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = other
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "clone", "--quiet", "--branch", "main", strings.TrimSpace(string(remote)), ".")
+	run("git", "config", "user.email", "test@example.com")
+	run("git", "config", "user.name", "Test")
+	run("git", "commit", "--allow-empty", "--no-gpg-sign", "-m", "merged upstream")
+	run("git", "push", "--quiet", "origin", "HEAD:main")
+	sha, err := exec.Command("git", "-C", other, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	return strings.TrimSpace(string(sha))
+}
+
+func headOf(t *testing.T, dir string) string {
+	t.Helper()
+	sha, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse in %s: %v", dir, err)
+	}
+	return strings.TrimSpace(string(sha))
+}
+
+// The local main is whatever was last pulled. A workspace branched from it
+// starts behind origin, and its PR carries or conflicts with what merged in
+// the meantime — so the base is fetched first, and the branch made from
+// origin's copy.
+func TestCreate_FetchesTheBaseFirst(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	upstream := advanceOrigin(t, localDir)
+	if headOf(t, localDir) == upstream {
+		t.Fatal("the clone already has origin's commit; nothing to fetch")
+	}
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "origin/main" || start.Offline != "" {
+		t.Errorf("start = %+v, want origin/main with nothing offline", start)
+	}
+	if got := headOf(t, m.Path("feat/x")); got != upstream {
+		t.Errorf("the worktree starts at %s, want origin's %s", got, upstream)
+	}
+	if start.Note() != "fetched origin/main first" {
+		t.Errorf("Note() = %q", start.Note())
+	}
+
+	// And it is a branch of its own, not one tracking origin/main: git status
+	// must not call a feature branch "up to date with origin/main".
+	if out, _ := exec.Command("git", "-C", localDir, "config", "branch.feat/x.merge").Output(); strings.TrimSpace(string(out)) != "" {
+		t.Errorf("feat/x tracks %s; a new branch must not track its base", out)
+	}
+}
+
+func TestCreate_NoFetchBranchesFromTheLocalBase(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	advanceOrigin(t, localDir)
+	local := headOf(t, localDir)
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", false)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "main" || start.Note() != "" {
+		t.Errorf("start = %+v, want the local main and nothing to say", start)
+	}
+	if got := headOf(t, m.Path("feat/x")); got != local {
+		t.Errorf("the worktree starts at %s, want the local %s", got, local)
+	}
+}
+
+// Offline is not a reason to refuse the workspace: the branch is made from
+// the local base, and the Start says so, for the command to repeat.
+func TestCreate_OfflineBranchesFromTheLocalBaseAndSaysSo(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	if out, err := exec.Command("git", "-C", localDir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone")).CombinedOutput(); err != nil {
+		t.Fatalf("set-url: %v\n%s", err, out)
+	}
+	local := headOf(t, localDir)
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "main" || start.Offline == "" {
+		t.Errorf("start = %+v, want the local main with the fetch's failure", start)
+	}
+	if !strings.Contains(start.Note(), "could not fetch origin") || !strings.Contains(start.Note(), "local main") {
+		t.Errorf("Note() = %q", start.Note())
+	}
+	if got := headOf(t, m.Path("feat/x")); got != local {
+		t.Errorf("the worktree starts at %s, want the local %s", got, local)
+	}
+}
+
+// No origin, nothing to ask: no note either, since nothing was tried.
+func TestCreate_WithoutAnOriginSkipsTheFetch(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	repoDir := initGitRepo(t)
+	m := New(repoDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "main", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "main" || start.Offline != "" || start.Note() != "" {
+		t.Errorf("start = %+v, want the local main and silence", start)
+	}
+}
+
+// A base that is not a branch — HEAD, a sha, a tag — is what it is wherever
+// it is read, and is not fetched.
+func TestCreate_ABaseThatIsNotABranchIsNotFetched(t *testing.T) {
+	if !isGitAvailable() {
+		t.Skip("git not available")
+	}
+	localDir := initRepoWithRemote(t, "feat/other")
+	advanceOrigin(t, localDir)
+	local := headOf(t, localDir)
+
+	m := New(localDir, ".opentree")
+	start, err := m.CreateFrom("feat/x", "HEAD", true)
+	if err != nil {
+		t.Fatalf("CreateFrom(): %v", err)
+	}
+	if start.Ref != "HEAD" || start.Note() != "" {
+		t.Errorf("start = %+v, want HEAD as given", start)
+	}
+	if got := headOf(t, m.Path("feat/x")); got != local {
+		t.Errorf("the worktree starts at %s, want the local HEAD %s", got, local)
+	}
+}

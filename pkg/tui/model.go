@@ -259,6 +259,9 @@ type createdWorkspaceMsg struct {
 	wsName      string
 	branch      string
 	worktreeDir string
+	// note is where the branch began, when that is worth saying — origin
+	// could not be fetched, and the base is the local one.
+	note string
 }
 type deletedWorkspaceMsg struct{ names []string }
 type promotedWorkspaceMsg struct {
