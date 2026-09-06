@@ -22,6 +22,10 @@ type ProcessManager interface {
 	// KEY=value pairs set in the window's environment.
 	CreateAppWindow(name, workdir, command string, env []string, args ...string) error
 
+	// CreateShellWindow creates a window running the user's shell in
+	// workdir, for the user rather than for a program.
+	CreateShellWindow(name, workdir string) error
+
 	// ListWindows returns all windows in the current session.
 	ListWindows() ([]Window, error)
 

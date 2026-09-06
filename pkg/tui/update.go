@@ -552,6 +552,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.toggleAutopilotCmd(ws)
 			}
+		case key.Matches(msg, m.keys.Shell):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, m.openShellCmd(ws.Name)
+			}
+		case key.Matches(msg, m.keys.CopyPath):
+			if len(visible) > 0 {
+				return m, copyPathCmd(m.svc.WorktreePath(visible[m.cursor].Name))
+			}
+		case key.Matches(msg, m.keys.Edit):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, editWorktreeCmd(m.svc.WorktreePath(ws.Name))
+			}
 		case key.Matches(msg, m.keys.Review):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
@@ -1186,6 +1206,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case browserOpenedMsg:
 		return m, m.noticeCmd("opened " + ui.Truncate(msg.url, 60) + " in browser")
+
+	case pathCopiedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("copy failed: " + msg.err.Error())
+		}
+		return m, m.noticeCmd("copied " + ui.Truncate(msg.path, 70))
+
+	case editorFinishedMsg:
+		// The editor had the terminal; the mouse comes back with it.
+		if msg.err != nil {
+			return m, afterExec(m.transientErrCmd("editor: " + msg.err.Error()))
+		}
+		return m, afterExec(m.loadWorkspacesCmd)
 
 	case errLogCopiedMsg:
 		if msg.err != nil {

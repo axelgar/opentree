@@ -437,6 +437,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copiedMsg:
 		return m.copied(msg)
 
+	case shellOpenedMsg:
+		return m.shellOpened(msg)
+
 	case flashClearMsg:
 		// The receipt and the highlight it was the receipt for go together.
 		return m.clearFlash(msg).clearSelection(), nil

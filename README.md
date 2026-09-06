@@ -88,8 +88,9 @@ opentree
 opentree new feat/add-auth       # Create workspace
 opentree issue 42                # Create workspace from GitHub issue #42
 opentree dispatch 42 --headless  # Issue #42 → agent → checks → PR, unattended
-opentree list                    # List all workspaces
+opentree list                    # List all workspaces, with their paths
 opentree attach feat/add-auth    # Attach to tmux window
+opentree shell feat/add-auth     # A shell in the worktree, beside the chat
 opentree diff feat/add-auth      # Review changes
 opentree pr feat/add-auth        # Create GitHub PR
 opentree delete feat/add-auth    # Clean up workspace
@@ -127,6 +128,9 @@ opentree
 - `R` - Send the workspace's open PR review comments to its agent
 - `P` - Switch the workspace's autopilot on or off
 - `w` - Start or stop the workspace's dev server
+- `t` - Open a shell in the workspace's worktree, in a tmux window beside its chat
+- `y` - Copy the worktree's path to the clipboard
+- `e` - Open the worktree in `$VISUAL`/`$EDITOR`
 - `b` - Jump to the workspace that has been waiting longest on a permission (press again to cycle)
 - `space` - Toggle multi-select on current workspace
 - `/` - Filter workspaces by name
@@ -233,7 +237,7 @@ agent's own logo, in its own colours:
 | `enter` | send |
 | `shift+enter` | newline — `ctrl+j` where the terminal cannot report modifiers |
 | `↑` / `↓` | walk back through the messages already sent, and forward again |
-| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
+| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model`, `/shell` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn — or clear an unsent message (`↑` brings it back) |
@@ -547,6 +551,22 @@ opentree attach <branch-name>
 ```
 
 Attaches to the workspace's tmux window. Detach with `Ctrl+b d`.
+
+#### Get Into the Worktree
+
+```bash
+opentree path <branch-name>          # print the worktree's directory
+cd "$(opentree path feat/x)"         # …which is what it is for
+opentree shell <branch-name>         # a shell there, in a tmux window beside the chat
+```
+
+The chat's window is opentree's, holding the conversation. When the agent asks
+for something only a person at a prompt can do — run the tests, check a URL,
+paste back what a command printed — `shell` opens a window of your own in the
+worktree (`<branch>:sh`, reused while it lives) and takes you to it; `/shell`
+in the chat and `t` in the dashboard do the same. `path` prints the directory
+and nothing else, because a branch's directory is not its name: `feat/x` lives
+at `feat-x`, under `~/.opentree/worktrees/<repo>` by default.
 
 #### Show Diff
 

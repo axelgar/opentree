@@ -264,6 +264,15 @@ type createdWorkspaceMsg struct {
 	note string
 }
 type deletedWorkspaceMsg struct{ names []string }
+
+// pathCopiedMsg is the clipboard's answer to y.
+type pathCopiedMsg struct {
+	path string
+	err  error
+}
+
+// editorFinishedMsg is the editor handing the terminal back after e.
+type editorFinishedMsg struct{ err error }
 type promotedWorkspaceMsg struct {
 	winner  string
 	deleted []string

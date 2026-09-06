@@ -455,9 +455,11 @@ func (s *Service) Delete(name string) error {
 	// Kill tmux window (ignore error if window doesn't exist), and the server's
 	// window with it: the directory it was serving has just gone, and a dev
 	// server left running against a deleted worktree holds its port and prints
-	// stack traces at nobody.
+	// stack traces at nobody. The shell's too — a shell whose directory has
+	// gone is a prompt that fails every command typed into it.
 	_ = s.process.KillWindow(name)
 	_ = s.process.KillWindow(s.ServerWindow(name))
+	_ = s.process.KillWindow(s.ShellWindow(name))
 
 	if err := s.state.DeleteWorkspace(name); err != nil {
 		return fmt.Errorf("failed to delete workspace state: %w", err)
@@ -531,6 +533,7 @@ func (s *Service) DeleteMultiple(names []string) error {
 		}
 		_ = s.process.KillWindow(name)
 		_ = s.process.KillWindow(s.ServerWindow(name))
+		_ = s.process.KillWindow(s.ShellWindow(name))
 		if err := s.state.DeleteWorkspace(name); err != nil {
 			batch.Failed = append(batch.Failed, DeleteFailure{Name: name, Err: fmt.Errorf("failed to delete workspace state: %w", err)})
 			continue
@@ -647,6 +650,7 @@ func (s *Service) Prune() (PruneResult, error) {
 		}
 		_ = s.process.KillWindow(ws.Name)
 		_ = s.process.KillWindow(s.ServerWindow(ws.Name))
+		_ = s.process.KillWindow(s.ShellWindow(ws.Name))
 		if err := s.state.DeleteWorkspace(ws.Name); err != nil {
 			return result, fmt.Errorf("failed to prune %s: %w", ws.Name, err)
 		}
@@ -673,11 +677,14 @@ func (s *Service) pruneServerWindows() []string {
 	live := make(map[string]bool)
 	for _, ws := range s.state.ListWorkspaces() {
 		live[s.ServerWindow(ws.Name)] = true
+		live[s.ShellWindow(ws.Name)] = true
 	}
 
 	var killed []string
 	for _, w := range windows {
-		if !strings.HasSuffix(w.Name, tmux.RunSuffix) || live[w.Name] {
+		// Shell windows are swept on the same terms: opentree opened them
+		// for a workspace, and the workspace is gone.
+		if (!strings.HasSuffix(w.Name, tmux.RunSuffix) && !strings.HasSuffix(w.Name, tmux.ShellSuffix)) || live[w.Name] {
 			continue
 		}
 		// A run window belonging to another checkout looks exactly like an

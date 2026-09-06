@@ -27,6 +27,7 @@ type mockProcessManager struct {
 	createWindowArgs     [][]string
 	createWindowErr      error
 	appWindowCalls       []string // names passed to CreateAppWindow
+	shellWindowCalls     []string // names passed to CreateShellWindow
 	killWindowCalls      []string
 	killSessionCalled    bool
 	windows              []Window
@@ -40,6 +41,17 @@ func (m *mockProcessManager) CreateAppWindow(name, workdir, command string, env 
 	m.createWindowCommands = append(m.createWindowCommands, command)
 	m.createWindowArgs = append(m.createWindowArgs, args)
 	return m.createWindowErr
+}
+
+// CreateShellWindow records the window and lists it from then on, so a
+// second request for the same shell finds the first.
+func (m *mockProcessManager) CreateShellWindow(name, workdir string) error {
+	m.shellWindowCalls = append(m.shellWindowCalls, name)
+	if m.createWindowErr != nil {
+		return m.createWindowErr
+	}
+	m.windows = append(m.windows, Window{ID: "@" + name, Name: name, Path: workdir})
+	return nil
 }
 
 func (m *mockProcessManager) ListWindows() ([]Window, error) { return m.windows, nil }
@@ -333,7 +345,8 @@ func TestDeleteMultiple(t *testing.T) {
 	// Two windows per workspace: the chat, and the dev server's own. A server
 	// left running against a deleted worktree holds its port and prints stack
 	// traces at nobody.
-	want := []string{"branch-a", "branch-a:run", "branch-b", "branch-b:run"}
+	// Three windows per workspace: the chat, its server and its shell.
+	want := []string{"branch-a", "branch-a:run", "branch-a:sh", "branch-b", "branch-b:run", "branch-b:sh"}
 	for _, name := range want {
 		if !slices.Contains(mock.killWindowCalls, name) {
 			t.Errorf("KillWindow calls = %v, missing %q", mock.killWindowCalls, name)
