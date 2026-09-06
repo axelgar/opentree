@@ -25,7 +25,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
 - **🔌 Agent Plugins**: Install a plugin from the open [Agent Plugins](https://agent-plugins.org) standard once, and every agent in every worktree can use the skills it bundles
 - **🗂 ACP Registry**: `opentree agents add <id>` installs any agent the [ACP Registry](https://agentclientprotocol.com/get-started/registry) lists, and it becomes first-class everywhere the built-in four are — picker, chats, fan-outs
-- **🧹 Clean Lifecycle**: Archive workspaces after merge, keeping your repo tidy
+- **🧹 Clean Lifecycle**: A merged PR marks its row `merged · ready to delete`, and `opentree delete --merged` clears them all at once
 - **⌨️ Shell Completion**: Tab completion for workspace names in bash, zsh, and fish
 
 ## Requirements
@@ -119,7 +119,7 @@ opentree
 - `n` - Create new workspace (prompts for branch name, then base branch)
 - `i` - Create workspace from a GitHub issue number
 - `Enter` - Attach to selected workspace
-- `d` - Show diff for selected workspace
+- `d` - Show diff for selected workspace (`pgup`/`pgdn` page it, `g`/`G` jump to the ends)
 - `D` - Compare a fan-out group: every sibling's diff in one scroll
 - `W` - Promote a fan-out's winner: keep this sibling, delete the rest
 - `p` - Create PR for selected workspace (auto-generates title and body from commits)
@@ -645,9 +645,10 @@ opentree delete <branch-name>
 
 # Examples
 opentree delete feat/user-auth
+opentree delete --merged          # every workspace whose PR has merged
 ```
 
-Removes the worktree, kills the tmux window, and deletes the branch. If uncommitted changes are detected, a diff is shown and confirmation is required before proceeding.
+Removes the worktree, kills its tmux windows, and deletes the branch. If uncommitted changes are detected, a diff is shown and confirmation is required before proceeding. `--merged` does the same for every workspace the dashboard has seen merge — one question each for any that still hold something — which is how a week's worth of `merged · ready to delete` rows is cleared at once.
 
 #### Promote a Fan-out Winner
 

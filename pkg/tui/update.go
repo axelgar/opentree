@@ -194,6 +194,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.diffScrollOffset < m.maxDiffScroll() {
 					m.diffScrollOffset++
 				}
+			// A page at a time, and the ends: a diff of a few hundred lines
+			// was a few hundred presses of j.
+			case "pgup", "ctrl+u":
+				m.diffScrollOffset = max(m.diffScrollOffset-m.diffPage(), 0)
+			case "pgdown", "ctrl+d", " ":
+				m.diffScrollOffset = min(m.diffScrollOffset+m.diffPage(), m.maxDiffScroll())
+			case "g", "home":
+				m.diffScrollOffset = 0
+			case "G", "end":
+				m.diffScrollOffset = m.maxDiffScroll()
 			}
 			return m, nil
 		}
@@ -1386,8 +1396,13 @@ func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // maxDiffScroll is the furthest the diff can scroll before the last line is on
 // screen. Shared so the keys, the wheel and the resize clamp cannot disagree.
 func (m Model) maxDiffScroll() int {
-	availHeight := max(m.height-8, 5)
-	return max(len(strings.Split(m.diffContent, "\n"))-availHeight, 0)
+	return max(len(strings.Split(m.diffContent, "\n"))-m.diffPage(), 0)
+}
+
+// diffPage is how many lines of the diff are on screen, which is what one
+// page key moves by.
+func (m Model) diffPage() int {
+	return max(m.height-headerFooterHeight, minDiffHeight)
 }
 
 func (m *Model) clampDiffScroll() {

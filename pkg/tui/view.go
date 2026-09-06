@@ -224,7 +224,7 @@ func (m Model) View() string {
 		// one line with the position instead of wrapping into a second.
 		header := m.bar(titleStyle.Render("Diff: "+m.diffWsName), m.diffSummary())
 		footer := m.bar(
-			dialogHintStyle.Render("↑/k ↓/j scroll  •  esc close"),
+			dialogHintStyle.Render("↑/↓ scroll  •  pgup/pgdn page  •  g/G ends  •  esc close"),
 			dialogHintStyle.Render(fmt.Sprintf("line %d/%d", offset+1, len(lines))),
 		)
 		return appStyle.Render(strings.Join([]string{
