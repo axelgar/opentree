@@ -240,7 +240,7 @@ agent's own logo, in its own colours:
 | `enter` | send |
 | `shift+enter` | newline — `ctrl+j` where the terminal cannot report modifiers |
 | `↑` / `↓` | walk back through the messages already sent, and forward again |
-| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model`, `/shell` and the rest |
+| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model`, `/shell`, `/export` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn — or clear an unsent message (`↑` brings it back) |
@@ -313,6 +313,10 @@ talked about — newest first, by what each conversation was about — and picki
 one reopens it in place, history and all. The list is the agent's own where it
 keeps one, merged with what opentree recorded itself, so the command works the
 same whichever agent is running.
+
+**Getting the conversation out.** `/export` writes it as markdown — what was
+said, what was run and what it printed — to `~/.opentree/exports`, never into
+the worktree, and says where. `ctrl+y` puts the same document on the clipboard.
 
 The agent's live model, mode and effort sit on the right of the input, next to
 the running context and cost. `ctrl+c` takes you back to the workspace list and

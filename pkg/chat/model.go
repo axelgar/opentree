@@ -80,6 +80,10 @@ type Options struct {
 	// reopened. Empty keeps them for this process only.
 	History string
 
+	// Exports is the directory /export writes the conversation into. Empty
+	// leaves the command out.
+	Exports string
+
 	// KnownSessions are the conversations opentree has already opened in this
 	// worktree. They are what /resume offers an agent that cannot enumerate its
 	// own — with one that can, the agent's list is merged over them.
