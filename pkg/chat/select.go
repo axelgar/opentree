@@ -82,6 +82,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Button != tea.MouseButtonLeft {
 			return m, nil
 		}
+		if !m.inLog(msg.Y) {
+			// Below the log is the footer, whose dialogs draw their choices
+			// as rows: a press on one is the answer, there and then.
+			return m.clearSelection().clickFooter(msg.Y)
+		}
 		return m.pressAt(msg.X, msg.Y).relayout(), nil
 	case tea.MouseActionMotion:
 		if !m.sel.active {
@@ -96,6 +101,64 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m.release()
 	}
 	return m, nil
+}
+
+// clickRow is a press and release on one row of the log with nothing
+// selected between them — a click. The one thing a row draws that asks to
+// be clicked is "… N more lines · ctrl+x", and clicking it opens the row the
+// way the key would; a click anywhere else is a click on text, which places
+// no cursor here.
+func (m Model) clickRow(at cell) Model {
+	if at.line < 0 || at.line >= len(m.lineOwner) {
+		return m
+	}
+	i := m.lineOwner[at.line]
+	if i < 0 || i >= len(m.entries) || m.entries[i].kind != entryTool {
+		return m
+	}
+	if !strings.Contains(ansi.Strip(m.logLines[at.line]), "more lines") {
+		return m
+	}
+	m.entries[i].expanded = !m.entries[i].expanded
+	m.entries[i].rev = m.nextRev()
+	return m.relayout()
+}
+
+// clickFooter is a click below the log. The permission dialog draws its
+// options as rows, each led by the key that answers it in brackets, and a
+// click on a row answers with that key — so the row and the click cannot
+// disagree about which option was meant.
+func (m Model) clickFooter(y int) (tea.Model, tea.Cmd) {
+	if m.perm() == nil {
+		return m, nil
+	}
+	row := y - (headerHeight + m.viewport.Height)
+	lines := strings.Split(m.footer(), "\n")
+	if row < 0 || row >= len(lines) {
+		return m, nil
+	}
+	key := bracketedKey(ansi.Strip(lines[row]))
+	if key == "" {
+		return m, nil
+	}
+	if id, ok := optionForKey(key, m.perm().req.Options); ok {
+		return m.answerPerm(id), nil
+	}
+	return m, nil
+}
+
+// bracketedKey is the "[a]" a dialog row leads with, without its brackets, or
+// nothing for a row that leads with anything else.
+func bracketedKey(row string) string {
+	row = strings.TrimLeft(row, "│ \t")
+	if !strings.HasPrefix(row, "[") {
+		return ""
+	}
+	end := strings.IndexByte(row, ']')
+	if end < 0 {
+		return ""
+	}
+	return row[1:end]
 }
 
 // pressAt starts a selection where the button went down, or counts the press
@@ -126,14 +189,14 @@ func (m Model) pressAt(x, y int) Model {
 }
 
 // release ends the drag and copies what it covered. A press that never moved
-// covered nothing, and copying nothing would replace whatever the clipboard
-// held with an empty string.
+// covered nothing — it was a click, and is handled as one — and copying
+// nothing would replace whatever the clipboard held with an empty string.
 func (m Model) release() (tea.Model, tea.Cmd) {
 	m.sel.active = false
 	text := m.selectedText()
 	if text == "" {
 		m.sel.on = false
-		return m.relayout(), nil
+		return m.clickRow(m.sel.anchor).relayout(), nil
 	}
 	return m.relayout(), copyCmd(countLines(text), text)
 }

@@ -365,6 +365,25 @@ func (m Model) View() string {
 			dialogHintStyle.Render("Enter to continue • Esc to cancel"), dialogAccent)
 	}
 
+	body, _ := m.listScreen()
+	return appStyle.Render(body)
+}
+
+// rowSpan is where one workspace's row sits in the list screen: the lines
+// [top, bottom) of the body, before the app style's padding. It is what a
+// click on the screen is resolved against.
+type rowSpan struct {
+	index       int
+	top, bottom int
+}
+
+// listScreen is the workspace list with everything around it — logo, tabs,
+// rows, panels, status bar — and where each row landed. Rendered rather than
+// predicted: a row is two lines, or three under the cursor, or one while it
+// is being deleted, and the logo, a banner and a filter all move the first
+// one, so counting is the only way to be right.
+func (m Model) listScreen() (string, []rowSpan) {
+	var spans []rowSpan
 	var s strings.Builder
 
 	// Logo
@@ -414,6 +433,7 @@ func (m Model) View() string {
 		}
 		for i := start; i < end; i++ {
 			ws := visible[i]
+			top := strings.Count(s.String(), "\n")
 			// Inline deleting state
 			isDeleting := m.workspaceDeletingName == ws.Name || m.workspaceDeletingNames[ws.Name]
 			if isDeleting {
@@ -421,6 +441,7 @@ func (m Model) View() string {
 				row := spinner + " " + ws.Name + "  " + pendingLabelStyle.Render("deleting…")
 				s.WriteString(pendingItemStyle.Render(row))
 				s.WriteString("\n")
+				spans = append(spans, rowSpan{index: i, top: top, bottom: strings.Count(s.String(), "\n")})
 				continue
 			}
 
@@ -542,6 +563,7 @@ func (m Model) View() string {
 					s.WriteString("\n")
 				}
 			}
+			spans = append(spans, rowSpan{index: i, top: top, bottom: strings.Count(s.String(), "\n")})
 		}
 		if end < len(visible) {
 			s.WriteString(scrollHintStyle.Render(fmt.Sprintf("  ↓ %d more", len(visible)-end)))
@@ -578,7 +600,7 @@ func (m Model) View() string {
 	// Help
 	s.WriteString(m.help.View(m.keys))
 
-	return appStyle.Render(s.String())
+	return s.String(), spans
 }
 
 // tmuxBanner is the standing warning for a machine with no tmux on it, or ""

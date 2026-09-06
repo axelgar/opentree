@@ -1367,7 +1367,7 @@ func (m Model) relayout() Model {
 	// place that can tell "the reader scrolled up" from "the reader scrolled up
 	// and then the agent said something".
 	before := m.viewport.TotalLineCount()
-	m.logLines = strings.Split(m.renderLog(), "\n")
+	m.logLines, m.lineOwner = m.renderLogLines()
 	m.viewport.SetContent(strings.Join(m.paintSelection(m.logLines), "\n"))
 	switch {
 	case atBottom:

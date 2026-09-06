@@ -140,6 +140,9 @@ opentree
 - `?` - Toggle full help
 - `q` - Quit
 
+The mouse works too: the wheel scrolls, a click selects a row, and a
+double-click attaches to it.
+
 Each row also carries what its agent is doing — working, waiting on a
 permission, stopped — plus cost and context use, read live from the chat's
 control socket. Open PRs show **CI check status** badges.
@@ -248,6 +251,7 @@ agent's own logo, in its own colours:
 | `ctrl+r` | retry a failed turn — the same message, pasted images included |
 | `ctrl+y` | copy — the last reply, any code block in it, the last tool's output, or the whole conversation as markdown |
 | `drag` | select text — it goes to the clipboard when the button comes up; double-click takes a word, triple-click a row. `shift+drag` (`option+drag` in iTerm2) is the terminal's own selection, which still works |
+| `click` | a permission option answers it; a `… 42 more lines` row opens the way `ctrl+x` does |
 | `?` | every key |
 
 **Prose.** The agent's replies render as markdown while they stream: emphasis,

@@ -60,7 +60,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		return m.handleWheel(msg)
+		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
 		// ctrl+c always quits, even inside dialogs and text inputs where
@@ -1253,14 +1253,73 @@ func (m Model) busyWithDialog() bool {
 		m.showErrLog
 }
 
-// handleWheel drives whatever is scrollable underneath the pointer. The mouse
-// is captured so the terminal stops scrolling its own scrollback out from under
-// the alt screen; having taken it, the wheel owes the user a response, or the
-// dashboard reads as frozen rather than as focused.
+// handleMouse routes the mouse: the wheel to whatever scrolls, a press to the
+// row under it. The mouse is captured so the terminal stops scrolling its own
+// scrollback out from under the alt screen; having taken it, the dashboard
+// owes the pointer the two things a list does with one — a click selects a
+// row, and a double-click opens it, the way enter does.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if tea.MouseEvent(msg).IsWheel() {
+		return m.handleWheel(msg)
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+	if m.tab != tabWorkspaces || m.busyWithDialog() || m.diffViewing {
+		return m, nil
+	}
+	i, ok := m.rowAt(msg.Y)
+	if !ok {
+		return m, nil
+	}
+	at := clock()
+	double := i == m.lastClick.row && at.Sub(m.lastClick.at) < multiClick
+	m.lastClick = click{row: i, at: at}
+	m.cursor = i
+	if !double {
+		return m, nil
+	}
+	ws := m.visibleWorkspaces()[i]
+	if m.isWorkspaceInFlight(ws.Name) {
+		return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+	}
+	return m, m.attachWorkspaceCmd(ws.Name)
+}
+
+// rowAt is the visible row under a screen line, if any. The list is rendered
+// to find out — the same rendering the screen shows, so the two cannot
+// disagree — and the app style's top padding is the one line between the
+// body and the screen.
+func (m Model) rowAt(y int) (int, bool) {
+	_, spans := m.listScreen()
+	line := y - appStyle.GetPaddingTop()
+	for _, span := range spans {
+		if line >= span.top && line < span.bottom {
+			return span.index, true
+		}
+	}
+	return 0, false
+}
+
+// click is the last press on a row, for telling a double-click from two.
+type click struct {
+	row int
+	at  time.Time
+}
+
+// multiClick is how quickly a second press has to follow the first to count
+// as the same gesture.
+const multiClick = 400 * time.Millisecond
+
+// clock is what the click counter reads, a variable so a test can press
+// twice in no time at all.
+var clock = time.Now
+
+// handleWheel drives whatever is scrollable underneath the pointer.
 //
-// Only the wheel is acted on. Clicks and motion arrive too — cell motion is the
-// mode that suppresses the terminal's scrollback — and the list has nothing to
-// do with them.
+// Only the wheel reaches here: a press has been routed to the row under it
+// by handleMouse, and motion — which arrives too, since cell motion is the
+// mode that suppresses the terminal's scrollback — means nothing to a list.
 func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	var delta int
 	switch msg.Button {

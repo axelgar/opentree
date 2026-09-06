@@ -74,8 +74,12 @@ type Model struct {
 
 	workspaces []WorkspaceItem
 	cursor     int
-	width      int
-	height     int
+
+	// lastClick is the previous press on a row, for the double-click that
+	// opens one.
+	lastClick click
+	width     int
+	height    int
 
 	// two-step create dialog
 	input            textinput.Model
