@@ -553,6 +553,12 @@ type Model struct {
 	// gone before it is in the way.
 	flash flash
 
+	// sel is the mouse selection, and logLines the rendered log it indexes:
+	// the same rows the viewport holds, kept so a cell can be read back as
+	// text without asking the viewport for what it was given.
+	sel      selection
+	logLines []string
+
 	// titled is whether the current conversation already has a name in the
 	// ledger, which stops the first prompt of a resumed session from renaming
 	// it after whatever was said today.

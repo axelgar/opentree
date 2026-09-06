@@ -167,4 +167,9 @@ var (
 	// finished tool row wears, so it reads as done rather than as a flag.
 	flashStyle = lipgloss.NewStyle().
 			Foreground(ui.Success)
+
+	// The mouse selection: inverse video, which reads as a selection on any
+	// terminal, light or dark, whatever colour the text underneath was.
+	selectStyle = lipgloss.NewStyle().
+			Reverse(true)
 )

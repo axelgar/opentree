@@ -32,11 +32,10 @@ type keyMap struct {
 	HistoryPrev key.Binding
 	HistoryNext key.Binding
 
-	// Select is not a key at all: it is the terminal's own drag, held with the
-	// modifier that makes the terminal keep a mouse event the program has
-	// asked for. It is listed because the chat takes the mouse for the wheel,
-	// and a reader who tries to drag over an answer finds nothing happens —
-	// and the one gesture that does work is a secret unless something says it.
+	// Select is not a key at all: it is the mouse, dragged over the log. It is
+	// listed because the chat takes the mouse for the wheel, and a reader who
+	// has met a full-screen program that swallows a drag has no reason to
+	// try one here unless something says it works.
 	Select key.Binding
 
 	Restart key.Binding
@@ -188,8 +187,8 @@ var keys = keyMap{
 	// listed. It carries the gesture for the same reason Commands does: bubbles
 	// drops a binding with no keys from the help entirely.
 	Select: key.NewBinding(
-		key.WithKeys("shift+drag"),
-		key.WithHelp("shift+drag", "select text"),
+		key.WithKeys("drag"),
+		key.WithHelp("drag", "select text"),
 	),
 	Restart: key.NewBinding(
 		key.WithKeys("r"),

@@ -191,12 +191,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	// Having captured the mouse, the wheel has to do something: the viewport
-	// scrolls itself, three lines at a time, whatever panel the footer shows.
+	// Having captured the mouse, it has to do something: the wheel scrolls
+	// the viewport, three lines at a time, whatever panel the footer shows,
+	// and a drag selects text — see select.go.
 	case tea.MouseMsg:
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m.relayout(), cmd
+		return m.handleMouse(msg)
 
 	case acpUpdateMsg:
 		m = m.applyUpdate(acp.SessionUpdate(msg))
@@ -439,7 +438,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.copied(msg)
 
 	case flashClearMsg:
-		return m.clearFlash(msg), nil
+		// The receipt and the highlight it was the receipt for go together.
+		return m.clearFlash(msg).clearSelection(), nil
 
 	case errMsg:
 		m.err = msg.err
@@ -496,6 +496,9 @@ func leave() tea.Msg {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// A key means the reader has moved on from whatever the mouse marked.
+	m = m.clearSelection()
+
 	// Whichever panel the footer drew is the one the keys drive. A stopped
 	// agent takes over the keyboard because r and l would otherwise be
 	// swallowed by the textarea, which is useless with nothing to send to.
@@ -1361,7 +1364,8 @@ func (m Model) relayout() Model {
 	// place that can tell "the reader scrolled up" from "the reader scrolled up
 	// and then the agent said something".
 	before := m.viewport.TotalLineCount()
-	m.viewport.SetContent(m.renderLog())
+	m.logLines = strings.Split(m.renderLog(), "\n")
+	m.viewport.SetContent(strings.Join(m.paintSelection(m.logLines), "\n"))
 	switch {
 	case atBottom:
 		m.viewport.GotoBottom()
