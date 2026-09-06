@@ -741,11 +741,6 @@ func kindKey(kind string) string {
 	return ""
 }
 
-func (m Model) renderLog() string {
-	lines, _ := m.renderLogLines()
-	return strings.Join(lines, "\n")
-}
-
 // renderLogLines is the log as rows, and for each row the index of the entry
 // it belongs to — -1 for a row that is nobody's: the empty state, the
 // thinking line, the blank after the last entry. The rows are what the
