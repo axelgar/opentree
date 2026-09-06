@@ -220,7 +220,6 @@ func isGitAvailable() bool {
 	return exec.Command("git", "--version").Run() == nil
 }
 
-// initGitRepo creates a temporary git repository and returns its path.
 // tempHome keeps what opentree writes under ~ — the worktrees, above all —
 // out of the real home directory. A test that has already moved HOME
 // somewhere temporary keeps its choice: the trust file it wrote there has to
@@ -233,6 +232,7 @@ func tempHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 }
 
+// initGitRepo creates a temporary git repository and returns its path.
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 	tempHome(t)
@@ -1518,6 +1518,31 @@ func TestDelete_OwnSessionIsKilled(t *testing.T) {
 	}
 	if !mock.killSessionCalled {
 		t.Error("the last workspace went and the session stayed")
+	}
+}
+
+// A root reached through a symlink — every temporary directory on macOS, where
+// /var is /private/var — and a path under it that is no longer on disk, which
+// is exactly what an orphaned window's directory is. Resolving the root and
+// not the path used to make the two strangers, on that platform only.
+func TestUnder_ASymlinkedRootStillOwnsAPathThatIsGone(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	gone := filepath.Join(link, ".opentree", "mine")
+	if !under(link, gone) {
+		t.Errorf("under(%q, %q) = false through the link", link, gone)
+	}
+	if !under(target, gone) {
+		t.Errorf("under(%q, %q) = false with the root resolved and the path not", target, gone)
+	}
+	if !under(link, filepath.Join(target, ".opentree", "mine")) {
+		t.Error("under() = false with the root through the link and the path resolved")
+	}
+	if under(link, filepath.Join(t.TempDir(), "elsewhere")) {
+		t.Error("under() claimed a path outside the root")
 	}
 }
 

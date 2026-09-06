@@ -721,21 +721,40 @@ func (s *Service) ownsWindow(w Window) bool {
 // under reports whether path is root or something inside it, comparing the
 // paths as the filesystem resolves them: tmux reports a pane's directory
 // resolved, while a repo root arrives as whatever the user typed.
+//
+// A path that is no longer on disk — a window whose worktree was deleted by
+// hand, which is the case prune exists for — cannot be resolved whole, and on
+// macOS, where every temporary directory sits behind /var → /private/var, a
+// resolved root never matched an unresolved path under it. So each side is
+// resolved as far as it exists and the rest carried over, which gives the two
+// the same spelling whether or not the tail is still there.
 func under(root, path string) bool {
 	if root == "" || path == "" {
 		return false
 	}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	rel, err := filepath.Rel(root, path)
+	rel, err := filepath.Rel(resolveExisting(root), resolveExisting(path))
 	if err != nil {
 		return false
 	}
 	return rel == "." || filepath.IsLocal(rel)
+}
+
+// resolveExisting resolves the symlinks in the longest prefix of path that
+// is on disk, and appends the rest as written. A path that exists resolves
+// whole; one that does not still resolves the directories above it.
+func resolveExisting(path string) string {
+	rest := ""
+	for p := path; ; {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 // killSessionIfOurs stops the tmux session once this repository has nothing
