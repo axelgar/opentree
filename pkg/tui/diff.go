@@ -37,6 +37,10 @@ type diffView struct {
 	tree     bool
 	reviewed map[int]bool
 	help     bool
+	// numbers is the line-number gutter (L); wrap is long lines folded
+	// rather than cut (w).
+	numbers bool
+	wrap    bool
 }
 
 // The tree pane's width, and the terminal width below which it is not worth
@@ -231,6 +235,10 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.help = true
 	case "t":
 		d.tree = !d.tree
+	case "L":
+		d.numbers = !d.numbers
+	case "w":
+		d.wrap = !d.wrap
 	case "]":
 		m.jumpDiff(d.nextRow(d.cursor, +1, func(r diffRow) bool { return r.kind == rowHunk }))
 	case "[":
@@ -334,11 +342,37 @@ func (m *Model) clampDiffScroll() {
 	d := &m.diff
 	d.cursor = min(max(d.cursor, 0), max(len(d.rows)-1, 0))
 	d.offset = min(max(d.offset, 0), m.maxDiffScroll())
-	if d.cursor < d.offset {
+	switch {
+	case d.cursor < d.offset:
 		d.offset = d.cursor
-	} else if page := m.diffPage(); d.cursor >= d.offset+page {
-		d.offset = d.cursor - page + 1
+	case d.wrap:
+		// Wrapped rows take more than one line each, so the window's last row
+		// is found by filling it rather than by arithmetic.
+		for d.offset < d.cursor && d.cursor > m.lastVisibleRow() {
+			d.offset++
+		}
+	case d.cursor >= d.offset+m.diffPage():
+		d.offset = d.cursor - m.diffPage() + 1
 	}
+}
+
+// lastVisibleRow is the last row the window shows whole, at the current
+// offset and width. Without wrap it is arithmetic; with it, a fill.
+func (m Model) lastVisibleRow() int {
+	d := m.diff
+	if !d.wrap {
+		return min(d.offset+m.diffPage(), len(d.rows)) - 1
+	}
+	lines := 0
+	last := d.offset
+	for i := d.offset; i < len(d.rows); i++ {
+		lines += len(m.rowLines(i))
+		if lines > m.diffPage() {
+			break
+		}
+		last = i
+	}
+	return last
 }
 
 // maxDiffScroll is the furthest the window can go before the last row is on
@@ -365,9 +399,10 @@ func (m Model) diffScreen() string {
 	page := m.diffPage()
 
 	body := make([]string, 0, page)
-	for i := d.offset; i < min(d.offset+page, len(d.rows)); i++ {
-		body = append(body, m.paintRow(i))
+	for i := d.offset; i < len(d.rows) && len(body) < page; i++ {
+		body = append(body, m.rowLines(i)...)
 	}
+	body = body[:min(len(body), page)]
 	for len(body) < page {
 		body = append(body, "")
 	}
@@ -389,6 +424,25 @@ func (m Model) diffScreen() string {
 // showTree is whether the tree pane is drawn: wanted, worth it, and fits.
 func (m Model) showTree() bool {
 	return m.diff.tree && len(m.diff.files) > 1 && m.width >= diffTreeMinWidth
+}
+
+// diffBodyWidth is the columns the code has, beside the tree or without it.
+func (m Model) diffBodyWidth() int {
+	if m.showTree() {
+		return m.chromeWidth() - diffTreeWidth - 2
+	}
+	return m.chromeWidth()
+}
+
+// rowLines is a row as it goes on screen: one line cut to the width with an
+// ellipsis, or, under wrap, as many as the width needs.
+func (m Model) rowLines(i int) []string {
+	line := m.paintRow(i)
+	width := m.diffBodyWidth()
+	if !m.diff.wrap {
+		return []string{ansi.Truncate(line, width, "…")}
+	}
+	return strings.Split(ansi.Hardwrap(line, width, true), "\n")
 }
 
 // treeLine is one row of the tree pane: a file, or a section heading (-1).
@@ -476,6 +530,8 @@ var diffKeys = [][2]string{
 	{"n / p", "next / previous file"},
 	{"space", "mark file reviewed"},
 	{"t", "show / hide the tree"},
+	{"L", "line numbers"},
+	{"w", "wrap long lines"},
 	{"esc q", "close"},
 }
 
@@ -496,7 +552,23 @@ func (m Model) paintRow(i int) string {
 	if i == m.diff.cursor {
 		mark = diffCursorStyle.Render("▎")
 	}
-	return mark + styleRow(r)
+	return mark + m.gutter(r) + styleRow(r)
+}
+
+// gutter is the two line-number columns, old and new, blank where a row has
+// no number on that side — and blank altogether when L is off.
+func (m Model) gutter(r diffRow) string {
+	if !m.diff.numbers {
+		return ""
+	}
+	w := m.diff.gutter
+	no := func(n int) string {
+		if n == 0 {
+			return strings.Repeat(" ", w)
+		}
+		return fmt.Sprintf("%*d", w, n)
+	}
+	return diffStyle.Render(no(r.oldNo)+" "+no(r.newNo)) + " "
 }
 
 func styleRow(r diffRow) string {
@@ -513,12 +585,16 @@ func styleRow(r diffRow) string {
 	case rowHunk:
 		return diffHunkStyle.Render(r.text)
 	case rowAdd:
-		return diffAddStyle.Render("+" + r.text)
+		return diffAddStyle.Render("+" + expandTabs(r.text))
 	case rowDel:
-		return diffRemoveStyle.Render("-" + r.text)
+		return diffRemoveStyle.Render("-" + expandTabs(r.text))
 	case rowContext:
-		return " " + r.text
+		return " " + expandTabs(r.text)
 	default:
 		return r.text
 	}
 }
+
+// expandTabs is what lipgloss does to a tab when it styles a line, done to
+// the unstyled lines too, so a context line sits under the changed one.
+func expandTabs(s string) string { return strings.ReplaceAll(s, "\t", "    ") }

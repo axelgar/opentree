@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // twoFileDiff is what DiffCombined hands over for a rename with one hunk and
@@ -312,5 +313,68 @@ func TestDiffView_HelpCardNamesEveryKey(t *testing.T) {
 	m, _ = applyUpdate(m, keyMsg("j"))
 	if m.diff.help || m.diff.cursor != 0 {
 		t.Error("the first key after the card should close it and do nothing else")
+	}
+}
+
+// --- width -------------------------------------------------------------------
+
+func TestDiffView_TruncatesToWidth(t *testing.T) {
+	m := newTestModel()
+	long := strings.Repeat("x", 300)
+	m.diff = newDiffView(twoFileDiff+"\n+"+long, "a")
+	for i, line := range strings.Split(m.View(), "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line %d is %d wide in a %d-wide terminal", i, w, m.width)
+		}
+	}
+	if !strings.Contains(m.View(), "…") {
+		t.Error("the cut line has no ellipsis")
+	}
+}
+
+func TestDiffKeys_WrapShowsTheWholeLine(t *testing.T) {
+	m := newTestModel()
+	long := strings.Repeat("y", 200) + "END"
+	m.diff = newDiffView("diff --git a/f b/f\n@@ -1 +1 @@\n+"+long, "a")
+	if strings.Contains(m.View(), "END") {
+		t.Fatal("the tail of a long line is on screen before w")
+	}
+	m, _ = applyUpdate(m, keyMsg("w"))
+	view := m.View()
+	if !strings.Contains(view, "END") {
+		t.Errorf("w did not wrap the line:\n%s", view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("wrapped line %d is %d wide", i, w)
+		}
+	}
+	// The cursor stays visible when the rows above it wrap.
+	m.diff = newDiffView(strings.Repeat("diff --git a/f b/f\n@@ -1 +1 @@\n+"+long+"\n", 40), "a")
+	m.diff.wrap = true
+	m, _ = applyUpdate(m, keyMsg("G"))
+	if last := m.lastVisibleRow(); last != m.diff.cursor {
+		t.Errorf("after G under wrap the last visible row is %d, cursor %d", last, m.diff.cursor)
+	}
+}
+
+func TestDiffKeys_LineNumbersToggle(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	m.diff.tree = false
+	if strings.Contains(m.View(), "10 12") {
+		t.Fatal("line numbers are on before L")
+	}
+	m, _ = applyUpdate(m, keyMsg("L"))
+	view := m.View()
+	// Context has both numbers, a removal only the old, an addition only the new.
+	for _, want := range []string{"10 12      a := 1", "11    -    b := 2", "   13 +    b := 3"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("gutter lacks %q\n%s", want, view)
+		}
+	}
+	m, _ = applyUpdate(m, keyMsg("L"))
+	if strings.Contains(m.View(), "10 12") {
+		t.Error("a second L did not hide the numbers")
 	}
 }
