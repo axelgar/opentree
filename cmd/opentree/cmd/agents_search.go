@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/axelgar/opentree/pkg/config"
 	"github.com/axelgar/opentree/pkg/registry"
 )
 
@@ -55,7 +54,7 @@ instead, with its age noted.`,
 			matched++
 			sawUvx = sawUvx || e.Distribution.Uvx != nil
 			fmt.Printf("%-18s %-10s %-14s %-16s %s\n",
-				e.ID, e.Version, distributionKinds(e), searchStatus(e), trim(e.Description, 40))
+				e.ID, e.Version, e.Via(), registry.Status(e), trim(e.Description, 40))
 		}
 		if matched == 0 {
 			fmt.Printf("nothing in the registry matches %q\n", args[0])
@@ -67,41 +66,4 @@ instead, with its age noted.`,
 		fmt.Printf("\n%d %s — `opentree agents add <id>` installs one\n", matched, plural(matched, "agent"))
 		return nil
 	},
-}
-
-// distributionKinds names how an entry arrives, in opentree's order of
-// preference. uvx is listed but marked: hiding those entries would make the
-// registry look smaller than it is, and the honest answer is "exists, not
-// supported yet".
-func distributionKinds(e registry.Entry) string {
-	var kinds []string
-	if e.Distribution.Npx != nil {
-		kinds = append(kinds, "npm")
-	}
-	if len(e.Distribution.Binary) > 0 {
-		kinds = append(kinds, "binary")
-	}
-	if e.Distribution.Uvx != nil {
-		kinds = append(kinds, "uvx*")
-	}
-	return strings.Join(kinds, "+")
-}
-
-// searchStatus is what this machine already has under the entry's name: the
-// built-in agent that shadows it, the installed version, or nothing. FindAgent
-// sees registry installs too — the loader ran before this command — so one
-// lookup answers for both kinds.
-func searchStatus(e registry.Entry) string {
-	agent := config.FindAgent(e.ID)
-	if agent == nil {
-		agent = config.FindAgent(e.Name)
-	}
-	switch {
-	case agent == nil:
-		return ""
-	case agent.Origin != nil:
-		return "installed " + agent.Origin.Version
-	default:
-		return "built-in"
-	}
 }

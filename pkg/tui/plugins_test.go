@@ -63,7 +63,7 @@ func TestPluginsTab_SwallowsWorkspaceKeys(t *testing.T) {
 	m := pluginsModel(testPlugin("tools-plugin"))
 	for _, k := range []string{"n", "i", "p", "o", "A", "s", "m"} {
 		got, _ := m.updatePlugins(keyMsg(k))
-		if got.creating || got.prCreating || got.agentSelecting || got.prompting || got.tab != tabPlugins {
+		if got.creating || got.prCreating || got.prompting || got.tab != tabPlugins {
 			t.Errorf("key %q leaked into the workspace handler", k)
 		}
 	}

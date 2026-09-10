@@ -283,18 +283,75 @@ func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd
 	}
 }
 
-// selectAgent makes an agent the configured one and persists it. Returns an
-// error message for the caller to surface, or "" on success.
-func (m *Model) selectAgent(agent config.PredefinedAgent) string {
+// selectAgentIn makes an agent the configured one and persists it to the
+// named config file: the repository's (enter, the everyday case) or the
+// global one (g, `agents use --global`). Returns an error message for the
+// caller to surface, or "" on success.
+func (m *Model) selectAgentIn(agent config.PredefinedAgent, path string) string {
 	m.cfg.Agent.Command = agent.Command
 	// Persist only the agent key (not the merged config), and surface failures
 	// instead of silently losing the selection.
-	if err := config.SetKeys(config.FindConfigFile(), map[string]any{
+	if err := config.SetKeys(path, map[string]any{
 		"agent.command": m.cfg.Agent.Command,
 	}); err != nil {
 		return fmt.Sprintf("failed to save agent selection: %v", err)
 	}
 	return ""
+}
+
+// handleAdapterConfirm answers the adapter download card, however it was
+// asked for. Both keys that can start one arrive here, and they differ only
+// in what happens afterwards: a pending selection means enter asked for it
+// and the switch is waiting on the install, no pending selection means i did
+// and the adapter is being fetched for later.
+func (m Model) handleAdapterConfirm(msg tea.KeyMsg) (Model, tea.Cmd) {
+	agent := *m.agentInstallConfirm
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.agentInstallConfirm = nil
+		return m, m.installAdapterCmd(agent)
+	case "n", "esc", "q":
+		m.agentInstallConfirm = nil
+		m.agentPendingSelect = nil
+		m.agentPendingPath = ""
+	}
+	return m, nil
+}
+
+// adapterConfirmView is the adapter download card, for both keys that can
+// start one. Enter on an agent whose adapter is missing means "use this
+// agent" and i means "get it ready for later", but 300MB off a package
+// registry is asked about rather than sprung either way.
+func (m Model) adapterConfirmView() string {
+	agent := *m.agentInstallConfirm
+	size := ""
+	if agent.ACP.InstallSize != "" {
+		size = " (" + agent.ACP.InstallSize + ", needs node)"
+	}
+	// The command is spelled out in full because the verb alone is not
+	// something anyone can honestly agree to. The pinned version, the
+	// prefix that keeps this out of the user's global npm root and the
+	// refusal to run install hooks are the entire difference between this
+	// and handing npm the machine, and none of the three is visible from
+	// the word "install".
+	body := fmt.Sprintf("%s\n%s\n\n%s",
+		confirmLabelStyle.Render(agent.Name+" speaks the Agent Client Protocol through "+
+			agent.ACPCommand()+size+"."),
+		confirmLabelStyle.Render("It writes nothing outside the prefix named here, and runs:"),
+		strings.Join(agent.ACPInstallCommand(), " "),
+	)
+	// Enter armed this with the agent it means to switch to; i armed it
+	// with nothing, and promising a switch that will not happen is worse
+	// than a shorter label.
+	verb := "install"
+	if m.agentPendingSelect != nil {
+		verb = "install and use"
+	}
+	footer := fmt.Sprintf("%s %s  •  %s %s",
+		confirmKeyStyle.Render("y"), confirmLabelStyle.Render(verb),
+		confirmKeyStyle.Render("esc/n"), confirmLabelStyle.Render("cancel"),
+	)
+	return m.dialogCard("Install adapter for "+agent.Name+"?", body, footer, dialogAccent)
 }
 
 // installAdapterCmd fetches an agent's ACP adapter, handing the terminal to the

@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,10 +27,29 @@ type Plan struct {
 	Target   BinaryTarget
 	Platform string
 
+	// Stdout and Stderr receive what the install prints — npm's progress,
+	// mostly. Nil means the process's own streams, which is what the command
+	// line wants; the dashboard, which owns the terminal, points both at a
+	// buffer and shows it only if the install fails.
+	Stdout io.Writer
+	Stderr io.Writer
+
 	// finalDir marks an update: the install builds in Dir (a dotted staging
 	// sibling) and swaps into finalDir only once complete. Empty for a fresh
 	// add, where Dir is already the final place.
 	finalDir string
+}
+
+// output is the pair of writers the install reports to, defaulted.
+func (p Plan) output() (stdout, stderr io.Writer) {
+	stdout, stderr = p.Stdout, p.Stderr
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	return stdout, stderr
 }
 
 // NewPlan resolves how this entry installs on this machine, preferring npm:
@@ -160,8 +180,7 @@ func (p Plan) install(ctx context.Context) (Record, error) {
 func (p Plan) installNpm(ctx context.Context) (Record, error) {
 	argv := p.NpmArgv
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- assembled from the pinned registry entry and printed to the user before it runs
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout, cmd.Stderr = p.output()
 	if err := cmd.Run(); err != nil {
 		return Record{}, fmt.Errorf("npm install failed: %w", err)
 	}

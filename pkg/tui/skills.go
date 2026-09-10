@@ -856,7 +856,8 @@ func (m Model) updateSkills(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.tab = tabPlugins
 		return m, scanPluginsCmd
 	case "shift+tab", "left":
-		m.tab = tabWorkspaces
+		m.tab = tabAgents
+		m.reloadAgents()
 	case "esc":
 		// esc clears the filter first, and only then steps out: a filter is
 		// what esc most recently did something to.
@@ -1308,8 +1309,9 @@ func (m Model) tabBar() string {
 		return tabInactiveStyle.Render(label)
 	}
 	gap := tabInactiveStyle.Render("  ")
-	return name("Workspaces", tabWorkspaces) + gap + name("Skills", tabSkills) +
-		gap + name("Plugins", tabPlugins) + gap + name("Servers", tabServers)
+	return name("Workspaces", tabWorkspaces) + gap + name("Agents", tabAgents) +
+		gap + name("Skills", tabSkills) + gap + name("Plugins", tabPlugins) +
+		gap + name("Servers", tabServers)
 }
 
 func plural(n int, noun string) string {

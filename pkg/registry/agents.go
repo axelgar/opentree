@@ -64,18 +64,33 @@ func synthesize(r Record) config.PredefinedAgent {
 	}
 }
 
-// LoadInstalled appends every installed registry agent to the runtime
-// registry, and returns the problems worth telling doctor about. It runs
-// once, from main, before any command executes — which is the entire
-// pointer-safety argument: FindAgent and the picker hand out pointers into
-// config.PredefinedAgents, and an append after the first lookup could move
-// the slice out from under them. Nothing else may append.
+// LoadInstalled makes the runtime registry reflect the store: the built-in
+// agents, then every installed registry agent, in a freshly built slice
+// that replaces config.PredefinedAgents. It returns the problems worth
+// telling doctor about.
 //
-// A record whose id or name an existing agent already answers to is skipped,
+// Replace, never append. FindAgent and the picker hand out pointers into
+// the slice, and an append could move it out from under them; a
+// replacement leaves every pointer already taken pointing at the old
+// backing array — valid memory, merely stale — and everyone who asks after
+// the reload sees the new list. That makes the call idempotent, which is
+// what lets the dashboard reload after an install or removal instead of
+// asking for a restart. The one rule for callers: do not hold a pointer
+// across a reload; take it, use it, let it go.
+//
+// A record whose id or name a built-in already answers to is skipped,
 // built-ins first: if a future opentree ships an agent the user once
 // installed from the registry, the shipped one — pinned, branded, tested —
 // wins, and the stale install is reported rather than shadowed silently.
 func LoadInstalled() []string {
+	builtins := make([]config.PredefinedAgent, 0, len(config.PredefinedAgents))
+	for _, a := range config.PredefinedAgents {
+		if a.Origin == nil {
+			builtins = append(builtins, a)
+		}
+	}
+	config.PredefinedAgents = builtins
+
 	records, problems := Installed()
 	for _, r := range records {
 		if config.FindAgent(r.Entry.ID) != nil || config.FindAgent(r.Entry.Name) != nil {
