@@ -40,11 +40,21 @@ type Controller struct {
 	versionErr     error
 }
 
-// New creates a new tmux controller
+// New creates a new tmux controller for the repository the process stands in.
 func New(sessionPrefix string) *Controller {
 	return &Controller{
 		sessionPrefix: sessionPrefix,
 	}
+}
+
+// NewIn creates a controller for the repository at repoRoot, wherever the
+// process stands. The session is named after the repository, and New would
+// name it after the cwd's — which is a different repository the moment one
+// dashboard shows several.
+func NewIn(sessionPrefix, repoRoot string) *Controller {
+	c := New(sessionPrefix)
+	c.repoNameOnce.Do(func() { c.cachedRepoName = sanitizeName(filepath.Base(repoRoot)) })
+	return c
 }
 
 // CreateAppWindow creates a window whose process *is* the command. Nothing is
@@ -523,13 +533,15 @@ func (c *Controller) repoName() string {
 		if err != nil {
 			return
 		}
-		name := filepath.Base(root)
-		// Replace characters that are problematic in tmux session names.
-		name = strings.ReplaceAll(name, ".", "-")
-		name = strings.ReplaceAll(name, ":", "-")
-		c.cachedRepoName = name
+		c.cachedRepoName = sanitizeName(filepath.Base(root))
 	})
 	return c.cachedRepoName
+}
+
+// sanitizeName replaces the characters tmux's target syntax gives a meaning.
+func sanitizeName(name string) string {
+	name = strings.ReplaceAll(name, ".", "-")
+	return strings.ReplaceAll(name, ":", "-")
 }
 
 // sessionExists checks if a tmux session exists

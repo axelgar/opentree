@@ -54,8 +54,8 @@ func New(repoRoot string, cfg *config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize state: %w", err)
 	}
-	tm := NewTmuxProcessManager(tmux.New(cfg.Tmux.SessionPrefix))
-	gh := github.New()
+	tm := NewTmuxProcessManager(tmux.NewIn(cfg.Tmux.SessionPrefix, repoRoot))
+	gh := github.NewIn(repoRoot)
 	return NewService(repoRoot, cfg, wt, tm, st, gh), nil
 }
 

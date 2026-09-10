@@ -186,14 +186,14 @@ func (pm *PRManager) FetchPRReviews(branch string) ([]ReviewComment, error) {
 	if !pm.IsInstalled() {
 		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
-	if !hasGitHubRemote("") {
+	if !hasGitHubRemote(pm.dir) {
 		// A repo with no GitHub remote has no PR to review, which is the same
 		// normal, silent condition prViewError already recognises further down.
 		return nil, nil
 	}
 
 	// Fetch top-level reviews and PR URL in one call.
-	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url,reviews")
+	output, stderr, err := ghRun(pm.dir, "pr", "view", branch, "--json", "url,reviews")
 	if err != nil {
 		if pErr := prViewError(stderr, err); pErr != nil {
 			return nil, pErr
@@ -284,7 +284,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
 // fetchUnresolvedThreadComments returns inline comments from unresolved review
 // threads using the GitHub GraphQL API.
 func (pm *PRManager) fetchUnresolvedThreadComments(owner, repo string, prNumber int) ([]ReviewComment, error) {
-	out, stderr, err := ghRun("", "api", "graphql",
+	out, stderr, err := ghRun(pm.dir, "api", "graphql",
 		"-f", fmt.Sprintf("query=%s", graphqlUnresolvedThreadsQuery),
 		"-f", fmt.Sprintf("owner=%s", owner),
 		"-f", fmt.Sprintf("repo=%s", repo),
@@ -405,7 +405,7 @@ func (pm *PRManager) GetIssue(number int) (*Issue, error) {
 		return nil, fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
 
-	output, stderr, err := ghRun("", "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
+	output, stderr, err := ghRun(pm.dir, "issue", "view", strconv.Itoa(number), "--json", "number,title,body,labels")
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch issue #%d: %w\nOutput: %s", number, err, stderr)
 	}
@@ -460,13 +460,22 @@ func IssueBranchName(number int, title string) string {
 
 // PRManager handles GitHub PR operations
 type PRManager struct {
+	// dir is the repository gh is asked about; "" is the process cwd.
+	dir         string
 	ghOnce      sync.Once
 	ghInstalled bool
 }
 
-// New creates a new PR manager
+// New creates a PR manager for the repository the process stands in.
 func New() *PRManager {
 	return &PRManager{}
+}
+
+// NewIn creates a PR manager for the repository at dir, wherever the process
+// stands: gh answers about the repository it is run in, and one dashboard
+// showing several has only one cwd.
+func NewIn(dir string) *PRManager {
+	return &PRManager{dir: dir}
 }
 
 // CreatePR creates a GitHub pull request using gh CLI
@@ -482,7 +491,7 @@ func (pm *PRManager) CreatePR(branch, baseBranch, title, body string) (string, e
 		return "", fmt.Errorf("not authenticated with GitHub. Run 'gh auth login'")
 	}
 
-	output, stderr, err := ghRun("", createPRArgs(branch, baseBranch, title, body)...)
+	output, stderr, err := ghRun(pm.dir, createPRArgs(branch, baseBranch, title, body)...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create PR: %w\nOutput: %s", err, stderr)
 	}
@@ -572,7 +581,7 @@ func (pm *PRManager) UpdatePR(branch, title, body string) error {
 	if !pm.IsInstalled() {
 		return fmt.Errorf("gh CLI is not installed. Install it from https://cli.github.com/")
 	}
-	_, stderr, err := ghRun("", "pr", "edit", branch, "--title", title, "--body", body)
+	_, stderr, err := ghRun(pm.dir, "pr", "edit", branch, "--title", title, "--body", body)
 	if err != nil {
 		return fmt.Errorf("failed to update PR: %w\nOutput: %s", err, stderr)
 	}
@@ -581,11 +590,11 @@ func (pm *PRManager) UpdatePR(branch, title, body string) error {
 
 // GetPRStatus checks if a PR exists for the given branch
 func (pm *PRManager) GetPRStatus(branch string) (string, error) {
-	if !pm.IsInstalled() || !hasGitHubRemote("") {
+	if !pm.IsInstalled() || !hasGitHubRemote(pm.dir) {
 		return "", nil // Silently fail if gh cannot answer for this repo
 	}
 
-	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url", "--jq", ".url")
+	output, stderr, err := ghRun(pm.dir, "pr", "view", branch, "--json", "url", "--jq", ".url")
 	if err != nil {
 		return "", prViewError(stderr, err)
 	}
@@ -596,11 +605,11 @@ func (pm *PRManager) GetPRStatus(branch string) (string, error) {
 // GetFullPRStatus returns the URL and state of a PR for the given branch.
 // State is lowercased: "open", "merged", or "closed".
 func (pm *PRManager) GetFullPRStatus(branch string) (url, state string, err error) {
-	if !pm.IsInstalled() || !hasGitHubRemote("") {
+	if !pm.IsInstalled() || !hasGitHubRemote(pm.dir) {
 		return "", "", nil
 	}
 
-	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
+	output, stderr, err := ghRun(pm.dir, "pr", "view", branch, "--json", "url,state", "--jq", `"\(.url)\t\(.state)"`)
 	if err != nil {
 		return "", "", prViewError(stderr, err)
 	}
@@ -678,10 +687,10 @@ func deriveCIStatus(checks []rollupCheck) string {
 // GetPRCIStatus returns the combined CI check status for the PR on the given branch.
 // Returns "success", "failure", "pending", or "" if no checks exist.
 func (pm *PRManager) GetPRCIStatus(branch string) (string, error) {
-	if !pm.IsInstalled() || !hasGitHubRemote("") {
+	if !pm.IsInstalled() || !hasGitHubRemote(pm.dir) {
 		return "", nil
 	}
-	output, stderr, err := ghRun("", "pr", "view", branch, "--json", "statusCheckRollup")
+	output, stderr, err := ghRun(pm.dir, "pr", "view", branch, "--json", "statusCheckRollup")
 	if err != nil {
 		return "", prViewError(stderr, err)
 	}
