@@ -189,6 +189,16 @@ var clientCommandTable = []struct {
 	desc:      "toggle the check-and-publish loop for this workspace",
 	available: Model.canToggleAutopilot,
 	run:       Model.toggleAutopilot,
+}, {
+	name:      "shell",
+	desc:      "a shell in this worktree, in a tmux window beside this one",
+	available: Model.canOpenShell,
+	run:       Model.openShell,
+}, {
+	name:      "export",
+	desc:      "write this conversation to a markdown file",
+	available: Model.canExport,
+	run:       Model.exportTranscript,
 }}
 
 // clientCommandList is opentree's own slash commands, in the order the palette

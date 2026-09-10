@@ -44,9 +44,12 @@ var ListCmd = &cobra.Command{
 		asJSON, _ := cmd.Flags().GetBool("json")
 		if asJSON {
 			// Overwrite the persisted (never-updated) Status field with the
-			// live value so scripts see real state, not a constant "active".
+			// live value so scripts see real state, not a constant "active" —
+			// and the path with where the worktree actually is, for a record
+			// written before the path was recorded.
 			for _, ws := range workspaces {
 				ws.Status = liveStatus(ws.Name)
+				ws.WorktreeDir = svc.WorktreePath(ws.Name)
 			}
 			out, err := json.MarshalIndent(workspaces, "", "  ")
 			if err != nil {
@@ -61,10 +64,12 @@ var ListCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("%-30s %-15s %-15s %-10s\n", "NAME", "BRANCH", "BASE", "STATUS")
-		fmt.Println(strings.Repeat("-", 70))
+		// The path last, where a long one pushes nothing else out of line:
+		// it is the column a reader copies rather than scans.
+		fmt.Printf("%-30s %-15s %-15s %-10s %s\n", "NAME", "BRANCH", "BASE", "STATUS", "PATH")
+		fmt.Println(strings.Repeat("-", 90))
 		for _, ws := range workspaces {
-			fmt.Printf("%-30s %-15s %-15s %-10s\n", ws.Name, ws.Branch, ws.BaseBranch, liveStatus(ws.Name))
+			fmt.Printf("%-30s %-15s %-15s %-10s %s\n", ws.Name, ws.Branch, ws.BaseBranch, liveStatus(ws.Name), svc.WorktreePath(ws.Name))
 		}
 
 		return nil

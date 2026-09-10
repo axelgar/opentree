@@ -60,7 +60,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		return m.handleWheel(msg)
+		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
 		// ctrl+c always quits, even inside dialogs and text inputs where
@@ -118,6 +118,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.diffScrollOffset < m.maxDiffScroll() {
 					m.diffScrollOffset++
 				}
+			// A page at a time, and the ends: a diff of a few hundred lines
+			// was a few hundred presses of j.
+			case "pgup", "ctrl+u":
+				m.diffScrollOffset = max(m.diffScrollOffset-m.diffPage(), 0)
+			case "pgdown", "ctrl+d", " ":
+				m.diffScrollOffset = min(m.diffScrollOffset+m.diffPage(), m.maxDiffScroll())
+			case "g", "home":
+				m.diffScrollOffset = 0
+			case "G", "end":
+				m.diffScrollOffset = m.maxDiffScroll()
 			}
 			return m, nil
 		}
@@ -130,6 +140,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prWsName = ""
 				m.prBranch = ""
 				m.prBase = ""
+			}
+			return m, nil
+		}
+
+		// A stopped merge, asking who resolves it.
+		if m.syncConflict != nil {
+			switch msg.String() {
+			case "y", "Y":
+				c := m.syncConflict
+				m.syncConflict = nil
+				return m, m.askToResolveCmd(c)
+			case "n", "esc":
+				m.syncConflict = nil
 			}
 			return m, nil
 		}
@@ -477,6 +500,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.toggleAutopilotCmd(ws)
 			}
+		case key.Matches(msg, m.keys.Sync):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, tea.Batch(m.syncCmd(ws), m.noticeCmd("merging "+m.baseOr(ws.BaseBranch)+" into "+ws.Name+"…"))
+			}
+		case key.Matches(msg, m.keys.Shell):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, m.openShellCmd(ws.Name)
+			}
+		case key.Matches(msg, m.keys.CopyPath):
+			if len(visible) > 0 {
+				return m, copyPathCmd(m.svc.WorktreePath(visible[m.cursor].Name))
+			}
+		case key.Matches(msg, m.keys.Edit):
+			if len(visible) > 0 {
+				ws := visible[m.cursor]
+				if m.isWorkspaceInFlight(ws.Name) {
+					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+				}
+				return m, editWorktreeCmd(m.svc.WorktreePath(ws.Name))
+			}
 		case key.Matches(msg, m.keys.Review):
 			if len(visible) > 0 {
 				ws := visible[m.cursor]
@@ -684,10 +735,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			// Creating a workspace means wanting to work in it: go straight
-			// to the chat. Quitting the chat drops back to the list.
+			// to the chat. Quitting the chat drops back to the list, where a
+			// note about the branch's start is still waiting.
+			var note tea.Cmd
+			if msg.note != "" {
+				note = m.noticeCmd(msg.wsName + ": " + msg.note)
+			}
 			return m, tea.Batch(
 				m.checkBranchStatusCmd(msg.wsName, msg.branch, msg.worktreeDir, false),
 				m.attachWorkspaceCmd(msg.wsName),
+				note,
 			)
 		}
 		return m, nil
@@ -1107,6 +1164,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case browserOpenedMsg:
 		return m, m.noticeCmd("opened " + ui.Truncate(msg.url, 60) + " in browser")
 
+	case syncedMsg:
+		switch {
+		case len(msg.res.Conflicts) > 0:
+			m.syncConflict = &syncConflict{wsName: msg.wsName, branch: msg.branch, res: msg.res}
+			return m, nil
+		case msg.res.Updated:
+			return m, tea.Batch(m.loadWorkspacesCmd, m.noticeCmd("merged "+msg.res.Ref+" into "+msg.wsName))
+		}
+		return m, m.noticeCmd(msg.wsName + " already has everything " + msg.res.Ref + " has")
+
+	case resolveAskedMsg:
+		return m, m.noticeCmd(fmt.Sprintf("asked %s's agent to resolve %s", msg.wsName, plural(msg.count, "conflict")))
+
+	case pathCopiedMsg:
+		if msg.err != nil {
+			return m, m.transientErrCmd("copy failed: " + msg.err.Error())
+		}
+		return m, m.noticeCmd("copied " + ui.Truncate(msg.path, 70))
+
+	case editorFinishedMsg:
+		// The editor had the terminal; the mouse comes back with it.
+		if msg.err != nil {
+			return m, afterExec(m.transientErrCmd("editor: " + msg.err.Error()))
+		}
+		return m, afterExec(m.loadWorkspacesCmd)
+
 	case errLogCopiedMsg:
 		if msg.err != nil {
 			return m, m.transientErrCmd("copy failed: " + msg.err.Error())
@@ -1137,17 +1220,76 @@ const wheelLines = 3
 func (m Model) busyWithDialog() bool {
 	return m.creating || m.deleting || m.promoting || m.filtering || m.prCreating || m.prGenerating ||
 		m.agentInstallConfirm != nil || m.answering || m.prompting ||
-		m.showErrLog
+		m.showErrLog || m.syncConflict != nil
 }
 
-// handleWheel drives whatever is scrollable underneath the pointer. The mouse
-// is captured so the terminal stops scrolling its own scrollback out from under
-// the alt screen; having taken it, the wheel owes the user a response, or the
-// dashboard reads as frozen rather than as focused.
+// handleMouse routes the mouse: the wheel to whatever scrolls, a press to the
+// row under it. The mouse is captured so the terminal stops scrolling its own
+// scrollback out from under the alt screen; having taken it, the dashboard
+// owes the pointer the two things a list does with one — a click selects a
+// row, and a double-click opens it, the way enter does.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if tea.MouseEvent(msg).IsWheel() {
+		return m.handleWheel(msg)
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+	if m.tab != tabWorkspaces || m.busyWithDialog() || m.diffViewing {
+		return m, nil
+	}
+	i, ok := m.rowAt(msg.Y)
+	if !ok {
+		return m, nil
+	}
+	at := clock()
+	double := i == m.lastClick.row && at.Sub(m.lastClick.at) < multiClick
+	m.lastClick = click{row: i, at: at}
+	m.cursor = i
+	if !double {
+		return m, nil
+	}
+	ws := m.visibleWorkspaces()[i]
+	if m.isWorkspaceInFlight(ws.Name) {
+		return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
+	}
+	return m, m.attachWorkspaceCmd(ws.Name)
+}
+
+// rowAt is the visible row under a screen line, if any. The list is rendered
+// to find out — the same rendering the screen shows, so the two cannot
+// disagree — and the app style's top padding is the one line between the
+// body and the screen.
+func (m Model) rowAt(y int) (int, bool) {
+	_, spans := m.listScreen()
+	line := y - appStyle.GetPaddingTop()
+	for _, span := range spans {
+		if line >= span.top && line < span.bottom {
+			return span.index, true
+		}
+	}
+	return 0, false
+}
+
+// click is the last press on a row, for telling a double-click from two.
+type click struct {
+	row int
+	at  time.Time
+}
+
+// multiClick is how quickly a second press has to follow the first to count
+// as the same gesture.
+const multiClick = 400 * time.Millisecond
+
+// clock is what the click counter reads, a variable so a test can press
+// twice in no time at all.
+var clock = time.Now
+
+// handleWheel drives whatever is scrollable underneath the pointer.
 //
-// Only the wheel is acted on. Clicks and motion arrive too — cell motion is the
-// mode that suppresses the terminal's scrollback — and the list has nothing to
-// do with them.
+// Only the wheel reaches here: a press has been routed to the row under it
+// by handleMouse, and motion — which arrives too, since cell motion is the
+// mode that suppresses the terminal's scrollback — means nothing to a list.
 func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	var delta int
 	switch msg.Button {
@@ -1180,8 +1322,13 @@ func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // maxDiffScroll is the furthest the diff can scroll before the last line is on
 // screen. Shared so the keys, the wheel and the resize clamp cannot disagree.
 func (m Model) maxDiffScroll() int {
-	availHeight := max(m.height-8, 5)
-	return max(len(strings.Split(m.diffContent, "\n"))-availHeight, 0)
+	return max(len(strings.Split(m.diffContent, "\n"))-m.diffPage(), 0)
+}
+
+// diffPage is how many lines of the diff are on screen, which is what one
+// page key moves by.
+func (m Model) diffPage() int {
+	return max(m.height-headerFooterHeight, minDiffHeight)
 }
 
 func (m *Model) clampDiffScroll() {

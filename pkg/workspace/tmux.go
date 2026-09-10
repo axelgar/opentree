@@ -21,6 +21,10 @@ func (t *TmuxProcessManager) CreateAppWindow(name, workdir, command string, env 
 	return t.ctrl.CreateAppWindow(name, workdir, command, env, args...)
 }
 
+func (t *TmuxProcessManager) CreateShellWindow(name, workdir string) error {
+	return t.ctrl.CreateShellWindow(name, workdir)
+}
+
 func (t *TmuxProcessManager) ListWindows() ([]Window, error) {
 	tw, err := t.ctrl.ListWindows()
 	if err != nil {

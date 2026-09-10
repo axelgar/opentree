@@ -31,7 +31,16 @@ type keyMap struct {
 	Msg     key.Binding
 	Server  key.Binding
 	Blocked key.Binding
-	ErrLog  key.Binding
+	// The three ways into a worktree from the list, for the moment the
+	// agent asks for something only a person at a prompt can do: a shell
+	// beside the chat, the path on the clipboard, the tree in an editor.
+	Shell    key.Binding
+	CopyPath key.Binding
+	Edit     key.Binding
+	// Sync pairs with the conflicts badge: the row says the PR conflicts
+	// with its base, and u is what to do about it.
+	Sync   key.Binding
+	ErrLog key.Binding
 	// CopyErrLog is only ever consulted inside the error log, which swallows
 	// every other key. That is why it can share a letter with Stop without
 	// either becoming ambiguous — the log is modal, and the list is not
@@ -53,8 +62,8 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.New, k.Issue, k.Remote, k.Enter},
 		{k.Diff, k.Compare, k.Promote, k.PR, k.Open, k.Review, k.Autopilot, k.Select, k.Delete},
-		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Filter, k.Sort},
-		{k.Tab, k.ErrLog, k.Quit, k.Help},
+		{k.Answer, k.Stop, k.Msg, k.Blocked, k.Server, k.Sync, k.Filter, k.Sort},
+		{k.Shell, k.CopyPath, k.Edit, k.Tab, k.ErrLog, k.Quit, k.Help},
 	}
 }
 
@@ -153,6 +162,25 @@ var keys = keyMap{
 	Blocked: key.NewBinding(
 		key.WithKeys("b"),
 		key.WithHelp("b", "next blocked"),
+	),
+	// t, y and e are free on this tab. The Skills tab's t is its own: each
+	// tab handles its keys before this map is consulted.
+	Shell: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "shell in worktree"),
+	),
+	CopyPath: key.NewBinding(
+		key.WithKeys("y"),
+		key.WithHelp("y", "copy worktree path"),
+	),
+	Edit: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "open in $EDITOR"),
+	),
+	// u as in update: bring the base in.
+	Sync: key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "merge base in"),
 	),
 	ErrLog: key.NewBinding(
 		key.WithKeys("E"),

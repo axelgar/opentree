@@ -16,8 +16,10 @@ func TestDefault(t *testing.T) {
 	if cfg.Agent.Command != "opencode" {
 		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, "opencode")
 	}
-	if cfg.Worktree.BaseDir != ".opentree" {
-		t.Errorf("Worktree.BaseDir = %q, want %q", cfg.Worktree.BaseDir, ".opentree")
+	// Empty on purpose: the directory is opentree's own choice, resolved by
+	// pkg/worktree against the repository it is asked about.
+	if cfg.Worktree.BaseDir != "" {
+		t.Errorf("Worktree.BaseDir = %q, want it left to opentree", cfg.Worktree.BaseDir)
 	}
 	if cfg.Worktree.DefaultBase != "main" {
 		t.Errorf("Worktree.DefaultBase = %q, want %q", cfg.Worktree.DefaultBase, "main")
@@ -109,8 +111,8 @@ command = "override"
 		t.Errorf("Agent.Command = %q, want %q", cfg.Agent.Command, "override")
 	}
 	// Fields not set in TOML should remain at default values.
-	if cfg.Worktree.BaseDir != ".opentree" {
-		t.Errorf("Worktree.BaseDir = %q, want default %q", cfg.Worktree.BaseDir, ".opentree")
+	if cfg.Worktree.BaseDir != "" {
+		t.Errorf("Worktree.BaseDir = %q, want the default, which is left to opentree", cfg.Worktree.BaseDir)
 	}
 	if cfg.Tmux.SessionPrefix != "opentree" {
 		t.Errorf("Tmux.SessionPrefix = %q, want default %q", cfg.Tmux.SessionPrefix, "opentree")

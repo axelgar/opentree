@@ -1,6 +1,10 @@
 package chat
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -220,5 +224,100 @@ func TestRecall_DoesNotReopenThePalette(t *testing.T) {
 	}
 	if m.completion.active() {
 		t.Error("recalling a message should not open the completion palette")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Kept between chats
+// ---------------------------------------------------------------------------
+
+func TestHistory_SurvivesTheProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history", "fix-auth")
+	h := loadHistory(path)
+	if len(h.sent) != 0 {
+		t.Fatalf("a history that never existed has %d messages", len(h.sent))
+	}
+	_ = h.record("one").record("two\nacross lines")
+
+	again := loadHistory(path)
+	if want := []string{"one", "two\nacross lines"}; !slices.Equal(again.sent, want) {
+		t.Fatalf("reloaded = %q, want %q", again.sent, want)
+	}
+	if again.walking() {
+		t.Error("a freshly loaded history should not be mid-walk")
+	}
+	_, text, ok := again.walk(-1, "")
+	if !ok || text != "two\nacross lines" {
+		t.Errorf("first up after a reload = %q, %v; want the newest message", text, ok)
+	}
+}
+
+func TestHistory_KeepsTheLastTwoHundred(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fix-auth")
+	h := loadHistory(path)
+	for i := range historyMax + 50 {
+		h = h.record(fmt.Sprintf("message %d", i))
+	}
+	again := loadHistory(path)
+	if len(again.sent) != historyMax {
+		t.Fatalf("reloaded %d messages, want %d", len(again.sent), historyMax)
+	}
+	if again.sent[0] != "message 50" || again.sent[historyMax-1] != fmt.Sprintf("message %d", historyMax+49) {
+		t.Errorf("kept %q … %q, want the newest %d", again.sent[0], again.sent[historyMax-1], historyMax)
+	}
+}
+
+func TestHistory_ABrokenLineCostsOnlyItself(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fix-auth")
+	if err := os.WriteFile(path, []byte("\"one\"\nnot json\n\"two\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := loadHistory(path)
+	if want := []string{"one", "two"}; !slices.Equal(h.sent, want) {
+		t.Errorf("loaded %q, want %q", h.sent, want)
+	}
+}
+
+func TestHistory_WithoutAPathStaysInMemory(t *testing.T) {
+	h := loadHistory("").record("one")
+	if h.path != "" || len(h.sent) != 1 {
+		t.Errorf("history = %+v, want one message and no file", h)
+	}
+}
+
+// The file is private: what people type at an agent is not always meant for
+// the other accounts on a machine.
+func TestHistory_FileIsPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fix-auth")
+	loadHistory(path).record("secret")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 0600", mode)
+	}
+}
+
+func TestHistoryPath_KeysTheRepositoryLikeTheSockets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got := HistoryPath("/src/myapp", "feat/x")
+	want := filepath.Join(home, ".opentree", "history", filepath.Base(filepath.Dir(SocketPath("/src/myapp", "feat/x"))), "feat-x")
+	if got != want {
+		t.Errorf("HistoryPath = %q, want %q", got, want)
+	}
+}
+
+// The model loads the file on the way up and ↑ finds what an earlier chat sent.
+func TestHistory_TheBoxRecallsWhatAnEarlierChatSent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fix-auth")
+	loadHistory(path).record("from last time")
+
+	m := newTestModel()
+	m.history = loadHistory(path)
+	m, _ = applyUpdate(m, tea.KeyMsg{Type: tea.KeyUp})
+	if got := m.input.Value(); got != "from last time" {
+		t.Errorf("↑ put %q in the box, want the message an earlier chat sent", got)
 	}
 }

@@ -459,6 +459,9 @@ func (m Model) awaitingCommands() bool {
 func (m Model) statusLine() string {
 	flags := m.flagsSummary()
 	if len(flags) == 0 {
+		if m.flash.text != "" {
+			return m.flashLine(m.width - 2)
+		}
 		if m.err != nil {
 			return errorStyle.Render("✕ " + m.errorText() + m.retryHint())
 		}
@@ -475,9 +478,24 @@ func (m Model) statusLine() string {
 	if m.err != nil {
 		left = errorStyle.Render(ui.Truncate("✕ "+m.errorText()+m.retryHint(), room))
 	}
+	// A flash outranks both: it is the answer to the key just pressed, and
+	// three seconds from now the error and the help are back.
+	if m.flash.text != "" {
+		left = m.flashLine(room)
+	}
 
 	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// flashLine is the flash as the status line draws it: a receipt in the
+// success colour, a refusal in the error's, trimmed to the room it has.
+func (m Model) flashLine(room int) string {
+	style := flashStyle
+	if m.flash.failed {
+		style = errorStyle
+	}
+	return style.Render(ui.Truncate(m.flash.text, max(room, 1)))
 }
 
 // shortHelp renders as many bindings as fit, dropping whole ones from the end.
@@ -723,15 +741,28 @@ func kindKey(kind string) string {
 	return ""
 }
 
-func (m Model) renderLog() string {
+// renderLogLines is the log as rows, and for each row the index of the entry
+// it belongs to — -1 for a row that is nobody's: the empty state, the
+// thinking line, the blank after the last entry. The rows are what the
+// viewport shows and what the mouse points at; the owners are how a click on
+// a row reaches its entry.
+func (m Model) renderLogLines() (lines []string, owners []int) {
 	width := m.width - 2
 	if width < 20 {
 		width = 20
 	}
 
 	var b strings.Builder
+	// Every piece ends in a newline, so each row begins and ends inside one
+	// piece and the owner of the piece is the owner of the row.
+	write := func(owner int, text string) {
+		b.WriteString(text)
+		for range strings.Count(text, "\n") {
+			owners = append(owners, owner)
+		}
+	}
 	if !m.conversationStarted() && !m.turn {
-		b.WriteString(m.emptyState())
+		write(-1, m.emptyState())
 	}
 	cache := m.cache.at(width)
 	for i, e := range m.entries {
@@ -739,22 +770,21 @@ func (m Model) renderLog() string {
 			continue
 		}
 		if s, ok := cache.get(i, e.rev); ok {
-			b.WriteString(s)
-			b.WriteString("\n")
+			write(i, s+"\n")
 			continue
 		}
 		s := m.renderEntry(e, width)
 		if cacheable(e) {
 			cache.put(i, e.rev, s)
 		}
-		b.WriteString(s)
-		b.WriteString("\n")
+		write(i, s+"\n")
 	}
 	if m.turn {
-		b.WriteString(toolRunningStyle.Render(ui.SpinnerFrames[m.spinnerFrame] + " thinking…"))
-		b.WriteString("\n")
+		write(-1, toolRunningStyle.Render(ui.SpinnerFrames[m.spinnerFrame]+" thinking…")+"\n")
 	}
-	return b.String()
+	// The row after the final newline, which Split always yields.
+	owners = append(owners, -1)
+	return strings.Split(b.String(), "\n"), owners
 }
 
 // renderCache memoizes rendered entries by index and revision, at one width.

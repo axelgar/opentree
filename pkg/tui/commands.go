@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,12 +13,84 @@ import (
 
 	"github.com/axelgar/opentree/pkg/bootstrap"
 	"github.com/axelgar/opentree/pkg/chat"
+	"github.com/axelgar/opentree/pkg/clipboard"
 	"github.com/axelgar/opentree/pkg/github"
 	"github.com/axelgar/opentree/pkg/gitutil"
 	"github.com/axelgar/opentree/pkg/skills"
 	"github.com/axelgar/opentree/pkg/state"
 	"github.com/axelgar/opentree/pkg/workspace"
 )
+
+// writeClipboard is the clipboard, as a variable so a test can read what was
+// sent without a pbcopy of its own.
+var writeClipboard = clipboard.Write
+
+// openShellCmd puts the terminal in the workspace's shell window, opening one
+// first if there is none. The same shape as attaching to the chat: tmux
+// takes the screen, and afterExec gives the mouse back.
+func (m Model) openShellCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		cmd, err := m.svc.ShellCmd(name)
+		if err != nil {
+			return errMsg{err}
+		}
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				err = fmt.Errorf("failed to open a shell in %q: %w", name, err)
+			}
+			return attachFinishedMsg{err: err}
+		})()
+	}
+}
+
+// syncCmd merges the workspace's base into its branch.
+func (m Model) syncCmd(ws WorkspaceItem) tea.Cmd {
+	return func() tea.Msg {
+		res, err := m.svc.Sync(ws.Name, false)
+		if err != nil {
+			return errMsg{fmt.Errorf("%s: %w", ws.Name, err)}
+		}
+		return syncedMsg{wsName: ws.Name, branch: ws.Branch, res: res}
+	}
+}
+
+// askToResolveCmd hands a stopped merge to the workspace's agent, over the
+// chat's socket the way review comments travel.
+func (m Model) askToResolveCmd(c *syncConflict) tea.Cmd {
+	repoRoot, wsName, prompt := m.repoRoot, c.wsName, workspace.SyncConflictPrompt(c.branch, c.res)
+	count := len(c.res.Conflicts)
+	return func() tea.Msg {
+		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, chat.Command{
+			Type: chat.CommandPrompt, Text: prompt,
+		}); err != nil {
+			return errMsg{fmt.Errorf("%s: %w", wsName, err)}
+		}
+		return resolveAskedMsg{wsName: wsName, count: count}
+	}
+}
+
+// copyPathCmd puts a worktree's path on the clipboard, for the terminal
+// tab, the editor or the file dialog it is about to be pasted into.
+func copyPathCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		return pathCopiedMsg{path: path, err: writeClipboard(path)}
+	}
+}
+
+// editWorktreeCmd opens the worktree in the user's editor, the way the Skills
+// tab opens a SKILL.md. An editor that returns at once — `code` hands the
+// directory to a running window — gives the terminal straight back.
+func editWorktreeCmd(path string) tea.Cmd {
+	name, args := editorCommand()
+	args = append(args, path)
+	// #nosec G702 -- the editor is the user's own $VISUAL/$EDITOR, the same
+	// value git and every other terminal tool hands a file to.
+	c := exec.Command(name, args...)
+	c.Dir = path
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{err: err}
+	})
+}
 
 // copyErrLogCmd puts the whole log on the system clipboard. The whole log
 // rather than the entry under some cursor: there is no cursor here, and an
@@ -28,7 +101,7 @@ func (m Model) copyErrLogCmd() tea.Cmd {
 	entries := append([]string(nil), m.errLog...)
 	text := strings.Join(entries, "\n") + "\n"
 	return func() tea.Msg {
-		if err := copyToClipboard(text); err != nil {
+		if err := writeClipboard(text); err != nil {
 			return errLogCopiedMsg{err: err}
 		}
 		return errLogCopiedMsg{count: len(entries)}
@@ -139,7 +212,7 @@ func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir, note: ws.StartNote}
 	}
 }
 
@@ -149,7 +222,7 @@ func (m Model) createWorkspaceFromRemoteCmd(branchName string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir, note: ws.StartNote}
 	}
 }
 
@@ -188,7 +261,7 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir}
+		return createdWorkspaceMsg{wsName: ws.Name, branch: ws.Branch, worktreeDir: ws.WorktreeDir, note: ws.StartNote}
 	}
 }
 

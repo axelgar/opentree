@@ -59,19 +59,21 @@ approved first: run 'opentree trust' once on this machine. A tmux server must
 be running (tmux new-session -d starts one).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		baseBranch, _ := cmd.Flags().GetString("base")
-		return runDispatch(args, baseBranch)
+		noFetch, _ := cmd.Flags().GetBool("no-fetch")
+		return runDispatch(args, baseBranch, noFetch)
 	},
 }
 
 func init() {
 	DispatchCmd.Flags().StringP("base", "b", "", "Base branch to create the worktree from (default: config default)")
+	DispatchCmd.Flags().Bool("no-fetch", false, "Branch from the base as it is here, without fetching origin's first")
 	DispatchCmd.Flags().BoolVar(&dispatchHeadless, "headless", false,
 		"wait for the PR instead of attaching, and exit with a scriptable code")
 	DispatchCmd.Flags().DurationVar(&dispatchTimeout, "timeout", 30*time.Minute,
 		"how long --headless waits before giving up (the workspace keeps working)")
 }
 
-func runDispatch(args []string, baseBranch string) error {
+func runDispatch(args []string, baseBranch string, noFetch bool) error {
 	repoRoot, err := gitutil.RepoRoot()
 	if err != nil {
 		return err
@@ -101,12 +103,13 @@ func runDispatch(args []string, baseBranch string) error {
 		return fmt.Errorf("failed to open state: %w", err)
 	}
 
-	target, prompt, err := dispatchTarget(svc, args, baseBranch)
+	target, prompt, err := dispatchTarget(svc, args, baseBranch, noFetch)
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("✓ Created workspace '%s'\n", target.Name)
+	printStartNote(target)
 	fmt.Printf("✓ Launched %s in tmux window\n", target.Agent)
 
 	// The window just launched `opentree chat`; its socket is up before the
@@ -143,9 +146,10 @@ func runDispatch(args []string, baseBranch string) error {
 // dispatchTarget creates the workspace the arguments describe and composes the
 // task: an all-digits single argument is an issue, anything else is the prompt
 // itself.
-func dispatchTarget(svc *workspace.Service, args []string, baseBranch string) (*state.Workspace, string, error) {
+func dispatchTarget(svc *workspace.Service, args []string, baseBranch string, noFetch bool) (*state.Workspace, string, error) {
+	opts := workspace.CreateOpts{NoFetch: noFetch}
 	if n, ok := issueArg(args); ok {
-		target, err := svc.CreateFromIssue(n, baseBranch)
+		target, err := svc.CreateFromIssueWith(n, baseBranch, opts)
 		if err != nil {
 			return nil, "", err
 		}
@@ -161,7 +165,7 @@ func dispatchTarget(svc *workspace.Service, args []string, baseBranch string) (*
 		}
 		return false
 	})
-	target, err := svc.Create(name, baseBranch)
+	target, err := svc.CreateWith(name, baseBranch, opts)
 	if err != nil {
 		return nil, "", err
 	}

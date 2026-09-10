@@ -25,7 +25,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **🔍 Filter & Sort**: Filter workspaces by name, sort by name/age/activity/PR status
 - **🔌 Agent Plugins**: Install a plugin from the open [Agent Plugins](https://agent-plugins.org) standard once, and every agent in every worktree can use the skills it bundles
 - **🗂 ACP Registry**: `opentree agents add <id>`, or `a` on the dashboard's Agents tab, installs any agent the [ACP Registry](https://agentclientprotocol.com/get-started/registry) lists, and it becomes first-class everywhere the built-in four are — chats, fan-outs, per-workspace overrides
-- **🧹 Clean Lifecycle**: Archive workspaces after merge, keeping your repo tidy
+- **🧹 Clean Lifecycle**: A merged PR marks its row `merged · ready to delete`, and `opentree delete --merged` clears them all at once
 - **⌨️ Shell Completion**: Tab completion for workspace names in bash, zsh, and fish
 
 ## Requirements
@@ -73,7 +73,7 @@ opentree uninstall
 
 Removes what opentree wrote into your home directory: the agent adapters under `~/.opentree/tools` (a few hundred megabytes each), the agents installed from the ACP Registry under `~/.opentree/registry` along with its cached index, the plugins installed under `~/.opentree/plugins`, the record of approved setup and run commands, the shell completion script and the global config file. It lists all of it with sizes and asks before removing anything — `--dry-run` lists and stops, `--yes` answers the question from a script.
 
-It never touches a repository. The worktrees under `<repo>/.opentree` are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
+It never touches a repository, and it never touches a worktree. The worktrees under `~/.opentree/worktrees` (or wherever `base_dir` points) are your own work in progress, and `opentree delete <branch>` is what removes those. The binary belongs to whichever of brew, npm or `go install` put it there, so the command that removes it is printed at the end.
 
 ## Quick Start
 
@@ -88,8 +88,9 @@ opentree
 opentree new feat/add-auth       # Create workspace
 opentree issue 42                # Create workspace from GitHub issue #42
 opentree dispatch 42 --headless  # Issue #42 → agent → checks → PR, unattended
-opentree list                    # List all workspaces
+opentree list                    # List all workspaces, with their paths
 opentree attach feat/add-auth    # Attach to tmux window
+opentree shell feat/add-auth     # A shell in the worktree, beside the chat
 opentree diff feat/add-auth      # Review changes
 opentree pr feat/add-auth        # Create GitHub PR
 opentree delete feat/add-auth    # Clean up workspace
@@ -118,7 +119,7 @@ opentree
 - `n` - Create new workspace (prompts for branch name, then base branch)
 - `i` - Create workspace from a GitHub issue number
 - `Enter` - Attach to selected workspace
-- `d` - Show diff for selected workspace
+- `d` - Show diff for selected workspace (`pgup`/`pgdn` page it, `g`/`G` jump to the ends)
 - `D` - Compare a fan-out group: every sibling's diff in one scroll
 - `W` - Promote a fan-out's winner: keep this sibling, delete the rest
 - `p` - Create PR for selected workspace (auto-generates title and body from commits)
@@ -127,6 +128,10 @@ opentree
 - `R` - Send the workspace's open PR review comments to its agent
 - `P` - Switch the workspace's autopilot on or off
 - `w` - Start or stop the workspace's dev server
+- `u` - Merge the base branch in (fetched from origin first); conflicts are offered to the agent
+- `t` - Open a shell in the workspace's worktree, in a tmux window beside its chat
+- `y` - Copy the worktree's path to the clipboard
+- `e` - Open the worktree in `$VISUAL`/`$EDITOR`
 - `b` - Jump to the workspace that has been waiting longest on a permission (press again to cycle)
 - `space` - Toggle multi-select on current workspace
 - `/` - Filter workspaces by name
@@ -135,6 +140,9 @@ opentree
 - `tab` - Switch between Workspaces, Agents, Skills, Plugins and Servers
 - `?` - Toggle full help
 - `q` - Quit
+
+The mouse works too: the wheel scrolls, a click selects a row, and a
+double-click attaches to it.
 
 Each row also carries what its agent is doing — working, waiting on a
 permission, stopped — plus cost and context use, read live from the chat's
@@ -243,7 +251,7 @@ agent's own logo, in its own colours:
 ```
  ▐▛███▜▌    Claude Code
 ▝▜█████▛▘   fix-auth
-  ▘▘ ▝▝     ~/src/myrepo/.opentree/fix-auth
+  ▘▘ ▝▝     ~/.opentree/worktrees/myrepo/fix-auth
 ```
 
 | Key | |
@@ -251,7 +259,7 @@ agent's own logo, in its own colours:
 | `enter` | send |
 | `shift+enter` | newline — `ctrl+j` where the terminal cannot report modifiers |
 | `↑` / `↓` | walk back through the messages already sent, and forward again |
-| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model` and the rest |
+| `/` | slash commands — the agent's own, plus `/resume`, `/login`, `/model`, `/shell`, `/export` and the rest |
 | `@` | attach a file from this worktree |
 | `ctrl+v` | paste — an image on the clipboard is attached, anything else is text |
 | `esc` | interrupt the current turn — or clear an unsent message (`↑` brings it back) |
@@ -260,6 +268,10 @@ agent's own logo, in its own colours:
 | `ctrl+o` | show or hide the agent's reasoning |
 | `ctrl+x` | expand what the last tool call held back, and fold it again |
 | `ctrl+r` | retry a failed turn — the same message, pasted images included |
+| `ctrl+y` | copy — the last reply, any code block in it, the last tool's output, or the whole conversation as markdown |
+| `ctrl+f` | find in the conversation — `ctrl+n` / `ctrl+p` step through the matches, `esc` leaves the log where it stands |
+| `drag` | select text — it goes to the clipboard when the button comes up; double-click takes a word, triple-click a row. `shift+drag` (`option+drag` in iTerm2) is the terminal's own selection, which still works |
+| `click` | a permission option answers it; a `… 42 more lines` row opens the way `ctrl+x` does |
 | `?` | every key |
 
 **Prose.** The agent's replies render as markdown while they stream: emphasis,
@@ -303,6 +315,9 @@ forward again, and coming back past the newest returns whatever was half typed
 when you started looking — so a prompt worth repeating, or repeating with one
 word changed, is a keypress away rather than a retype. Inside a message the
 arrows still move the cursor: they only recall from its first and last row.
+They are kept per workspace, under `~/.opentree/history`, so a window closed
+and reopened — or a chat restarted after its agent died — still has the last
+two hundred.
 
 **Messages you have not sent yet.** Enter while the agent is still working
 queues the message instead of dropping it: it waits as a `⏳` line above the
@@ -317,6 +332,10 @@ talked about — newest first, by what each conversation was about — and picki
 one reopens it in place, history and all. The list is the agent's own where it
 keeps one, merged with what opentree recorded itself, so the command works the
 same whichever agent is running.
+
+**Getting the conversation out.** `/export` writes it as markdown — what was
+said, what was run and what it printed — to `~/.opentree/exports`, never into
+the worktree, and says where. `ctrl+y` puts the same document on the clipboard.
 
 The agent's live model, mode and effort sit on the right of the input, next to
 the running context and cost. `ctrl+c` takes you back to the workspace list and
@@ -520,11 +539,18 @@ opentree new feat/user-auth           # Create workspace with branch
 opentree new fix/login-bug --base dev # Branch off 'dev' instead of 'main'
 opentree new feat/x --agent claude    # Run claude here, whatever the config says
 opentree new feat/x --agents claude,gemini --prompt "task"  # Fan out — see Fan-out
+opentree new feat/x --no-fetch        # Branch from the local base as it is
 ```
+
+The base is fetched from origin first, and the branch made from `origin/<base>`:
+a `main` last pulled yesterday would otherwise start the workspace a day behind,
+and its PR would carry or conflict with commits already merged. Offline, the
+command says so and branches from the local base; `--no-fetch` skips the fetch
+on purpose. `issue` and `dispatch` do the same.
 
 Creates:
 
-1. Git worktree at `.opentree/<branch-name>/`
+1. Git worktree at `~/.opentree/worktrees/<repo>/<branch-name>/` (see [Where worktrees live](#where-worktrees-live))
 2. New branch (or checks out existing)
 3. tmux window in `opentree-<repo>` session
 4. Launches the configured coding agent in the workspace
@@ -556,6 +582,22 @@ opentree attach <branch-name>
 ```
 
 Attaches to the workspace's tmux window. Detach with `Ctrl+b d`.
+
+#### Get Into the Worktree
+
+```bash
+opentree path <branch-name>          # print the worktree's directory
+cd "$(opentree path feat/x)"         # …which is what it is for
+opentree shell <branch-name>         # a shell there, in a tmux window beside the chat
+```
+
+The chat's window is opentree's, holding the conversation. When the agent asks
+for something only a person at a prompt can do — run the tests, check a URL,
+paste back what a command printed — `shell` opens a window of your own in the
+worktree (`<branch>:sh`, reused while it lives) and takes you to it; `/shell`
+in the chat and `t` in the dashboard do the same. `path` prints the directory
+and nothing else, because a branch's directory is not its name: `feat/x` lives
+at `feat-x`, under `~/.opentree/worktrees/<repo>` by default.
 
 #### Show Diff
 
@@ -599,6 +641,21 @@ failing checks by name, and the tail of each GitHub Actions log — where the
 test runner's summary is. Same delivery as `review`, over the control socket.
 With autopilot on, this happens by itself.
 
+#### Merge the Base In
+
+```bash
+opentree sync <branch-name>          # fetch origin's main and merge it into the branch
+opentree sync <branch-name> --ask    # …and on conflicts, hand the files to the agent
+```
+
+The dashboard's row says `PR open · conflicts`; this is what to do about it.
+The base is fetched from origin first — offline, the local one is merged and
+the command says so — and merged rather than rebased, because the branch may
+already be pushed and under review. Conflicts are not a failure: they are
+listed, the merge is left in progress in the worktree with its markers, and
+`--ask` (or `y` in the dashboard's dialog) sends the agent a prompt naming the
+files and asking it to finish the merge.
+
 #### Delete Workspace
 
 ```bash
@@ -606,9 +663,10 @@ opentree delete <branch-name>
 
 # Examples
 opentree delete feat/user-auth
+opentree delete --merged          # every workspace whose PR has merged
 ```
 
-Removes the worktree, kills the tmux window, and deletes the branch. If uncommitted changes are detected, a diff is shown and confirmation is required before proceeding.
+Removes the worktree, kills its tmux windows, and deletes the branch. If uncommitted changes are detected, a diff is shown and confirmation is required before proceeding. `--merged` does the same for every workspace the dashboard has seen merge — one question each for any that still hold something — which is how a week's worth of `merged · ready to delete` rows is cleared at once.
 
 #### Promote a Fan-out Winner
 
@@ -637,7 +695,7 @@ Create `opentree.toml` in your repo root or `~/.config/opentree/opentree.toml`. 
 
 ```toml
 [worktree]
-base_dir = ".opentree"        # Where to store worktrees (relative to repo root)
+base_dir = ".opentree"        # Where worktrees go — unset: ~/.opentree/worktrees/<repo>; relative: inside the repo
 default_base = "main"         # Default base branch
 
 [agent]
@@ -659,6 +717,40 @@ auto_push = true              # Push branch before creating a PR (set false to p
 on      = ["blocked", "stopped"]
 desktop = true
 ```
+
+### Where worktrees live
+
+Outside the repository, by default: `~/.opentree/worktrees/<repo>/<branch>`,
+where `<repo>` is the name of the repository's directory. Worktrees used to go
+under `<repo>/.opentree`, and every tool that walks a project found the extra
+checkouts — test runners collected their tests twice, `tsc` compiled them,
+linters and formatters walked them, watchers rebuilt on every save an agent
+made, and a worktree without its own `node_modules` quietly resolved the
+parent's. Git was the only tool told to look away. Out of the working tree,
+none of them can see a worktree at all.
+
+Two clones with the same directory name get separate directories: the first
+claims `<repo>` with a small `.repo` marker naming it, and the second gets
+`<repo>-<hash>`.
+
+To keep worktrees inside the repository — where a plain `find` will meet them —
+set `base_dir` to a relative path, in the repository's own `opentree.toml` or
+globally:
+
+```toml
+[worktree]
+base_dir = ".opentree"   # inside the repository, as before
+```
+
+An absolute path, or one under `~`, is accepted from the global config only: a
+cloned repository does not get to point opentree at the rest of your
+filesystem. Workspaces made before a change of `base_dir` stay where they were
+made — opentree finds them through git — and `opentree doctor` says where the
+worktrees of the current setting go, and whether that is inside the working
+tree.
+
+`state.json` stays at `<repo>/.opentree/state.json`, which git is told to
+ignore: two small files, and no test runner cares about JSON.
 
 ### Seeding a Worktree
 
@@ -875,7 +967,7 @@ index. Offline, the last index this machine saw answers, with its age noted.
 
 ## How It Works
 
-1. **Worktrees**: Git worktrees allow multiple checkouts of the same repo in different directories. Each workspace lives in `.opentree/<branch-name>/`.
+1. **Worktrees**: Git worktrees allow multiple checkouts of the same repo in different directories. Each workspace lives in `~/.opentree/worktrees/<repo>/<branch-name>/` — outside the working tree, so the project's own tools never see it — unless `base_dir` says otherwise.
 
 2. **tmux Orchestration**: A single tmux session (`opentree-<repo>`) manages all workspaces. Each workspace = one tmux window. Attach to work, detach to switch.
 
