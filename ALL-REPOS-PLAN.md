@@ -1,6 +1,8 @@
 # opentree — One dashboard across every repository: design & plan
 
-> Status: **planned, implementing.** Turned from `HANDOFF-ALL-REPOS.md` on
+> Status: **all four commits implemented.** `make check` green locally except
+> shellcheck (not installed here; no script changed). Departures from the plan
+> as written are under *Found during implementation*. Turned from `HANDOFF-ALL-REPOS.md` on
 > 2026-09-10 at `aef3985`. Scope: `opentree` outside a repository, or
 > `opentree --all` inside one, lists every repository's workspaces in one
 > dashboard, each row live; `opentree list --all` does the same on the command
@@ -110,10 +112,28 @@ Each commit is green on its own.
 | # | Scope | Files | Size | Status |
 |---|---|---|---|---|
 | 0 | **This document.** | `ALL-REPOS-PLAN.md` | S | done |
-| 1 | **tmux and gh take a root** (decision 4). `tmux.NewIn`, `github.NewIn`, `PRManager.dir`, `workspace.New` uses both. No visible change. | `pkg/tmux/tmux.go`, `pkg/github/github.go`, `pkg/workspace/workspace.go` | S | pending |
-| 2 | **Discovery and `list --all`** (decisions 2, 3, 8). `gitutil.RepoRootIn`, `State.RepoRoot` stamped on save, `state.Roots()`, the list command. Tests for `Roots` (route 1, route 2, lock-only skipped) and `RepoRootIn`. | `pkg/gitutil/gitutil.go`, `pkg/state/state.go`, `roots.go`, `roots_test.go` (new), `cmd/opentree/cmd/list.go` | M | pending |
-| 3 | **The dashboard** (decisions 1, 5, 6, 7). `--all` flag, `tui.Run(all)`, `NewModel(all)`, `repos`, `WorkspaceItem.RepoRoot`, `svcFor`, routing at every row-bound site, row prefix, filter, sort, creation guard. Tests for prefix, filter and grouping. | `cmd/opentree/main.go`, `pkg/tui/model.go`, `commands.go`, `update.go`, `view.go`, `agentctl.go`, `servers.go`, `helpers.go`, `tui_test.go` | L | pending |
-| 4 | **Docs.** README's TUI section says how to open it; `list --all`; this file's statuses. | `README.md`, `ALL-REPOS-PLAN.md` | S | pending |
+| 1 | **tmux and gh take a root** (decision 4). `tmux.NewIn`, `github.NewIn`, `PRManager.dir`, `workspace.New` uses both. No visible change. | `pkg/tmux/tmux.go`, `pkg/github/github.go`, `pkg/workspace/workspace.go` | S | done |
+| 2 | **Discovery and `list --all`** (decisions 2, 3, 8). `gitutil.RepoRootIn`, `State.RepoRoot` stamped on save, `state.Roots()`, the list command. Tests for `Roots` (route 1, route 2, lock-only skipped) and `RepoRootIn`. | `pkg/gitutil/gitutil.go`, `pkg/state/state.go`, `roots.go`, `roots_test.go` (new), `cmd/opentree/cmd/list.go` | M | done |
+| 3 | **The dashboard** (decisions 1, 5, 6, 7). `--all` flag, `tui.Run(all)`, `NewModel(all)`, `repos`, `WorkspaceItem.RepoRoot`, `svcFor`, routing at every row-bound site, row prefix, filter, sort, creation guard. Tests for prefix, filter and grouping. | `cmd/opentree/main.go`, `pkg/tui/model.go`, `commands.go`, `update.go`, `view.go`, `agentctl.go`, `servers.go`, `helpers.go`, `tui_test.go` | L | done |
+| 4 | **Docs.** README's TUI section says how to open it; `list --all`; this file's statuses. | `README.md`, `ALL-REPOS-PLAN.md` | S | done |
+
+### Found during implementation
+
+- **`--git-common-dir` is relative from the top level.** `RepoRootIn(dir)`
+  first resolved `.git` against the process cwd, which is where the old
+  `RepoRoot()` happened to stand. It now joins against `dir` first.
+- **The state directories on this machine are test residue.** All sixteen
+  files with a workspace hold a `feat-x` with a zero `created_at` and no
+  `worktree_dir` — written by a test somewhere that does not set `HOME`.
+  `Roots` reports each as untraceable, which is right, and loud: sixteen lines
+  on every `list --all` until they are removed. The leaking test is a separate
+  fix.
+- **Service lookups live inside the command closures**, as the fields they
+  replaced did. Tests build a Model with no Service and press every key;
+  hoisting `m.svcOf(ws).Worktrees()` out of the closure made building the
+  command need one.
+- **`baseOr` takes the row**, not the base string: the default base is per
+  repository now, and the row is what knows its repository.
 
 ## Not built
 

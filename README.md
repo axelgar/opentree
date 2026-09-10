@@ -106,8 +106,19 @@ opentree plugins add <git-url>   # Install an Agent Plugin once, for every agent
 Run `opentree` without arguments to launch the interactive dashboard:
 
 ```bash
-opentree
+opentree        # this repository's workspaces
+opentree --all  # every repository's, in one list
 ```
+
+The dashboard is scoped to the repository you launch it from. `--all` (or
+`-A`) shows every repository that has opentree state on this machine instead,
+and so does plain `opentree` run outside any repository — from `$HOME`, say.
+Rows are prefixed with the repository's directory name (`api/feat/login`), the
+filter matches on `repo/name`, so `/api/` narrows to one repository, and every
+key works on the row's own repository: `enter` attaches to it, `b` jumps to
+the longest-blocked agent wherever it is. Creating a workspace (`n`, `i`, `r`)
+still needs a repository to create in — inside one, `--all` creates there;
+outside every one, the keys say so and `opentree new` is the way.
 
 **Navigation:**
 
@@ -599,7 +610,9 @@ Fetches the issue from GitHub and auto-generates a branch name (e.g. `issue-42-a
 #### List Workspaces
 
 ```bash
-opentree list
+opentree list            # this repository's
+opentree list --all      # every repository's, with a REPO column
+opentree list --all --json  # …each object carrying "repo"
 ```
 
 Shows table with: branch name, status, last modified time.
