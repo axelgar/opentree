@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -31,6 +32,20 @@ import (
 // newTestModel builds a Model with no external dependencies. Tests that only
 // exercise in-process logic (state transitions, View rendering, pure functions)
 // should use this instead of NewModel, which requires a real git repo and tmux.
+// The state lives in opentree's own directory, not the repository, so a test
+// that opens a store over a temp dir still writes under the real home. Every
+// test here gets a home of its own; the ones that need a specific one set it.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "opentree-tui-home-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func newTestModel(workspaces ...WorkspaceItem) Model {
 	ti := textinput.New()
 	ti.Placeholder = "New branch name"

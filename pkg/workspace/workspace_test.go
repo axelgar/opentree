@@ -127,6 +127,20 @@ func newWithMockFull(repoRoot string, cfg *config.Config, pm ProcessManager, gh 
 	return NewService(repoRoot, cfg, wt, pm, st, gh), nil
 }
 
+// The state lives in opentree's own directory, not the repository, so a test
+// that opens a store over a temp dir still writes under the real home. Every
+// test here gets a home of its own; the ones that need a specific one set it.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "opentree-workspace-home-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func TestWorktreePath(t *testing.T) {
 	cfg := config.Default()
 	useAgent(t, cfg) // Create validates the agent is one opentree can drive
