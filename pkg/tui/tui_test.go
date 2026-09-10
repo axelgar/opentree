@@ -2212,6 +2212,16 @@ func TestMultiRepo_RowsNameTheirRepository(t *testing.T) {
 	}
 }
 
+func TestMultiRepo_TabBarSaysSo(t *testing.T) {
+	m := twoRepoModel()
+	if !strings.Contains(m.View(), "all repositories (2)") {
+		t.Errorf("tab bar does not name the scope:\n%s", m.View())
+	}
+	if view := newTestModel(testWS("a")).View(); strings.Contains(view, "all repositories") {
+		t.Errorf("single repository claims all:\n%s", view)
+	}
+}
+
 func TestMultiRepo_FilterMatchesRepoName(t *testing.T) {
 	m := twoRepoModel()
 	m.filterQuery = "web/"

@@ -1314,9 +1314,16 @@ func (m Model) tabBar() string {
 		return tabInactiveStyle.Render(label)
 	}
 	gap := tabInactiveStyle.Render("  ")
-	return name("Workspaces", tabWorkspaces) + gap + name("Agents", tabAgents) +
+	bar := name("Workspaces", tabWorkspaces) + gap + name("Agents", tabAgents) +
 		gap + name("Skills", tabSkills) + gap + name("Plugins", tabPlugins) +
 		gap + name("Servers", tabServers)
+	// The scope, when it is not the obvious one: rows from several
+	// repositories carry a prefix each, but the bar is where the eye checks
+	// what it is looking at.
+	if m.noRepo || m.multiRepo() {
+		bar += gap + tabInactiveStyle.Render(fmt.Sprintf("· all repositories (%d)", len(m.repos)))
+	}
+	return bar
 }
 
 func plural(n int, noun string) string {
