@@ -109,44 +109,8 @@ func (m Model) View() string {
 			dialogHintStyle.Render("Enter to send • Esc to cancel"), dialogAccent)
 	}
 
-	// Diff view overlay
-	if m.diffViewing {
-		lines := strings.Split(m.diffContent, "\n")
-		availHeight := m.height - headerFooterHeight
-		if availHeight < minDiffHeight {
-			availHeight = minDiffHeight
-		}
-		maxScroll := len(lines) - availHeight
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		// Clamp is authoritative in Update; this is a read-only safety for rendering.
-		offset := m.diffScrollOffset
-		if offset > maxScroll {
-			offset = maxScroll
-		}
-		end := offset + availHeight
-		if end > len(lines) {
-			end = len(lines)
-		}
-		visible := lines[offset:end]
-
-		var sb strings.Builder
-		for _, line := range visible {
-			sb.WriteString(renderDiffLine(line))
-			sb.WriteString("\n")
-		}
-
-		// A reader, not a card — but with the same two bars, so the keys sit on
-		// one line with the position instead of wrapping into a second.
-		header := m.bar(titleStyle.Render("Diff: "+m.diffWsName), m.diffSummary())
-		footer := m.bar(
-			dialogHintStyle.Render("↑/↓ scroll  •  pgup/pgdn page  •  g/G ends  •  esc close"),
-			dialogHintStyle.Render(fmt.Sprintf("line %d/%d", offset+1, len(lines))),
-		)
-		return appStyle.Render(strings.Join([]string{
-			header, m.divider(), sb.String() + m.divider(), footer,
-		}, "\n"))
+	if m.diff.open {
+		return m.diffScreen()
 	}
 
 	// A stopped merge: which files, and whether the agent takes it from here.
@@ -632,7 +596,7 @@ func (m Model) divider() string {
 // diffSummary is the change count in the diff view's header bar. The reader
 // is looking at a wall of hunks; the header says how much of it there is.
 func (m Model) diffSummary() string {
-	if i := m.workspaceIndex(m.diffWsName); i >= 0 {
+	if i := m.workspaceIndex(m.diff.wsName); i >= 0 {
 		return m.workspaces[i].renderDiffStat()
 	}
 	return ""

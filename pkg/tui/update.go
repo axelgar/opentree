@@ -55,7 +55,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.Width = msg.Width
 		// Clamp diff scroll offset when terminal resizes while diff is open.
-		if m.diffViewing {
+		if m.diff.open {
 			m.clampDiffScroll()
 		}
 
@@ -102,34 +102,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateServers(msg)
 		}
 
-		// Diff view mode
-		if m.diffViewing {
-			switch msg.String() {
-			case "esc", "q":
-				m.diffViewing = false
-				m.diffContent = ""
-				m.diffScrollOffset = 0
-				m.diffWsName = ""
-			case "up", "k":
-				if m.diffScrollOffset > 0 {
-					m.diffScrollOffset--
-				}
-			case "down", "j":
-				if m.diffScrollOffset < m.maxDiffScroll() {
-					m.diffScrollOffset++
-				}
-			// A page at a time, and the ends: a diff of a few hundred lines
-			// was a few hundred presses of j.
-			case "pgup", "ctrl+u":
-				m.diffScrollOffset = max(m.diffScrollOffset-m.diffPage(), 0)
-			case "pgdown", "ctrl+d", " ":
-				m.diffScrollOffset = min(m.diffScrollOffset+m.diffPage(), m.maxDiffScroll())
-			case "g", "home":
-				m.diffScrollOffset = 0
-			case "G", "end":
-				m.diffScrollOffset = m.maxDiffScroll()
-			}
-			return m, nil
+		// Diff view mode: every key is the reader's.
+		if m.diff.open {
+			return m.handleDiffKey(msg)
 		}
 
 		// PR content generation in progress: swallow keys so they don't act
@@ -954,16 +929,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// misses the tab: a diff that finished loading after switching to
 		// Skills or Servers sprang open on the way back.
 		//
-		// busyWithDialog deliberately omits diffViewing, so this is the right
+		// busyWithDialog deliberately omits the diff, so this is the right
 		// direction to call it in — the wheel consults it the other way round,
 		// scrolling an open diff before it asks about dialogs at all.
 		if m.busyWithDialog() || m.tab != tabWorkspaces {
 			return m, nil
 		}
-		m.diffViewing = true
-		m.diffContent = msg.content
-		m.diffScrollOffset = 0
-		m.diffWsName = msg.wsName
+		m.diff = newDiffView(msg.content, msg.wsName)
 
 	case clearErrorMsg:
 		if msg.seq == m.errSeq {
@@ -1235,7 +1207,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
-	if m.tab != tabWorkspaces || m.busyWithDialog() || m.diffViewing {
+	if m.tab != tabWorkspaces || m.busyWithDialog() || m.diff.open {
 		return m, nil
 	}
 	i, ok := m.rowAt(msg.Y)
@@ -1301,8 +1273,8 @@ func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.diffViewing {
-		m.diffScrollOffset = min(max(m.diffScrollOffset+delta*wheelLines, 0), m.maxDiffScroll())
+	if m.diff.open {
+		m.scrollDiff(delta * wheelLines)
 		return m, nil
 	}
 	if m.busyWithDialog() {
@@ -1317,24 +1289,6 @@ func (m Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	m.cursor = next
 	return m, nil
-}
-
-// maxDiffScroll is the furthest the diff can scroll before the last line is on
-// screen. Shared so the keys, the wheel and the resize clamp cannot disagree.
-func (m Model) maxDiffScroll() int {
-	return max(len(strings.Split(m.diffContent, "\n"))-m.diffPage(), 0)
-}
-
-// diffPage is how many lines of the diff are on screen, which is what one
-// page key moves by.
-func (m Model) diffPage() int {
-	return max(m.height-headerFooterHeight, minDiffHeight)
-}
-
-func (m *Model) clampDiffScroll() {
-	if maxScroll := m.maxDiffScroll(); m.diffScrollOffset > maxScroll {
-		m.diffScrollOffset = maxScroll
-	}
 }
 
 func (m *Model) resetCreateMode() {

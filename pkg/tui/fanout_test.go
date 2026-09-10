@@ -81,7 +81,7 @@ func TestCompareKey_RefusesUngroupedRow(t *testing.T) {
 	if cmd == nil {
 		t.Error("expected the transient error's clear timer")
 	}
-	if m.diffViewing {
+	if m.diff.open {
 		t.Error("no diff view should open for an ungrouped row")
 	}
 }
@@ -116,7 +116,7 @@ func TestBuildGroupDiff_SeparatesSiblingsLikeDiffSections(t *testing.T) {
 			t.Errorf("group diff missing %q in:\n%s", want, got)
 		}
 	}
-	// Every header line must start with ══, which is all renderDiffLine keys
+	// Every header line must start with ══, which is all the parser keys
 	// its section styling on.
 	for _, line := range strings.Split(got, "\n") {
 		if strings.Contains(line, "feat/x-") && !strings.HasPrefix(line, "══") {
@@ -130,11 +130,11 @@ func TestGroupDiff_OpensInTheExistingViewer(t *testing.T) {
 
 	m, _ = applyUpdate(m, diffLoadedMsg{content: "══════════ feat/x-claude (claude) ══════════", wsName: "feat/x · 2 siblings"})
 
-	if !m.diffViewing {
+	if !m.diff.open {
 		t.Fatal("diff view should open")
 	}
-	if m.diffWsName != "feat/x · 2 siblings" {
-		t.Errorf("diff title = %q, want the group title", m.diffWsName)
+	if m.diff.wsName != "feat/x · 2 siblings" {
+		t.Errorf("diff title = %q, want the group title", m.diff.wsName)
 	}
 }
 

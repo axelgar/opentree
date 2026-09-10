@@ -913,113 +913,55 @@ func TestView_IssueBadge_AndPRBadge_BothShown(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// renderDiffLine
+// Diff cursor
 // ---------------------------------------------------------------------------
 
-func TestRenderDiffLine_SectionHeader(t *testing.T) {
-	line := "══════ Committed Changes ══════"
-	result := renderDiffLine(line)
-	// Should be styled (non-empty and different from plain text due to ANSI codes)
-	if result == "" {
-		t.Error("renderDiffLine should return non-empty for section header")
-	}
-	if !strings.Contains(result, "Committed Changes") {
-		t.Errorf("renderDiffLine should preserve section header text, got: %s", result)
-	}
-}
-
-func TestRenderDiffLine_AddedLine(t *testing.T) {
-	result := renderDiffLine("+added line")
-	if !strings.Contains(result, "added line") {
-		t.Errorf("renderDiffLine should preserve added line text, got: %s", result)
-	}
-}
-
-func TestRenderDiffLine_RemovedLine(t *testing.T) {
-	result := renderDiffLine("-removed line")
-	if !strings.Contains(result, "removed line") {
-		t.Errorf("renderDiffLine should preserve removed line text, got: %s", result)
-	}
-}
-
-func TestRenderDiffLine_HunkHeader(t *testing.T) {
-	result := renderDiffLine("@@ -1,3 +1,5 @@")
-	if !strings.Contains(result, "@@") {
-		t.Errorf("renderDiffLine should preserve hunk header, got: %s", result)
-	}
-}
-
-func TestRenderDiffLine_PlainLine(t *testing.T) {
-	line := " context line"
-	result := renderDiffLine(line)
-	if result != line {
-		t.Errorf("renderDiffLine should return plain lines unchanged, got: %q", result)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Diff scrolling
-// ---------------------------------------------------------------------------
-
-func TestDiffScrolling_JScrollsDown(t *testing.T) {
-	m := newTestModel()
-	// Build diff content with more lines than availHeight (height=40, availHeight=32)
+// fiftyLines is a diff longer than the test model's page (height 40, page 32).
+func fiftyLines() string {
 	var lines []string
 	for i := range 50 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
-	m.diffViewing = true
-	m.diffContent = strings.Join(lines, "\n")
-	m.diffScrollOffset = 0
+	return strings.Join(lines, "\n")
+}
+
+func TestDiffCursor_JMovesTheCursorNotTheWindow(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(fiftyLines(), "a")
 
 	m, _ = applyUpdate(m, keyMsg("j"))
-	if m.diffScrollOffset != 1 {
-		t.Errorf("diffScrollOffset = %d, want 1", m.diffScrollOffset)
+	if m.diff.cursor != 1 || m.diff.offset != 0 {
+		t.Errorf("cursor/offset = %d/%d, want 1/0", m.diff.cursor, m.diff.offset)
 	}
 }
 
-func TestDiffScrolling_KScrollsUp(t *testing.T) {
+func TestDiffCursor_KMovesUpAndStopsAtTheTop(t *testing.T) {
 	m := newTestModel()
-	var lines []string
-	for i := range 50 {
-		lines = append(lines, fmt.Sprintf("line %d", i))
-	}
-	m.diffViewing = true
-	m.diffContent = strings.Join(lines, "\n")
-	m.diffScrollOffset = 5
+	m.diff = newDiffView(fiftyLines(), "a")
+	m.diff.cursor = 5
 
 	m, _ = applyUpdate(m, keyMsg("k"))
-	if m.diffScrollOffset != 4 {
-		t.Errorf("diffScrollOffset = %d, want 4", m.diffScrollOffset)
+	if m.diff.cursor != 4 {
+		t.Errorf("cursor = %d, want 4", m.diff.cursor)
+	}
+	for range 10 {
+		m, _ = applyUpdate(m, keyMsg("k"))
+	}
+	if m.diff.cursor != 0 {
+		t.Errorf("cursor = %d after k at 0, want 0 (clamped)", m.diff.cursor)
 	}
 }
 
-func TestDiffScrolling_JClampsAtMaxScroll(t *testing.T) {
-	m := newTestModel() // height=40, availHeight=32
-	var lines []string
-	for i := range 50 {
-		lines = append(lines, fmt.Sprintf("line %d", i))
-	}
-	m.diffViewing = true
-	m.diffContent = strings.Join(lines, "\n")
-	// maxScroll = 50 - 32 = 18
-	m.diffScrollOffset = 18
-
+func TestDiffCursor_JStopsAtTheLastRow(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(fiftyLines(), "a")
+	m, _ = applyUpdate(m, keyMsg("G"))
 	m, _ = applyUpdate(m, keyMsg("j"))
-	if m.diffScrollOffset != 18 {
-		t.Errorf("diffScrollOffset = %d after j at maxScroll, want 18 (clamped)", m.diffScrollOffset)
+	if m.diff.cursor != 49 {
+		t.Errorf("cursor = %d after j at the end, want 49", m.diff.cursor)
 	}
-}
-
-func TestDiffScrolling_KClampsAtZero(t *testing.T) {
-	m := newTestModel()
-	m.diffViewing = true
-	m.diffContent = "line 1\nline 2\nline 3"
-	m.diffScrollOffset = 0
-
-	m, _ = applyUpdate(m, keyMsg("k"))
-	if m.diffScrollOffset != 0 {
-		t.Errorf("diffScrollOffset = %d after k at 0, want 0 (clamped)", m.diffScrollOffset)
+	if m.diff.offset != m.maxDiffScroll() {
+		t.Errorf("offset = %d, want %d", m.diff.offset, m.maxDiffScroll())
 	}
 }
 
@@ -1959,8 +1901,7 @@ func TestDiffView_FitsTheTerminal(t *testing.T) {
 		t.Run(fmt.Sprintf("h%d", height), func(t *testing.T) {
 			m := newTestModel(ws)
 			m.height, m.width = height, 100
-			m.diffViewing, m.diffWsName = true, "ws"
-			m.diffContent = strings.Repeat("+ a line\n", 200)
+			m.diff = newDiffView(strings.Repeat("+ a line\n", 200), "ws")
 
 			view := m.View()
 			if h := lipgloss.Height(view); h > height {
@@ -2143,7 +2084,7 @@ func TestDiffLoaded_DoesNotOpenUnderAnotherDialog(t *testing.T) {
 			if !ok {
 				t.Fatal("Update did not return a Model")
 			}
-			if nm.diffViewing {
+			if nm.diff.open {
 				t.Error("the diff opened invisibly behind another dialog")
 			}
 		})
@@ -2159,7 +2100,7 @@ func TestDiffLoaded_OpensOnAnIdleList(t *testing.T) {
 	if !ok {
 		t.Fatal("Update did not return a Model")
 	}
-	if !nm.diffViewing {
+	if !nm.diff.open {
 		t.Error("the diff did not open on an idle list")
 	}
 }

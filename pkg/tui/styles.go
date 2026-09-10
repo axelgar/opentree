@@ -165,6 +165,7 @@ var (
 	diffRemoveStyle = lipgloss.NewStyle().Foreground(ui.Danger)
 	diffHunkStyle   = lipgloss.NewStyle().Foreground(ui.Info)
 	diffFileStyle   = lipgloss.NewStyle().Foreground(ui.Meta).Bold(true)
+	diffCursorStyle = lipgloss.NewStyle().Foreground(ui.Accent)
 
 	// file changes panel
 	fileChangesBoxStyle = lipgloss.NewStyle().
