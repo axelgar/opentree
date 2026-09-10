@@ -15,7 +15,7 @@ opentree is a cross-platform CLI tool that manages multiple AI coding agent sess
 - **💬 Built-in Chat**: Every agent speaks the [Agent Client Protocol](https://agentclientprotocol.com) and runs inside opentree's own chat view — answer permissions, watch diffs, send images, and drive the agent from the dashboard without attaching
 - **📊 TUI Dashboard**: Interactive terminal UI for managing workspaces (press `?` for help)
 - **🔀 Parallel Development**: Work on multiple branches simultaneously without checkout overhead
-- **📝 Diff Viewer**: Review changes before committing
+- **📝 Diff Viewer**: Read a workspace's changes with a file tree, search and syntax colour — and leave notes on lines that go to its agent as a prompt
 - **🚀 PR Creation**: Create GitHub PRs directly from the TUI with auto-generated title and body
 - **✈️ Autopilot**: After each agent turn, run your check command, feed failures back, and publish the PR when it passes — per workspace, opt-in
 - **📦 Dispatch**: `opentree dispatch 42 --headless` turns an issue into a PR with nobody watching, exiting with a code a script can branch on
@@ -119,7 +119,7 @@ opentree
 - `n` - Create new workspace (prompts for branch name, then base branch)
 - `i` - Create workspace from a GitHub issue number
 - `Enter` - Attach to selected workspace
-- `d` - Show diff for selected workspace (`pgup`/`pgdn` page it, `g`/`G` jump to the ends)
+- `d` - Open the workspace's diff (see *Reviewing a diff* below)
 - `D` - Compare a fan-out group: every sibling's diff in one scroll
 - `W` - Promote a fan-out's winner: keep this sibling, delete the rest
 - `p` - Create PR for selected workspace (auto-generates title and body from commits)
@@ -143,6 +143,35 @@ opentree
 
 The mouse works too: the wheel scrolls, a click selects a row, and a
 double-click attaches to it.
+
+### Reviewing a diff
+
+`d` opens the workspace's changes — committed and uncommitted, each under its
+own heading — with the changed files down the left and the code on the right,
+syntax-coloured, added and removed lines on a green and a red band. There is a
+cursor, and everything else is a question about where it is. Press `?` inside
+the view for the full card.
+
+- `j`/`k`, `pgup`/`pgdn`, `g`/`G` move; `]`/`[` jump between hunks, `n`/`p`
+  between files; a click on a file in the tree jumps to it, a click on a line
+  takes the cursor there
+- `space` ticks the file under the cursor as reviewed; `t` hides the tree
+- `/` finds: type, `enter` keeps the query, and `n`/`N` step its matches until
+  `esc` clears it (with no query, `n` steps files again)
+- `L` shows line numbers, `w` wraps long lines, `W` marks the words that
+  changed within a changed line
+- `a` or `enter` writes a note on the line under the cursor, `A` on the whole
+  file; `@` lists them, `x` deletes the one under the cursor
+- `s` sends every note to the workspace's agent as one prompt: the path and
+  line, the code quoted, and what you said about it. A note that ends in `?`
+  (or carries `??` anywhere) is asked as a question rather than given as an
+  instruction — *why is this recomputed every frame?* gets an answer, *cache
+  this* gets a change.
+- `esc` closes; with notes unsent it warns first and closes on the second press
+
+`D` opens a fan-out group the same way, every sibling's diff in one view with
+the tree grouped by sibling. Notes cannot be sent from there — three agents,
+one prompt, no right answer about who gets it.
 
 Each row also carries what its agent is doing — working, waiting on a
 permission, stopped — plus cost and context use, read live from the chat's
@@ -463,7 +492,7 @@ dashboard messages whichever you like.
 The dashboard shows the group as one thing: siblings sort together under
 every sort mode, each row wears a `⑂ feat/x` badge, and the cost, context
 and diff numbers already on every row become the scoreboard. `D` opens the
-comparison — every sibling's diff in one scroll, sectioned by agent.
+comparison — every sibling's diff in one view, the file tree grouped by agent.
 
 Then pick:
 

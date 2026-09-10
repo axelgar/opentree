@@ -1,6 +1,8 @@
 # opentree — Diff viewer: design & plan
 
-> Status: **planned.** Statuses in the commit table track the branch.
+> Status: **all eight commits implemented.** Every `make check` target green
+> locally except shellcheck (not installed here; no script changed). Departures
+> from the plan as written are under *Found during implementation*.
 > Scope: the dashboard's `d`/`D` diff view grows the parts of
 > [revdiff](https://github.com/umputun/revdiff) that make a diff *reviewable*
 > — a file tree, a cursor, hunk and file jumps, search, syntax colour,
@@ -125,17 +127,41 @@ Each commit is green on its own and ships something.
 | # | Scope | Files | Size | Status |
 |---|---|---|---|---|
 | 0 | **This document.** | `DIFF-PLAN.md` | S | done |
-| 1 | **Parsed model, `diffView`, cursor** (decisions 1–5). `parseDiff`, rows and files, cursor-follows-scroll, `paintRow` replaces and deletes `renderDiffLine`. The screen is today's plus a cursor mark. Field renames in four test files. | `pkg/tui/diff.go`, `diff_test.go` (new), `model.go`, `update.go`, `view.go`, `helpers.go`, `styles.go`, the test files | L | planned |
-| 2 | **Tree and navigation** (decisions 6, 14). `t`, `[`/`]`, `n`/`p`, `space` marks reviewed (page-down keeps `pgdn`/`ctrl+d`), tree and body clicks, section headings, `?` card. | `diff.go`, `update.go`, `view.go` | M | planned |
-| 3 | **Truncate, `L`, `w`** (decision 7). | `diff.go` | S | planned |
-| 4 | **Search** (decision 10). | `pkg/ui/find.go`, `find_test.go` (new), `pkg/chat/find.go`, `pkg/tui/diff.go`, `update.go` | M | planned |
-| 5 | **Syntax** (decision 8). `highlight`/`codeSpan`/`tokenStyle` lift to `pkg/ui/syntax.go` as `Highlight(code, lexer) [][]Span`; the chat maps span kinds to its styles; two streams per file; bands. | `pkg/ui/syntax.go` (new), `palette.go`, `pkg/chat/syntax.go`, `styles.go`, `pkg/tui/diff.go`, `styles.go` | M | planned |
-| 6 | **Word-diff** (decision 9). `diffLines` lifts to `ui.Diff(old, new []string) []Edit` (keeps included; the chat filters them), the tokeniser, pairing, `W`. | `pkg/ui/diff.go` (new), `pkg/chat/view.go`, `pkg/tui/diff.go`, `styles.go` | M | planned |
-| 7 | **Notes** (decisions 11–13). | `pkg/tui/annotate.go`, `annotate_test.go` (new), `diff.go`, `update.go`, `view.go` | L | planned |
-| 8 | **Docs.** README's `d` line becomes a *Diff viewer* section; this file's statuses. | `README.md`, `DIFF-PLAN.md` | S | planned |
+| 1 | **Parsed model, `diffView`, cursor** (decisions 1–5). `parseDiff`, rows and files, cursor-follows-scroll, `paintRow` replaces and deletes `renderDiffLine`. The screen is today's plus a cursor mark. Field renames in four test files. | `pkg/tui/diff.go`, `diff_test.go` (new), `model.go`, `update.go`, `view.go`, `helpers.go`, `styles.go`, the test files | L | done |
+| 2 | **Tree and navigation** (decisions 6, 14). `t`, `[`/`]`, `n`/`p`, `space` marks reviewed (page-down keeps `pgdn`/`ctrl+d`), tree and body clicks, section headings, `?` card. | `diff.go`, `update.go`, `view.go` | M | done |
+| 3 | **Truncate, `L`, `w`** (decision 7). | `diff.go` | S | done |
+| 4 | **Search** (decision 10). | `pkg/ui/find.go`, `find_test.go` (new), `pkg/chat/find.go`, `pkg/tui/diff.go`, `update.go` | M | done |
+| 5 | **Syntax** (decision 8). `highlight`/`codeSpan`/`tokenStyle` lift to `pkg/ui/syntax.go` as `Highlight(code, lexer) [][]Span`; the chat maps span kinds to its styles; two streams per file; bands. | `pkg/ui/syntax.go` (new), `palette.go`, `pkg/chat/syntax.go`, `styles.go`, `pkg/tui/diff.go`, `styles.go` | M | done |
+| 6 | **Word-diff** (decision 9). `diffLines` lifts to `ui.Diff(old, new []string) []Edit` (keeps included; the chat filters them), the tokeniser, pairing, `W`. | `pkg/ui/diff.go` (new), `pkg/chat/view.go`, `pkg/tui/diff.go`, `styles.go` | M | done |
+| 7 | **Notes** (decisions 11–13). | `pkg/tui/annotate.go`, `annotate_test.go` (new), `diff.go`, `update.go`, `view.go` | L | done |
+| 8 | **Docs.** README's `d` line becomes a *Diff viewer* section; this file's statuses. | `README.md`, `DIFF-PLAN.md` | S | done |
 
 If the sequence stalls after 2 the viewer is already better than today; after
 7 it is the feature.
+
+### Found during implementation
+
+- **The span kinds are `ui.Kind*`, not `ui.Syn*`.** The palette already owns
+  `SynKeyword` and friends as colours; a kind and a colour with one name would
+  have been the ransom note the comment warns about.
+- **`ui.Diff` keeps what it kept.** The chat's matcher dropped unchanged lines
+  on the way out; the shared one emits them as `=` edits and the chat filters,
+  because the word-diff needs the kept tokens to know where the changed ones
+  sit.
+- **The footer's key hints were the first thing to overflow.** At 100 columns
+  a hint naming every key pushed the position off the bar, which is the bar
+  silently dropping its right end. The hints name six things and point at `?`.
+- **`q` arms like `esc`.** Two keys that close should not differ on whether
+  they lose your notes.
+- **No `enter` in the tree.** The tree has no focus of its own — the cursor is
+  in the code, and the tree shows which file it is in. A click on a file jumps;
+  `n`/`p` step. A focus toggle was a second cursor for a pane that fits on one
+  screen.
+- **lipgloss underlines a rune at a time.** Not a problem, but the word-diff
+  test had to gather the segments rather than look for one.
+- **The wheel-scroll and `G` tests moved onto the cursor.** Four tests asserted
+  that `j` moved the window by one line; with a cursor it moves the cursor,
+  and the window only when the cursor leaves it. Rewritten, not renamed.
 
 ## Tests
 
