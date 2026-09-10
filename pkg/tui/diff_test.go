@@ -9,6 +9,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // twoFileDiff is what DiffCombined hands over for a rename with one hunk and
@@ -455,5 +457,44 @@ func TestDiffSearch_PaintsTheMatchOnTheRow(t *testing.T) {
 	}
 	if got := ansi.Strip(line); !strings.HasSuffix(got, "-    b := 2") {
 		t.Errorf("painting changed the text: %q", got)
+	}
+}
+
+// --- syntax ------------------------------------------------------------------
+
+func TestParseDiff_HighlightsPerFileByName(t *testing.T) {
+	d := newDiffView("diff --git a/f.go b/f.go\n@@ -1,2 +1,3 @@\n s := `one\n+two\n three`\n"+
+		"diff --git a/f.unknownext b/f.unknownext\n@@ -1 +1 @@\n-x\n+y", "a")
+	// A string opened on a context line is still a string on the added line
+	// after it: the new side was lexed whole.
+	added := d.rows[3]
+	if added.kind != rowAdd || len(added.spans) != 1 || added.spans[0].Kind != ui.KindString {
+		t.Errorf("the added line inside the raw string = %+v", added)
+	}
+	if d.rows[2].spans == nil || d.rows[4].spans == nil {
+		t.Error("context rows were not coloured")
+	}
+	for _, i := range []int{7, 8} {
+		if d.rows[i].spans != nil {
+			t.Errorf("row %d of a file chroma cannot name has spans %+v", i, d.rows[i].spans)
+		}
+	}
+}
+
+func TestPaintCode_SignSurvivesTheColour(t *testing.T) {
+	before := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(before) })
+
+	d := newDiffView("diff --git a/f.go b/f.go\n@@ -1 +1 @@\n-return 1\n+return 2", "a")
+	del, add := paintCode(d.rows[2]), paintCode(d.rows[3])
+	if ansi.Strip(del) != "-return 1" || ansi.Strip(add) != "+return 2" {
+		t.Errorf("text changed: %q %q", ansi.Strip(del), ansi.Strip(add))
+	}
+	if !strings.Contains(add, "\x1b[48;2;") || !strings.Contains(del, "\x1b[48;2;") {
+		t.Error("changed lines have no band behind them")
+	}
+	if ctx := paintCode(diffRow{kind: rowContext, text: "x"}); strings.Contains(ctx, "\x1b[48;") {
+		t.Errorf("a context line has a band: %q", ctx)
 	}
 }

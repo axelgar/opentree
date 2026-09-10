@@ -166,6 +166,8 @@ var (
 	diffHunkStyle   = lipgloss.NewStyle().Foreground(ui.Info)
 	diffFileStyle   = lipgloss.NewStyle().Foreground(ui.Meta).Bold(true)
 	diffCursorStyle = lipgloss.NewStyle().Foreground(ui.Accent)
+	diffAddBand     = lipgloss.NewStyle().Background(ui.AddBand)
+	diffDelBand     = lipgloss.NewStyle().Background(ui.DelBand)
 	// A find match: the current one in inverse, which reads as "here" on any
 	// background; the others underlined so the eye can count them.
 	diffCurrentMatchStyle = lipgloss.NewStyle().Reverse(true)

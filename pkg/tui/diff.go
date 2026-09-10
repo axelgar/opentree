@@ -8,9 +8,11 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -79,6 +81,8 @@ type diffRow struct {
 	oldNo, newNo int
 	// file indexes diffView.files, or -1 outside any file.
 	file int
+	// spans is the line's syntax colour, nil for plain.
+	spans []ui.Span
 }
 
 type diffFile struct {
@@ -95,6 +99,7 @@ type diffFile struct {
 // newDiffView parses content and opens on its first row.
 func newDiffView(content, wsName string) diffView {
 	rows, files, gutter := parseDiff(content)
+	highlightFiles(rows, files)
 	return diffView{open: true, wsName: wsName, rows: rows, files: files, gutter: gutter,
 		tree: true, reviewed: map[int]bool{}}
 }
@@ -189,6 +194,66 @@ func parseDiff(content string) ([]diffRow, []diffFile, int) {
 	}
 	closeFile()
 	return rows, files, len(strconv.Itoa(widest))
+}
+
+// maxHighlight is the most of one side of a file that is lexed. Past it the
+// file is plain: a generated file this size is not being read for its syntax.
+//
+// ponytail: a cap, not a budget — lexing on first paint is the upgrade if a
+// load ever stalls under it.
+const maxHighlight = 256 << 10
+
+// highlightFiles colours every file's code rows. A diff interleaves two
+// files, and a lexer has state — a string opened on one line is still a
+// string on the next — so no single text is valid input. Two are: the old
+// side (context and removed lines) and the new side (context and added), each
+// lexed whole and once, with every row taking its spans from the side it
+// belongs to. Context rows belong to both and paint from the new.
+func highlightFiles(rows []diffRow, files []diffFile) {
+	for _, f := range files {
+		lexer := lexers.Match(filepath.Base(f.path))
+		if lexer == nil || f.binary {
+			continue
+		}
+		var oldSide, newSide []string
+		for i := f.first; i <= f.last; i++ {
+			switch rows[i].kind {
+			case rowContext:
+				oldSide = append(oldSide, rows[i].text)
+				newSide = append(newSide, rows[i].text)
+			case rowDel:
+				oldSide = append(oldSide, rows[i].text)
+			case rowAdd:
+				newSide = append(newSide, rows[i].text)
+			}
+		}
+		oldText, newText := strings.Join(oldSide, "\n"), strings.Join(newSide, "\n")
+		if len(oldText) > maxHighlight || len(newText) > maxHighlight {
+			continue
+		}
+		oldSpans, newSpans := ui.Highlight(oldText, lexer), ui.Highlight(newText, lexer)
+		oi, ni := 0, 0
+		take := func(spans [][]ui.Span, at int) []ui.Span {
+			if at < len(spans) {
+				return spans[at]
+			}
+			return nil
+		}
+		for i := f.first; i <= f.last; i++ {
+			switch rows[i].kind {
+			case rowContext:
+				rows[i].spans = take(newSpans, ni)
+				oi++
+				ni++
+			case rowDel:
+				rows[i].spans = take(oldSpans, oi)
+				oi++
+			case rowAdd:
+				rows[i].spans = take(newSpans, ni)
+				ni++
+			}
+		}
+	}
 }
 
 // gitPaths splits the "a/old b/new" tail of a diff --git line. Paths with a
@@ -731,14 +796,56 @@ func styleRow(r diffRow) string {
 		return r.text
 	case rowHunk:
 		return diffHunkStyle.Render(r.text)
-	case rowAdd:
-		return diffAddStyle.Render("+" + expandTabs(r.text))
-	case rowDel:
-		return diffRemoveStyle.Render("-" + expandTabs(r.text))
-	case rowContext:
-		return " " + expandTabs(r.text)
+	case rowAdd, rowDel, rowContext:
+		return paintCode(r)
 	default:
 		return r.text
+	}
+}
+
+// paintCode sets a line of the file: its sign, then the text in its syntax
+// colours over the band its kind has — green behind an addition, red behind
+// a removal, nothing behind context — so the sign survives the colour.
+func paintCode(r diffRow) string {
+	var sign string
+	band := lipgloss.NewStyle()
+	switch r.kind {
+	case rowAdd:
+		band = diffAddBand
+		sign = diffAddStyle.Background(ui.AddBand).Render("+")
+	case rowDel:
+		band = diffDelBand
+		sign = diffRemoveStyle.Background(ui.DelBand).Render("-")
+	default:
+		sign = " "
+	}
+	if r.spans == nil {
+		return sign + band.Render(expandTabs(r.text))
+	}
+	var sb strings.Builder
+	sb.WriteString(sign)
+	for _, sp := range r.spans {
+		sb.WriteString(band.Foreground(synColour(sp.Kind)).Render(expandTabs(sp.Text)))
+	}
+	return sb.String()
+}
+
+// synColour is the palette colour of each kind of span; plain code keeps the
+// terminal's own.
+func synColour(k ui.SynKind) lipgloss.TerminalColor {
+	switch k {
+	case ui.KindKeyword:
+		return ui.SynKeyword
+	case ui.KindString:
+		return ui.SynString
+	case ui.KindComment:
+		return ui.SynComment
+	case ui.KindNumber:
+		return ui.SynNumber
+	case ui.KindName:
+		return ui.SynName
+	default:
+		return lipgloss.NoColor{}
 	}
 }
 

@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 func TestHighlight_KnowsGoAndDeclinesTheUnknown(t *testing.T) {
@@ -19,25 +20,21 @@ func TestHighlight_KnowsGoAndDeclinesTheUnknown(t *testing.T) {
 	}
 }
 
-// The mapping is coarse on purpose; what matters is that the five categories
-// land on their five styles and everything structural lands on the base.
-func TestTokenStyle_MapsTheFiveCategories(t *testing.T) {
+// Each kind lands on its style, and plain code on the block's base.
+func TestKindStyle_MapsTheFiveKinds(t *testing.T) {
 	for _, tt := range []struct {
-		tok  chroma.TokenType
+		kind ui.SynKind
 		want lipgloss.Style
 	}{
-		{chroma.Keyword, mdSynKeywordStyle},
-		{chroma.KeywordType, mdSynKeywordStyle},
-		{chroma.LiteralString, mdSynStringStyle},
-		{chroma.LiteralNumberInteger, mdSynNumberStyle},
-		{chroma.Comment, mdSynCommentStyle},
-		{chroma.CommentSingle, mdSynCommentStyle},
-		{chroma.NameFunction, mdSynNameStyle},
-		{chroma.Name, mdCodeBlockStyle},
-		{chroma.Punctuation, mdCodeBlockStyle},
+		{ui.KindKeyword, mdSynKeywordStyle},
+		{ui.KindString, mdSynStringStyle},
+		{ui.KindNumber, mdSynNumberStyle},
+		{ui.KindComment, mdSynCommentStyle},
+		{ui.KindName, mdSynNameStyle},
+		{ui.KindPlain, mdCodeBlockStyle},
 	} {
-		if got := tokenStyle(tt.tok); got.GetForeground() != tt.want.GetForeground() {
-			t.Errorf("tokenStyle(%v) painted with the wrong colour", tt.tok)
+		if got := kindStyle(tt.kind); got.GetForeground() != tt.want.GetForeground() {
+			t.Errorf("kindStyle(%d) painted with the wrong colour", tt.kind)
 		}
 	}
 }

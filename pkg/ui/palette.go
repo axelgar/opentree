@@ -91,6 +91,12 @@ var (
 	// on whichever side of it the background is.
 	Band = lipgloss.AdaptiveColor{Dark: "#26262B", Light: "#F0F0F2"}
 
+	// AddBand and DelBand sit behind an added and a removed line of a diff,
+	// so the sign survives whatever colour the syntax gives the text: a
+	// shade of green and of red off the background, on its side of it.
+	AddBand = lipgloss.AdaptiveColor{Dark: "#1E3A2F", Light: "#E3F3E8"}
+	DelBand = lipgloss.AdaptiveColor{Dark: "#3B2325", Light: "#FBE7E5"}
+
 	// ToolOutput is a command's output quoted back inside a tool call.
 	ToolOutput = lipgloss.AdaptiveColor{Dark: "#7A7A7A", Light: "#6A6A6A"}
 
