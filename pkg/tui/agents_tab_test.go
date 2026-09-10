@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -356,6 +357,19 @@ func TestAgentsBrowser_FiltersLikeSearch(t *testing.T) {
 	}
 }
 
+// cardText flattens a rendered view to its characters alone — no whitespace,
+// no box-drawing frame — so an assertion on a card's words survives wherever
+// lipgloss decides to wrap the line, which depends on how long the temp dir's
+// name happens to be.
+func cardText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || (r >= 0x2500 && r <= 0x257f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // Enter on an entry runs `agents add`'s gate, ending in the consent card
 // with Describe()'s words — or in the same refusals the command gives.
 func TestAgentsBrowser_EnterShowsTheConsentCard(t *testing.T) {
@@ -374,16 +388,17 @@ func TestAgentsBrowser_EnterShowsTheConsentCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The card wraps a long prefix path, so the check is on the words that
-	// carry the consent rather than on whole lines: what it is, what runs,
-	// and the three arguments that are the install's security posture.
+	// The card wraps the long prefix path, and where the wrap lands depends
+	// on the temp dir's name, so the check compares with whitespace squeezed
+	// out: what it is, what runs, and the three arguments that are the
+	// install's security posture.
 	view := ansi.Strip(got.View())
 	if !strings.Contains(plan.Describe(), "--ignore-scripts @x/auggie@0.36.0") {
 		t.Fatalf("Describe() no longer spells the pinned spec: %q", plan.Describe())
 	}
 	for _, want := range []string{"Install into", "Auggie CLI — Auggie CLI does agent things (0.36.0, npm)",
 		"opentree will run:", "npm install -g --prefix", "--ignore-scripts @x/auggie@0.36.0", "y install"} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(cardText(view), cardText(want)) {
 			t.Errorf("the card lacks %q:\n%s", want, view)
 		}
 	}
