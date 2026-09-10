@@ -20,6 +20,7 @@ import (
 type Store struct {
 	filePath string
 	lockPath string
+	repoRoot string       // stamped into the file on every write; see State.RepoRoot
 	mu       sync.RWMutex // protects in-memory state access
 	state    *State
 }
@@ -51,6 +52,11 @@ type State struct {
 	// version 1 describes, so those load without ceremony.
 	Version    int                   `json:"version"`
 	Workspaces map[string]*Workspace `json:"workspaces"`
+	// RepoRoot is the repository this file belongs to. The directory is named
+	// after a hash of it, which is one-way; this is the way back, so a
+	// dashboard for every repository can find them from the state alone.
+	// Empty in files written before the field existed — see Roots.
+	RepoRoot string `json:"repo_root,omitempty"`
 
 	unknown map[string]json.RawMessage
 }
@@ -383,6 +389,7 @@ func New(repoRoot string) (*Store, error) {
 	store := &Store{
 		filePath: stateFile,
 		lockPath: lockFile,
+		repoRoot: repoRoot,
 		state:    &State{Workspaces: make(map[string]*Workspace)},
 	}
 
@@ -521,6 +528,7 @@ func (s *Store) atomicWrite() error {
 	// than at load keeps a file that arrived without a version honest until it
 	// is actually rewritten under one.
 	s.state.Version = stateVersion
+	s.state.RepoRoot = s.repoRoot
 
 	data, err := json.MarshalIndent(s.state, "", "  ")
 	if err != nil {

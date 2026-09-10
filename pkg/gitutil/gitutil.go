@@ -104,15 +104,27 @@ func RemoteHead(dir, branch string) (string, error) {
 // run from inside a linked worktree — where `--show-toplevel` would return
 // the worktree's own root, making opentree nest worktrees and read the wrong
 // state file.
-func RepoRoot() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
+func RepoRoot() (string, error) { return RepoRootIn("") }
+
+// RepoRootIn is RepoRoot asked from dir rather than from the process cwd:
+// the answer for a worktree the process is not standing in.
+func RepoRootIn(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = dir
+	out, err := cmd.Output()
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return "", fmt.Errorf("git is not installed (or not on PATH)")
 		}
 		return "", fmt.Errorf("not in a git repository")
 	}
-	commonDir, err := filepath.Abs(strings.TrimSpace(string(out)))
+	// Printed relative to dir when the common dir is inside it (".git" from
+	// the top level), and Abs would resolve that against the process cwd.
+	commonDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(dir, commonDir)
+	}
+	commonDir, err = filepath.Abs(commonDir)
 	if err == nil && filepath.Base(commonDir) == ".git" {
 		root := filepath.Dir(commonDir)
 		// Resolve symlinks (e.g. /var → /private/var on macOS) so the root
@@ -125,7 +137,8 @@ func RepoRoot() (string, error) {
 
 	// Fallback for layouts where the common dir isn't <root>/.git
 	// (e.g. submodules): the current worktree's top level.
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd = exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not in a git repository")
