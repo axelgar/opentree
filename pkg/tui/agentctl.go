@@ -247,9 +247,9 @@ func (ws WorkspaceItem) promptHint() string {
 // window reads — and only the send is best-effort.
 func (m Model) toggleAutopilotCmd(ws WorkspaceItem) tea.Cmd {
 	on := !ws.Autopilot
-	repoRoot, store := m.repoRoot, m.stateStore
+	repoRoot := ws.RepoRoot
 	return func() tea.Msg {
-		if err := store.Update(ws.Name, func(w *state.Workspace) error {
+		if err := m.svcOf(ws).State().Update(ws.Name, func(w *state.Workspace) error {
 			w.Autopilot = on
 			return nil
 		}); err != nil {
@@ -274,7 +274,7 @@ func (m Model) toggleAutopilotCmd(ws WorkspaceItem) tea.Cmd {
 }
 
 func (m Model) sendAgentCommand(wsName, action string, cmd chat.Command) tea.Cmd {
-	repoRoot := m.repoRoot
+	repoRoot := m.rootFor(wsName)
 	return func() tea.Msg {
 		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, cmd); err != nil {
 			return errMsg{fmt.Errorf("%s: %w", wsName, err)}

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/axelgar/opentree/pkg/chat"
 	"github.com/axelgar/opentree/pkg/gitutil"
+	"github.com/axelgar/opentree/pkg/state"
+	"github.com/axelgar/opentree/pkg/workspace"
 	"github.com/axelgar/opentree/pkg/worktree"
 )
 
@@ -257,6 +260,63 @@ func openURLCmd(rawURL string) tea.Cmd {
 
 // workspaceIndex is the row for a name, or -1. Commands finish long after the
 // list was built and arrive carrying only the name they were started with.
+// svcOf is the Service a row's repository is managed by, falling back to the
+// cwd repository's for a row that carries no root (a workspace just created).
+func (m Model) svcOf(ws WorkspaceItem) *workspace.Service {
+	if s := m.repos[ws.RepoRoot]; s != nil {
+		return s
+	}
+	return m.svc
+}
+
+// svcFor is svcOf by workspace name, for the commands that have only the name.
+// ponytail: names are unique within a repository, not across them; two
+// repositories with a fix/typo both route to the first one on the list.
+func (m Model) svcFor(name string) *workspace.Service {
+	if i := m.workspaceIndex(name); i >= 0 {
+		return m.svcOf(m.workspaces[i])
+	}
+	return m.svc
+}
+
+// storeFor is svcFor's state store, or nil where there is no service — the
+// tests build models without one, and a message they replay must not write.
+func (m Model) storeFor(name string) *state.Store {
+	if s := m.svcFor(name); s != nil {
+		return s.State()
+	}
+	return nil
+}
+
+// updateState writes to a workspace's repository's state, where there is one.
+func (m Model) updateState(name string, fn func(*state.Workspace) error) {
+	if st := m.storeFor(name); st != nil {
+		_ = st.Update(name, fn)
+	}
+}
+
+// rootFor is the repository a workspace belongs to, by name.
+func (m Model) rootFor(name string) string {
+	if i := m.workspaceIndex(name); i >= 0 && m.workspaces[i].RepoRoot != "" {
+		return m.workspaces[i].RepoRoot
+	}
+	return m.repoRoot
+}
+
+// multiRepo is whether rows from more than one repository share the list,
+// which is when a row has to say which one it is from.
+func (m Model) multiRepo() bool { return len(m.repos) > 1 }
+
+// rowName is what a row is called on screen: its name, prefixed with its
+// repository's when several show — the directory's base name, what the
+// tmux session is named after.
+func (m Model) rowName(ws WorkspaceItem) string {
+	if !m.multiRepo() {
+		return ws.Name
+	}
+	return filepath.Base(ws.RepoRoot) + "/" + ws.Name
+}
+
 func (m Model) workspaceIndex(name string) int {
 	for i, ws := range m.workspaces {
 		if ws.Name == name {

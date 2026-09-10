@@ -319,9 +319,12 @@ func (m Model) listScreen() (string, []rowSpan) {
 
 	// Workspace list
 	if len(visible) == 0 {
-		if m.filterQuery != "" {
+		switch {
+		case m.filterQuery != "":
 			s.WriteString(itemStyle.Render("No workspaces match the filter."))
-		} else {
+		case m.noRepo:
+			s.WriteString(itemStyle.Render("No workspaces in any repository. Run 'opentree new' inside one."))
+		default:
 			s.WriteString(itemStyle.Render("No workspaces found. Press 'n' to create one."))
 		}
 		s.WriteString("\n")
@@ -337,7 +340,7 @@ func (m Model) listScreen() (string, []rowSpan) {
 			isDeleting := m.workspaceDeletingName == ws.Name || m.workspaceDeletingNames[ws.Name]
 			if isDeleting {
 				spinner := ui.SpinnerFrames[m.spinnerFrame%len(ui.SpinnerFrames)]
-				row := spinner + " " + ws.Name + "  " + pendingLabelStyle.Render("deleting…")
+				row := spinner + " " + m.rowName(ws) + "  " + pendingLabelStyle.Render("deleting…")
 				s.WriteString(pendingItemStyle.Render(row))
 				s.WriteString("\n")
 				spans = append(spans, rowSpan{index: i, top: top, bottom: strings.Count(s.String(), "\n")})
@@ -366,7 +369,7 @@ func (m Model) listScreen() (string, []rowSpan) {
 				selectMark = selectedMarkStyle.Render("✓ ")
 			}
 
-			title := selectMark + fmt.Sprintf("%s %s", statusColor.Render(status), ws.Name)
+			title := selectMark + fmt.Sprintf("%s %s", statusColor.Render(status), m.rowName(ws))
 
 			// Badges
 			if ws.IssueNumber > 0 {
@@ -631,7 +634,8 @@ func (m Model) visibleWorkspaces() []WorkspaceItem {
 	q := strings.ToLower(m.filterQuery)
 	var out []WorkspaceItem
 	for _, ws := range sorted {
-		if strings.Contains(strings.ToLower(ws.Name), q) {
+		// On repo/name, so "api/" is every row of one repository.
+		if strings.Contains(strings.ToLower(m.rowName(ws)), q) {
 			out = append(out, ws)
 		}
 	}
@@ -654,11 +658,13 @@ func (m Model) sortedWorkspaces() []WorkspaceItem {
 	ws := make([]WorkspaceItem, len(m.workspaces))
 	copy(ws, m.workspaces)
 
+	// The repository leads the key, so a group name two repositories share
+	// stays two groups, and same-named workspaces never interleave.
 	groupKey := func(w WorkspaceItem) string {
 		if w.FanoutGroup != "" {
-			return w.FanoutGroup
+			return w.RepoRoot + "/" + w.FanoutGroup
 		}
-		return w.Name
+		return w.RepoRoot + "/" + w.Name
 	}
 	prOrder := func(s string) int {
 		switch s {

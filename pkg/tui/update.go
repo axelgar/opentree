@@ -396,6 +396,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 				return m, nil
 			}
+		case m.noRepo && (key.Matches(msg, m.keys.New) || key.Matches(msg, m.keys.Issue) || key.Matches(msg, m.keys.Remote)):
+			// Creating needs a repository to create in, and this dashboard was
+			// opened outside every one of them.
+			return m, m.transientErrCmd("no repository here — run opentree new inside one")
 		case key.Matches(msg, m.keys.New):
 			m.creating = true
 			m.createStep = 0
@@ -481,7 +485,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.isWorkspaceInFlight(ws.Name) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
-				return m, tea.Batch(m.syncCmd(ws), m.noticeCmd("merging "+m.baseOr(ws.BaseBranch)+" into "+ws.Name+"…"))
+				return m, tea.Batch(m.syncCmd(ws), m.noticeCmd("merging "+m.baseOr(ws)+" into "+ws.Name+"…"))
 			}
 		case key.Matches(msg, m.keys.Shell):
 			if len(visible) > 0 {
@@ -493,7 +497,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.CopyPath):
 			if len(visible) > 0 {
-				return m, copyPathCmd(m.svc.WorktreePath(visible[m.cursor].Name))
+				ws := visible[m.cursor]
+				return m, copyPathCmd(m.svcOf(ws).WorktreePath(ws.Name))
 			}
 		case key.Matches(msg, m.keys.Edit):
 			if len(visible) > 0 {
@@ -501,7 +506,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.isWorkspaceInFlight(ws.Name) {
 					return m, m.transientErrCmd(fmt.Sprintf("workspace %q has a pending operation", ws.Name))
 				}
-				return m, editWorktreeCmd(m.svc.WorktreePath(ws.Name))
+				return m, editWorktreeCmd(m.svcOf(ws).WorktreePath(ws.Name))
 			}
 		case key.Matches(msg, m.keys.Review):
 			if len(visible) > 0 {
@@ -700,10 +705,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A refresh that read state after AddWorkspace may already have
 			// added the row; appending again would show it twice.
 			exists := m.workspaceIndex(msg.wsName) >= 0
-			if !exists && m.stateStore != nil {
-				if ws, err := m.stateStore.GetWorkspace(msg.wsName); err == nil && ws != nil {
+			if !exists && m.svc != nil {
+				if ws, err := m.svc.State().GetWorkspace(msg.wsName); err == nil && ws != nil {
 					item := WorkspaceItem{
 						Workspace: ws,
+						RepoRoot:  m.repoRoot,
 						DiffStat:  "No changes",
 					}
 					m.workspaces = append(m.workspaces, item)
@@ -775,7 +781,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadWorkspacesCmd, next)
 
 	case prCreatedMsg:
-		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
+		m.updateState(msg.wsName, func(ws *state.Workspace) error {
 			ws.PRURL = msg.prURL
 			ws.PRStatus = "open"
 			return nil
@@ -831,7 +837,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case prStatusCheckedMsg:
-		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
+		m.updateState(msg.wsName, func(ws *state.Workspace) error {
 			ws.PRURL = msg.prURL
 			ws.PRStatus = msg.prStatus
 			return nil
@@ -849,7 +855,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case branchStatusCheckedMsg:
 		m.statusChecksInFlight = max(0, m.statusChecksInFlight-1)
-		_ = m.stateStore.Update(msg.wsName, func(ws *state.Workspace) error {
+		m.updateState(msg.wsName, func(ws *state.Workspace) error {
 			if !msg.status.RemoteCheckFailed {
 				ws.BranchPushed = msg.status.Pushed
 				ws.RemoteDeleted = msg.status.RemoteDeleted

@@ -1536,7 +1536,7 @@ func TestPRCreatedMsg_ShowsNoticeWithURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state.New: %v", err)
 	}
-	m.stateStore = store
+	m.svc = workspace.NewService("", m.cfg, nil, nil, store, nil)
 
 	m, _ = applyUpdate(m, prCreatedMsg{wsName: "feat-x", prURL: "https://github.com/a/b/pull/42"})
 
@@ -2121,7 +2121,7 @@ func TestAutopilotKey_TogglesAndPersists(t *testing.T) {
 	if err := store.AddWorkspace(m.workspaces[0].Workspace); err != nil {
 		t.Fatalf("AddWorkspace: %v", err)
 	}
-	m.stateStore = store
+	m.svc = workspace.NewService("", m.cfg, nil, nil, store, nil)
 
 	_, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
 	if cmd == nil {
@@ -2163,5 +2163,83 @@ func TestAutopilotBadge_FollowsFlagAndLiveState(t *testing.T) {
 	}
 	if badge := renderAutopilotBadge(halted); !strings.Contains(badge, "halted") {
 		t.Errorf("badge = %q, want the halt visible — it is the state waiting on a human", badge)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Every repository in one dashboard
+// ---------------------------------------------------------------------------
+
+// twoRepoModel is a list with rows from two repositories. The services are
+// nil: only how many there are decides whether rows name their repository.
+func twoRepoModel() Model {
+	api, web := testWS("fix/typo"), testWS("fix/typo")
+	api.RepoRoot, web.RepoRoot = "/src/api", "/src/web"
+	web2 := testWS("feat/login")
+	web2.RepoRoot = "/src/web"
+	m := newTestModel(web2, api, web)
+	m.repos = map[string]*workspace.Service{"/src/api": nil, "/src/web": nil}
+	return m
+}
+
+func TestMultiRepo_RowsNameTheirRepository(t *testing.T) {
+	m := twoRepoModel()
+	view := m.View()
+	for _, want := range []string{"api/fix/typo", "web/fix/typo", "web/feat/login"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view lacks %q:\n%s", want, view)
+		}
+	}
+	// One repository: rows are just their name, as they always were.
+	m.repos = map[string]*workspace.Service{"/src/web": nil}
+	if view := m.View(); strings.Contains(view, "web/fix/typo") {
+		t.Errorf("single repository still prefixed:\n%s", view)
+	}
+}
+
+func TestMultiRepo_FilterMatchesRepoName(t *testing.T) {
+	m := twoRepoModel()
+	m.filterQuery = "web/"
+	visible := m.visibleWorkspaces()
+	if len(visible) != 2 {
+		t.Fatalf("filter %q left %d rows, want the two from web", m.filterQuery, len(visible))
+	}
+	for _, ws := range visible {
+		if ws.RepoRoot != "/src/web" {
+			t.Errorf("filter %q let %s/%s through", m.filterQuery, ws.RepoRoot, ws.Name)
+		}
+	}
+}
+
+// Rows of one repository sit together in every sort mode: a same-named
+// workspace in another repository must not slot in between.
+func TestMultiRepo_SortKeepsRepositoriesTogether(t *testing.T) {
+	m := twoRepoModel()
+	for mode := range sortModeNames {
+		m.sortMode = mode
+		sorted := m.sortedWorkspaces()
+		if sorted[0].RepoRoot != sorted[1].RepoRoot && sorted[1].RepoRoot != sorted[2].RepoRoot {
+			t.Errorf("sort %q interleaves repositories: %v", sortModeNames[mode],
+				[]string{m.rowName(sorted[0]), m.rowName(sorted[1]), m.rowName(sorted[2])})
+		}
+	}
+}
+
+// Outside every repository there is nothing to create in, and the key says so
+// instead of opening a dialog that can only fail.
+func TestNoRepo_CreateKeysRefuse(t *testing.T) {
+	m := newTestModel()
+	m.noRepo = true
+	for _, k := range []string{"n", "i", "r"} {
+		m2, cmd := applyUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
+		if m2.creating {
+			t.Errorf("%s opened the create dialog outside a repository", k)
+		}
+		if cmd == nil {
+			t.Errorf("%s said nothing", k)
+		}
+	}
+	if !strings.Contains(m.View(), "Run 'opentree new' inside one") {
+		t.Errorf("empty list does not say how to create:\n%s", m.View())
 	}
 }

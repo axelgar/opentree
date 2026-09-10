@@ -1,8 +1,7 @@
 package tui
 
 import (
-	"fmt"
-	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -24,6 +23,9 @@ import (
 // WorkspaceItem enriches a state.Workspace with display-specific data.
 type WorkspaceItem struct {
 	*state.Workspace
+	// RepoRoot is the repository the workspace belongs to — the key into
+	// Model.repos, and what the row is prefixed with when several show.
+	RepoRoot         string
 	DiffStat         string
 	Active           bool
 	WindowID         string
@@ -66,12 +68,17 @@ const (
 
 // Model is the main Bubble Tea model for the opentree TUI.
 type Model struct {
-	svc         *workspace.Service
-	worktreeMgr *worktree.Manager
-	stateStore  *state.Store
-	prMgr       *github.PRManager
-	cfg         *config.Config
-	repoRoot    string
+	// svc, cfg and repoRoot are the repository the dashboard was opened in:
+	// where n creates, what the Skills tab shows. All nil/empty outside one.
+	svc      *workspace.Service
+	cfg      *config.Config
+	repoRoot string
+	// repos is every repository on the list, by root. One entry in the
+	// everyday case; every repository with state under --all or outside one.
+	repos map[string]*workspace.Service
+	// noRepo is the dashboard opened outside any repository, where nothing
+	// can be created.
+	noRepo bool
 
 	workspaces []WorkspaceItem
 	cursor     int
@@ -371,28 +378,51 @@ type errLogCopiedMsg struct {
 	err   error
 }
 
-// NewModel initializes a fully-configured TUI Model.
-func NewModel() (*Model, error) {
-	// Resolve the git repository root for state persistence
+// NewModel initializes a fully-configured TUI Model: for the repository the
+// process stands in, or — with all, and always outside a repository — for
+// every repository with state on this machine.
+func NewModel(all bool) (*Model, error) {
 	repoRoot, err := gitutil.RepoRoot()
-	if err != nil {
-		if wd, err2 := os.Getwd(); err2 == nil {
-			repoRoot = wd
-		}
+	noRepo := err != nil
+	if noRepo {
+		repoRoot, all = "", true
 	}
 	cfg, err := config.Load("")
 	if err != nil {
 		cfg = config.Default()
 	}
-	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)
-	st, err := state.New(repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize state store: %w", err)
+	var svc *workspace.Service
+	repos := map[string]*workspace.Service{}
+	if !noRepo {
+		if svc, err = workspace.New(repoRoot, cfg); err != nil {
+			return nil, err
+		}
+		repos[repoRoot] = svc
 	}
-	tm := tmux.New(cfg.Tmux.SessionPrefix)
-	gh := github.New()
-	pm := workspace.NewTmuxProcessManager(tm)
-	svc := workspace.NewService(repoRoot, cfg, wt, pm, st, gh)
+	var errLog []string
+	if all {
+		roots, errs := state.Roots()
+		for _, err := range errs {
+			errLog = append(errLog, err.Error())
+		}
+		for _, root := range roots {
+			if repos[root] != nil {
+				continue
+			}
+			// Each repository has its own config: its agent, its base_dir,
+			// its dev server. Loaded by path so the cwd's is never adopted.
+			rcfg, err := config.Load(filepath.Join(root, "opentree.toml"))
+			if err != nil {
+				rcfg = config.Default()
+			}
+			s, err := workspace.New(root, rcfg)
+			if err != nil {
+				errLog = append(errLog, root+": "+err.Error())
+				continue
+			}
+			repos[root] = s
+		}
+	}
 
 	// No CharLimit: the same input holds generated PR titles and bodies,
 	// which a limit would silently truncate.
@@ -402,11 +432,11 @@ func NewModel() (*Model, error) {
 
 	return &Model{
 		svc:                    svc,
-		worktreeMgr:            wt,
-		stateStore:             st,
-		prMgr:                  gh,
 		cfg:                    cfg,
 		repoRoot:               repoRoot,
+		repos:                  repos,
+		noRepo:                 noRepo,
+		errLog:                 errLog,
 		input:                  ti,
 		help:                   help.New(),
 		keys:                   keys,
@@ -429,9 +459,10 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// Run is the entry point for the TUI application.
-func Run() error {
-	m, err := NewModel()
+// Run is the entry point for the TUI application. all opens the dashboard
+// across every repository with state rather than the one the cwd is in.
+func Run(all bool) error {
+	m, err := NewModel(all)
 	if err != nil {
 		return err
 	}

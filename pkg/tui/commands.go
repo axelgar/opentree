@@ -30,7 +30,7 @@ var writeClipboard = clipboard.Write
 // takes the screen, and afterExec gives the mouse back.
 func (m Model) openShellCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		cmd, err := m.svc.ShellCmd(name)
+		cmd, err := m.svcFor(name).ShellCmd(name)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -46,7 +46,7 @@ func (m Model) openShellCmd(name string) tea.Cmd {
 // syncCmd merges the workspace's base into its branch.
 func (m Model) syncCmd(ws WorkspaceItem) tea.Cmd {
 	return func() tea.Msg {
-		res, err := m.svc.Sync(ws.Name, false)
+		res, err := m.svcOf(ws).Sync(ws.Name, false)
 		if err != nil {
 			return errMsg{fmt.Errorf("%s: %w", ws.Name, err)}
 		}
@@ -57,7 +57,7 @@ func (m Model) syncCmd(ws WorkspaceItem) tea.Cmd {
 // askToResolveCmd hands a stopped merge to the workspace's agent, over the
 // chat's socket the way review comments travel.
 func (m Model) askToResolveCmd(c *syncConflict) tea.Cmd {
-	repoRoot, wsName, prompt := m.repoRoot, c.wsName, workspace.SyncConflictPrompt(c.branch, c.res)
+	repoRoot, wsName, prompt := m.rootFor(c.wsName), c.wsName, workspace.SyncConflictPrompt(c.branch, c.res)
 	count := len(c.res.Conflicts)
 	return func() tea.Msg {
 		if err := chat.Send(chat.SocketPath(repoRoot, wsName), wsName, chat.Command{
@@ -108,24 +108,52 @@ func (m Model) copyErrLogCmd() tea.Cmd {
 	}
 }
 
-// baseOr returns base, falling back to the configured default base branch
-// for workspaces persisted before the base was recorded.
-func (m Model) baseOr(base string) string {
-	if base != "" {
-		return base
+// baseOr returns the workspace's base, falling back to its repository's
+// configured default for workspaces persisted before the base was recorded.
+func (m Model) baseOr(ws WorkspaceItem) string {
+	if ws.BaseBranch != "" {
+		return ws.BaseBranch
+	}
+	if s := m.svcOf(ws); s != nil {
+		return s.Config().Worktree.DefaultBase
 	}
 	return m.cfg.Worktree.DefaultBase
 }
 
+// loadWorkspacesCmd reads every repository on the list. Repositories are read
+// one after another and their workspaces in parallel: the per-workspace git
+// calls are the cost, and they already run concurrently.
 func (m Model) loadWorkspacesCmd() tea.Msg {
+	var items []WorkspaceItem
+	serving := false
+	for root, svc := range m.repos {
+		items = append(items, m.loadRepo(root, svc)...)
+		serving = serving || svc.Config().Workspace.Run != ""
+	}
+
+	// Asked once per refresh rather than once per row: whether portless can
+	// serve is a fact about this machine. Only asked at all when a project
+	// configures a server, since it is a LookPath and a dial for nothing
+	// otherwise.
+	var portless bootstrap.Portless
+	if serving {
+		portless = bootstrap.CheckPortless()
+	}
+
+	return loadedWorkspacesMsg{workspaces: items, portless: portless}
+}
+
+// loadRepo is one repository's rows, each with its live state.
+func (m Model) loadRepo(root string, svc *workspace.Service) []WorkspaceItem {
 	// Re-read state from disk so workspaces created or deleted by another
 	// process (CLI in a second terminal) show up on the periodic refresh.
 	// On failure, fall back to the in-memory snapshot; any mutation will
 	// surface the same error with context.
-	_ = m.stateStore.Load()
-	saved := m.stateStore.ListWorkspaces()
+	_ = svc.State().Load()
+	saved := svc.State().ListWorkspaces()
+	cfg := svc.Config()
 
-	windows, _ := m.svc.Process().ListWindows()
+	windows, _ := svc.Process().ListWindows()
 
 	windowMap := make(map[string]workspace.Window)
 	for _, w := range windows {
@@ -140,7 +168,11 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		go func(i int, ws *state.Workspace) {
 			defer wg.Done()
 
-			diff, fileChanges, err := m.worktreeMgr.DiffStats(ws.Branch, m.baseOr(ws.BaseBranch))
+			base := ws.BaseBranch
+			if base == "" {
+				base = cfg.Worktree.DefaultBase
+			}
+			diff, fileChanges, err := svc.Worktrees().DiffStats(ws.Branch, base)
 			diffStat := "No changes"
 			if err != nil {
 				diffStat = "diff unavailable"
@@ -157,7 +189,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 				win, exists = windowMap[sanitizedName]
 			}
 
-			_, serving := windowMap[m.svc.ServerWindow(ws.Name)]
+			_, serving := windowMap[svc.ServerWindow(ws.Name)]
 			// Dialled only for a server that could be up: a port nothing was
 			// started on has nothing to say, and the refresh cannot afford
 			// pointless waits.
@@ -165,6 +197,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 			item := WorkspaceItem{
 				Workspace:       ws,
+				RepoRoot:        root,
 				DiffStat:        diffStat,
 				Active:          exists && win.Active,
 				FileChanges:     fileChanges,
@@ -177,14 +210,14 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 
 			if ws.WorktreeDir != "" {
 				item.UncommittedCount = countUncommitted(ws.WorktreeDir)
-				item.ChatStatus = readChatStatus(m.repoRoot, ws.Name)
+				item.ChatStatus = readChatStatus(root, ws.Name)
 				// A couple of stats per workspace, so it rides the same refresh
 				// rather than needing a poll of its own.
-				item.MissingSkills = skills.Missing(m.repoRoot, ws.WorktreeDir)
+				item.MissingSkills = skills.Missing(root, ws.WorktreeDir)
 			}
 
 			if exists {
-				if t, err := m.svc.Process().GetWindowActivity(ws.Name); err == nil {
+				if t, err := svc.Process().GetWindowActivity(ws.Name); err == nil {
 					item.LastActivity = t
 				}
 			}
@@ -193,17 +226,7 @@ func (m Model) loadWorkspacesCmd() tea.Msg {
 		}(i, ws)
 	}
 	wg.Wait()
-
-	// Asked once per refresh rather than once per row: whether portless can
-	// serve is a fact about this machine. Only asked at all when the project
-	// configures a server, since it is a LookPath and a dial for nothing
-	// otherwise.
-	var portless bootstrap.Portless
-	if m.cfg.Workspace.Run != "" {
-		portless = bootstrap.CheckPortless()
-	}
-
-	return loadedWorkspacesMsg{workspaces: items, portless: portless}
+	return items
 }
 
 func (m Model) createWorkspaceCmd(name, baseBranch string) tea.Cmd {
@@ -267,7 +290,7 @@ func (m Model) createWorkspaceFromIssueCmd(issueNumStr string) tea.Cmd {
 
 func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.svc.Delete(name); err != nil {
+		if err := m.svcFor(name).Delete(name); err != nil {
 			return errMsg{err}
 		}
 		return deletedWorkspaceMsg{names: []string{name}}
@@ -283,13 +306,14 @@ func (m Model) deleteWorkspaceCmd(name string) tea.Cmd {
 // window would otherwise be "stopped" a second time.
 func (m Model) toggleServerCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if m.svc.ServerRunning(name) {
-			if err := m.svc.StopServer(name); err != nil {
+		svc := m.svcFor(name)
+		if svc.ServerRunning(name) {
+			if err := svc.StopServer(name); err != nil {
 				return errMsg{err}
 			}
 			return serverToggledMsg{wsName: name, action: "server stopped"}
 		}
-		port, err := m.svc.StartServer(name)
+		port, err := svc.StartServer(name)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -303,7 +327,7 @@ func (m Model) toggleServerCmd(name string) tea.Cmd {
 // means start, not one that means "the other thing".
 func (m Model) startServerCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		port, err := m.svc.StartServer(name)
+		port, err := m.svcFor(name).StartServer(name)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -313,7 +337,7 @@ func (m Model) startServerCmd(name string) tea.Cmd {
 
 func (m Model) stopServerCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.svc.StopServer(name); err != nil {
+		if err := m.svcFor(name).StopServer(name); err != nil {
 			return errMsg{err}
 		}
 		return serverToggledMsg{wsName: name, action: "server stopped"}
@@ -325,12 +349,13 @@ func (m Model) stopServerCmd(name string) tea.Cmd {
 // an error here — restart means "be running, freshly".
 func (m Model) restartServerCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if m.svc.ServerRunning(name) {
-			if err := m.svc.StopServer(name); err != nil {
+		svc := m.svcFor(name)
+		if svc.ServerRunning(name) {
+			if err := svc.StopServer(name); err != nil {
 				return errMsg{err}
 			}
 		}
-		port, err := m.svc.StartServer(name)
+		port, err := svc.StartServer(name)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -342,7 +367,8 @@ func (m Model) restartServerCmd(name string) tea.Cmd {
 // its output — the answer to "where did that log line go".
 func (m Model) attachServerCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		cmd, err := m.svc.Process().AttachCmd(m.svc.ServerWindow(name))
+		svc := m.svcFor(name)
+		cmd, err := svc.Process().AttachCmd(svc.ServerWindow(name))
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to attach to %s's server: %w", name, err)}
 		}
@@ -356,8 +382,20 @@ func (m Model) attachServerCmd(name string) tea.Cmd {
 }
 
 func (m Model) batchDeleteWorkspaceCmd(names []string) tea.Cmd {
+	// A selection can span repositories; each Service deletes its own.
+	bySvc := map[*workspace.Service][]string{}
+	for _, name := range names {
+		svc := m.svcFor(name)
+		bySvc[svc] = append(bySvc[svc], name)
+	}
 	return func() tea.Msg {
-		return batchDeleteResult(names, m.svc.DeleteMultiple(names))
+		var errs []error
+		for svc, ns := range bySvc {
+			if err := svc.DeleteMultiple(ns); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return batchDeleteResult(names, errors.Join(errs...))
 	}
 }
 
@@ -414,12 +452,13 @@ func oneLine(err error) error {
 
 func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 	return func() tea.Msg {
+		svc := m.svcFor(name)
 		// Quitting the chat closes its window; the worktree and the agent
 		// conversation both survive, so attaching reopens rather than refuses.
-		if _, err := m.svc.EnsureWindow(name); err != nil {
+		if _, err := svc.EnsureWindow(name); err != nil {
 			return errMsg{err}
 		}
-		cmd, err := m.svc.Process().AttachCmd(name)
+		cmd, err := svc.Process().AttachCmd(name)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -436,7 +475,7 @@ func (m Model) attachWorkspaceCmd(name string) tea.Cmd {
 }
 
 func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
-	base := m.baseOr(ws.BaseBranch)
+	base := m.baseOr(ws)
 	return func() tea.Msg {
 		title, body := workspace.GeneratePRContent(ws.WorktreeDir, ws.Branch, base, ws.IssueNumber, ws.IssueTitle)
 		return prContentGeneratedMsg{wsName: ws.Name, title: title, body: body}
@@ -445,7 +484,7 @@ func (m Model) generatePRContentCmd(ws WorkspaceItem) tea.Cmd {
 
 func (m Model) createPRCmd(wsName, title, body string) tea.Cmd {
 	return func() tea.Msg {
-		prURL, err := m.svc.CreatePR(wsName, title, body)
+		prURL, err := m.svcFor(wsName).CreatePR(wsName, title, body)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -475,7 +514,7 @@ func (m Model) checkBranchStatusCmd(wsName, branch, repoDir string, wasPushed bo
 		knownConflicts = m.workspaces[i].MergeConflicts
 	}
 	return func() tea.Msg {
-		status, err := m.prMgr.GetBranchAndPRStatus(branch, repoDir, wasPushed)
+		status, err := m.svcFor(wsName).GitHub().GetBranchAndPRStatus(branch, repoDir, wasPushed)
 		return branchStatusResult(wsName, status, err, knownConflicts)
 	}
 }
@@ -497,9 +536,9 @@ func branchStatusResult(wsName string, status github.BranchStatus, err error, kn
 // prompt, over the chat's control socket. The socket refuses a prompt the chat
 // cannot honour — mid-turn, or no chat running — so "sent" stays truthful.
 func (m Model) sendReviewsCmd(ws WorkspaceItem) tea.Cmd {
-	repoRoot, wsName, branch := m.repoRoot, ws.Name, ws.Branch
+	repoRoot, wsName, branch := ws.RepoRoot, ws.Name, ws.Branch
 	return func() tea.Msg {
-		comments, err := m.prMgr.FetchPRReviews(branch)
+		comments, err := m.svcOf(ws).GitHub().FetchPRReviews(branch)
 		// Partial results (top-level reviews fetched, inline-thread fetch
 		// failed) are still sent rather than discarded.
 		if err != nil && len(comments) == 0 {
@@ -518,9 +557,9 @@ func (m Model) sendReviewsCmd(ws WorkspaceItem) tea.Cmd {
 }
 
 func (m Model) loadDiffCmd(ws WorkspaceItem) tea.Cmd {
-	base := m.baseOr(ws.BaseBranch)
+	base := m.baseOr(ws)
 	return func() tea.Msg {
-		content, err := m.worktreeMgr.DiffCombined(ws.Branch, base)
+		content, err := m.svcOf(ws).Worktrees().DiffCombined(ws.Branch, base)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -547,7 +586,7 @@ type groupDiffSection struct {
 func (m Model) loadGroupDiffCmd(ws WorkspaceItem) tea.Cmd {
 	var siblings []WorkspaceItem
 	for _, w := range m.workspaces {
-		if w.FanoutGroup == ws.FanoutGroup {
+		if w.FanoutGroup == ws.FanoutGroup && w.RepoRoot == ws.RepoRoot {
 			siblings = append(siblings, w)
 		}
 	}
@@ -556,7 +595,7 @@ func (m Model) loadGroupDiffCmd(ws WorkspaceItem) tea.Cmd {
 	return func() tea.Msg {
 		sections := make([]groupDiffSection, 0, len(siblings))
 		for _, sib := range siblings {
-			content, err := m.worktreeMgr.DiffCombined(sib.Branch, m.baseOr(sib.BaseBranch))
+			content, err := m.svcOf(sib).Worktrees().DiffCombined(sib.Branch, m.baseOr(sib))
 			if err != nil {
 				content = "(error: " + err.Error() + ")"
 			}
@@ -576,10 +615,10 @@ func (m Model) fanoutLosers(winner string) []string {
 	if i < 0 || m.workspaces[i].FanoutGroup == "" {
 		return nil
 	}
-	group := m.workspaces[i].FanoutGroup
+	group, root := m.workspaces[i].FanoutGroup, m.workspaces[i].RepoRoot
 	var losers []string
 	for _, w := range m.workspaces {
-		if w.FanoutGroup == group && w.Name != winner {
+		if w.FanoutGroup == group && w.RepoRoot == root && w.Name != winner {
 			losers = append(losers, w.Name)
 		}
 	}
@@ -592,7 +631,7 @@ func (m Model) fanoutLosers(winner string) []string {
 // the in-flight mark for every row it set one on, deleted or not.
 func (m Model) promoteWorkspaceCmd(winner string, losers []string) tea.Cmd {
 	return func() tea.Msg {
-		deleted, err := m.svc.Promote(winner)
+		deleted, err := m.svcFor(winner).Promote(winner)
 		return promotedWorkspaceMsg{winner: winner, deleted: deleted, losers: losers, err: err}
 	}
 }

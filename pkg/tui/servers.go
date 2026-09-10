@@ -96,7 +96,7 @@ func (m Model) serverURL(ws WorkspaceItem) string {
 		return ""
 	}
 	if m.portless.Ready {
-		return "https://" + bootstrap.PortlessHost(ws.Name, filepath.Base(m.repoRoot))
+		return "https://" + bootstrap.PortlessHost(ws.Name, filepath.Base(m.rootFor(ws.Name)))
 	}
 	return fmt.Sprintf("http://localhost:%d", ws.Port)
 }

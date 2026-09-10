@@ -41,7 +41,8 @@ Think Conductor, but for the terminal.`,
 	SilenceUsage:  true,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Launch TUI dashboard
-		if err := tui.Run(); err != nil {
+		all, _ := cmd.Flags().GetBool("all")
+		if err := tui.Run(all); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -52,6 +53,7 @@ func init() {
 	rootCmd.Version = resolveVersion()
 	rootCmd.SetVersionTemplate("opentree {{.Version}}\n")
 	rootCmd.Flags().BoolP("version", "v", false, "print the opentree version and exit")
+	rootCmd.Flags().BoolP("all", "A", false, "show every repository's workspaces, not just this one's (the default outside a repository)")
 
 	rootCmd.AddCommand(cmd.NewCmd)
 	rootCmd.AddCommand(cmd.ListCmd)

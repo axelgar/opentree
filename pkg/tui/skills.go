@@ -448,6 +448,11 @@ func (m Model) relinkSkillsCmd() tea.Cmd {
 		}
 		n := 0
 		for _, ws := range m.workspaces {
+			// The Skills tab is the cwd repository's; so are the worktrees it
+			// relinks.
+			if m.multiRepo() && ws.RepoRoot != m.repoRoot {
+				continue
+			}
 			// Bridging may have just created a tree this workspace has never
 			// seen, so Link is asked about every workspace rather than only the
 			// ones already known to be missing one.

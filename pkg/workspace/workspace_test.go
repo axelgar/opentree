@@ -113,6 +113,10 @@ func (m *mockGitHubManager) FetchPRReviews(branch string) ([]github.ReviewCommen
 	return m.fetchReviewsResult, m.fetchReviewsErr
 }
 
+func (m *mockGitHubManager) GetBranchAndPRStatus(branch, repoDir string, wasPushed bool) (github.BranchStatus, error) {
+	return github.BranchStatus{}, nil
+}
+
 // newWithMockFull creates a Service with both a mock ProcessManager and a mock GitHubManager.
 func newWithMockFull(repoRoot string, cfg *config.Config, pm ProcessManager, gh GitHubManager) (*Service, error) {
 	wt := worktree.New(repoRoot, cfg.Worktree.BaseDir)

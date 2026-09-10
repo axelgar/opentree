@@ -29,6 +29,7 @@ type GitHubManager interface {
 	FindPR(branch, repoDir string) (*github.PRInfo, error)
 	UpdatePR(branch, title, body string) error
 	FetchPRReviews(branch string) ([]github.ReviewComment, error)
+	GetBranchAndPRStatus(branch, repoDir string, wasPushed bool) (github.BranchStatus, error)
 }
 
 // Compile-time check that *github.PRManager satisfies GitHubManager.
@@ -77,6 +78,15 @@ func NewService(repoRoot string, cfg *config.Config, wt *worktree.Manager, pm Pr
 func (s *Service) Process() ProcessManager {
 	return s.process
 }
+
+// Worktrees, State, GitHub, Config and RepoRoot are the Service's parts, for
+// a dashboard that shows several repositories and holds one Service per
+// repository rather than one of each part.
+func (s *Service) Worktrees() *worktree.Manager { return s.worktrees }
+func (s *Service) State() *state.Store          { return s.state }
+func (s *Service) GitHub() GitHubManager        { return s.github }
+func (s *Service) Config() *config.Config       { return s.cfg }
+func (s *Service) RepoRoot() string             { return s.repoRoot }
 
 // ListWorkspaces returns all persisted workspaces.
 func (s *Service) ListWorkspaces() []*state.Workspace {
