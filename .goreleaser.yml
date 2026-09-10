@@ -23,6 +23,11 @@ archives:
       - LICENSE
       - NOTICE
 
+# A release re-run after npm failed finds the GitHub release already made by
+# the previous attempt; without this every asset upload fails "already exists".
+release:
+  mode: replace
+
 homebrew_casks:
   # A cask rather than a formula: goreleaser removed `brews` in v2.16, and for a
   # project that ships a prebuilt binary a cask is what it was always modelling.
