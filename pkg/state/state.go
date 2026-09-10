@@ -416,8 +416,11 @@ func migrateLegacy(repoRoot, stateFile string) error {
 		return nil
 	}
 	data, err := os.ReadFile(filepath.Join(legacy, "state.json"))
-	if err != nil {
+	if os.IsNotExist(err) {
 		return nil // nothing to move
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", filepath.Join(legacy, "state.json"), err)
 	}
 	if err := fsutil.WriteAtomic(stateFile, data); err != nil {
 		return fmt.Errorf("failed to move %s out of the repository to %s: %w", filepath.Join(legacy, "state.json"), stateFile, err)

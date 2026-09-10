@@ -564,7 +564,7 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 // fail JSON parsing and brick every opentree command.
 func TestNew_EmptyStateFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
+	if err := os.MkdirAll(Dir(dir), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(Dir(dir), "state.json"), nil, 0644); err != nil {
@@ -584,7 +584,7 @@ func TestNew_EmptyStateFile(t *testing.T) {
 // resolution) used to panic on the first dereference.
 func TestNew_NullWorkspaceEntrySkipped(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
+	if err := os.MkdirAll(Dir(dir), 0755); err != nil {
 		t.Fatal(err)
 	}
 	content := `{"workspaces": {"broken": null, "ok": {"name": "ok", "branch": "ok"}}}`
@@ -608,7 +608,7 @@ func TestNew_NullWorkspaceEntrySkipped(t *testing.T) {
 // A corrupt state file should fail with a recovery hint, not a bare JSON error.
 func TestNew_CorruptStateFileHasRecoveryHint(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
+	if err := os.MkdirAll(Dir(dir), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(Dir(dir), "state.json"), []byte("{not json"), 0644); err != nil {
@@ -756,7 +756,7 @@ func TestRecordSession_Persists(t *testing.T) {
 // writeStateFile puts raw JSON where a Store opened on dir will find it.
 func writeStateFile(t *testing.T, dir, content string, perm os.FileMode) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
+	if err := os.MkdirAll(Dir(dir), 0755); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(Dir(dir), "state.json")
