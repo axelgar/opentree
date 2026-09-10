@@ -58,8 +58,9 @@ func New(repoRoot, baseDir string) *Manager {
 // working tree, to a directory of opentree's own — beside the adapters, the
 // registry and the plugins it already keeps per machine.
 //
-// stateDir stays where it was: two small files git is told to ignore, which
-// no test runner cares about, read by the dashboard and every chat.
+// stateDir is where the worktrees and the state used to go, and where they
+// still go with no home directory to be had; a worktree made there under the
+// old layout is still one of opentree's.
 const (
 	stateDir     = ".opentree"
 	worktreesDir = "worktrees"
@@ -209,8 +210,9 @@ func (m *Manager) worktreePath(branchName string) (string, error) {
 }
 
 // ensureBaseDir creates the directory the worktrees live in, claims it when
-// it is opentree's own, and on the way makes sure git ignores what opentree
-// leaves inside the working tree.
+// it is opentree's own, and — only when that directory is inside the working
+// tree — makes sure git ignores it. In the default layout nothing of
+// opentree's is in the repository, and nothing in the repository is touched.
 func (m *Manager) ensureBaseDir() error {
 	if err := os.MkdirAll(m.base, 0755); err != nil {
 		return fmt.Errorf("failed to create %s directory: %w", m.base, err)
@@ -218,11 +220,6 @@ func (m *Manager) ensureBaseDir() error {
 	if err := m.claimBase(); err != nil {
 		return err
 	}
-	// The state directory always: state.json lives there whatever base_dir
-	// says, and a worktree is about to be recorded in it. The base directory
-	// only when it is inside the working tree, which is the same rule when
-	// the two coincide.
-	m.exclude("/"+stateDir+"/", "state")
 	if entry, ok := m.excludeEntry(); ok {
 		m.exclude(entry, "worktrees")
 	}
@@ -240,8 +237,8 @@ func (m *Manager) ensureBaseDir() error {
 // empty directory with no way to fill it. Nothing in opentree used to write an
 // ignore rule anywhere, so every repository except the author's own, which has
 // carried the entry by hand for as long as it has existed, met that on its
-// first workspace. The default has since left the working tree; the state
-// directory has not, and a base_dir inside the repository is still allowed.
+// first workspace. The default has since left the working tree, and so has
+// the state; a base_dir inside the repository is still allowed.
 //
 // The rule goes in .git/info/exclude rather than .gitignore. .gitignore is
 // tracked and belongs to the project: writing to it turns "make me a worktree"

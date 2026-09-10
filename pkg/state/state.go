@@ -357,16 +357,37 @@ func (s *ACPSession) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// legacyDir is where the state lived before it left the working tree: a
+// directory of opentree's inside the user's repository. Git was told to
+// ignore it, but pre-commit hooks that stage everything, formatters that walk
+// the tree and automations that refuse a dirty checkout all found it anyway.
+const legacyDir = ".opentree"
+
+// Dir is where a repository's state lives: opentree's own directory, keyed
+// the way the sockets and the history are, so nothing of opentree's is left
+// in the repository. With no home directory to be had, where it always was.
+func Dir(repoRoot string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(repoRoot, legacyDir)
+	}
+	return filepath.Join(home, ".opentree", "state", fsutil.RepoKey(repoRoot))
+}
+
 // New creates a new state store
 func New(repoRoot string) (*Store, error) {
-	opentreeDir := filepath.Join(repoRoot, ".opentree")
-	stateFile := filepath.Join(opentreeDir, "state.json")
-	lockFile := filepath.Join(opentreeDir, "state.lock")
+	dir := Dir(repoRoot)
+	stateFile := filepath.Join(dir, "state.json")
+	lockFile := filepath.Join(dir, "state.lock")
 
 	store := &Store{
 		filePath: stateFile,
 		lockPath: lockFile,
 		state:    &State{Workspaces: make(map[string]*Workspace)},
+	}
+
+	if err := migrateLegacy(repoRoot, stateFile); err != nil {
+		return nil, err
 	}
 
 	// Load existing state if it exists
@@ -377,6 +398,35 @@ func New(repoRoot string) (*Store, error) {
 	}
 
 	return store, nil
+}
+
+// migrateLegacy moves a state.json the repository used to hold into Dir, the
+// first time a command runs after the upgrade, and takes opentree's files out
+// of the working tree with it. The directory itself goes only once it is
+// empty: a base_dir of ".opentree" keeps the user's worktrees in there.
+//
+// Copy and remove rather than rename: the home directory and the repository
+// can sit on different filesystems, where a rename fails.
+func migrateLegacy(repoRoot, stateFile string) error {
+	legacy := filepath.Join(repoRoot, legacyDir)
+	if filepath.Dir(stateFile) == legacy {
+		return nil
+	}
+	if _, err := os.Stat(stateFile); err == nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(legacy, "state.json"))
+	if err != nil {
+		return nil // nothing to move
+	}
+	if err := fsutil.WriteAtomic(stateFile, data); err != nil {
+		return fmt.Errorf("failed to move %s out of the repository to %s: %w", filepath.Join(legacy, "state.json"), stateFile, err)
+	}
+	for _, name := range []string{"state.json", "state.lock", "state.json.tmp"} {
+		_ = os.Remove(filepath.Join(legacy, name))
+	}
+	_ = os.Remove(legacy)
+	return nil
 }
 
 // withFileLock acquires a file lock (shared or exclusive), runs fn, then releases.

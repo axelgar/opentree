@@ -749,8 +749,12 @@ made — opentree finds them through git — and `opentree doctor` says where th
 worktrees of the current setting go, and whether that is inside the working
 tree.
 
-`state.json` stays at `<repo>/.opentree/state.json`, which git is told to
-ignore: two small files, and no test runner cares about JSON.
+The state lives outside the repository too, at
+`~/.opentree/state/opentree-<hash>/state.json`. Nothing of opentree's is written
+into the working tree, and nothing in `.git` is touched, so pre-commit hooks
+that stage everything and automations that refuse a dirty checkout never meet
+opentree. A `state.json` an older release left under `<repo>/.opentree` is
+moved out the first time any command runs.
 
 ### Seeding a Worktree
 
@@ -971,7 +975,7 @@ index. Offline, the last index this machine saw answers, with its age noted.
 
 2. **tmux Orchestration**: A single tmux session (`opentree-<repo>`) manages all workspaces. Each workspace = one tmux window. Attach to work, detach to switch.
 
-3. **State Persistence**: Workspace metadata (branch, created time, agent, issue number) stored in `.opentree/state.json`.
+3. **State Persistence**: Workspace metadata (branch, created time, agent, issue number) stored in `~/.opentree/state/<repo-key>/state.json`, outside the repository.
 
 4. **Agent Integration**: When creating a workspace, opentree launches your configured agent inside the tmux window, ready to code. With no agent configured, it uses the first supported agent found on your PATH.
 
@@ -1091,7 +1095,7 @@ gh auth login
 
 ### Workspaces not appearing in TUI
 
-State file might be corrupted. Check `.opentree/state.json` or delete and recreate workspaces.
+State file might be corrupted. `opentree doctor` prints where it is (under `~/.opentree/state`); delete it and recreate workspaces.
 
 ## Contributing
 

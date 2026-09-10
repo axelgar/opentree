@@ -1059,13 +1059,14 @@ func TestCreate_AlreadyIgnoredBaseDirectoryIsLeftAlone(t *testing.T) {
 
 // A ../worktrees layout puts the worktrees outside the repository altogether.
 // Git will never look there, so a rule for it would be a line in the user's
-// exclude file that means nothing. The state directory's rule still goes in:
-// that one is inside the working tree whatever base_dir says.
+// exclude file that means nothing — and nothing else of opentree's is in the
+// working tree, so the exclude file is not touched at all.
 func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
 	}
 	repoDir := initGitRepo(t)
+	before := readExclude(t, repoDir)
 
 	m := New(repoDir, filepath.Join("..", "worktrees"))
 	if err := m.Create("feat/x", "main"); err != nil {
@@ -1075,12 +1076,8 @@ func TestCreate_BaseDirectoryOutsideTheRepositoryIsNotExcluded(t *testing.T) {
 		t.Fatalf("worktree not created outside the repository: %v", err)
 	}
 
-	after := readExclude(t, repoDir)
-	if strings.Contains(after, "worktrees") {
-		t.Errorf("exclude file names an out-of-repository base directory:\n%s", after)
-	}
-	if n := strings.Count(after, "/.opentree/"); n != 1 {
-		t.Errorf("the state directory's rule appears %d times, want 1:\n%s", n, after)
+	if after := readExclude(t, repoDir); after != before {
+		t.Errorf(".git/info/exclude was touched for an out-of-repository base directory:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -1318,23 +1315,25 @@ func TestPath_FindsAWorktreeMadeUnderAnotherBase(t *testing.T) {
 
 // state.json still lives inside the working tree whatever base_dir says, and
 // git has to be told to ignore it even when no worktree is going there.
-func TestCreate_ExcludesTheStateDirectoryWhateverTheBase(t *testing.T) {
+// The default layout leaves nothing of opentree's in the repository — no
+// worktree, no state — so a worktree is made without a single write into the
+// working tree or into .git: the exclude file stays exactly as the user had it.
+func TestCreate_DefaultLayoutLeavesTheRepositoryUntouched(t *testing.T) {
 	if !isGitAvailable() {
 		t.Skip("git not available")
 	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", t.TempDir())
 	repoDir := initGitRepo(t)
+	before := readExclude(t, repoDir)
 	m := New(repoDir, "")
 	if err := m.Create("feat/x", "main"); err != nil {
 		t.Fatalf("Create(): %v", err)
 	}
-	got := readExclude(t, repoDir)
-	if !strings.Contains(got, "/.opentree/") {
-		t.Errorf(".git/info/exclude does not exclude the state directory:\n%s", got)
+	if after := readExclude(t, repoDir); after != before {
+		t.Errorf(".git/info/exclude was touched:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
-	if strings.Contains(got, home) {
-		t.Errorf(".git/info/exclude names a directory outside the repository:\n%s", got)
+	if _, err := os.Stat(filepath.Join(repoDir, ".opentree")); !os.IsNotExist(err) {
+		t.Errorf("<repo>/.opentree exists after Create (err=%v)", err)
 	}
 }
 

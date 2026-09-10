@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/axelgar/opentree/pkg/acp"
+	"github.com/axelgar/opentree/pkg/fsutil"
 )
 
 // Session states a chat process reports.
@@ -215,15 +216,9 @@ func SocketPath(repoRoot, workspace string) string {
 	return filepath.Join(socketRoot, repoKey(repoRoot), workspaceFile(workspace))
 }
 
-// repoKey names a repository in a path — "opentree-<hash of its root>" — so
-// two checkouts of one project get directories of their own. Shared by the
-// sockets and the message history, which want the same answer to "which
-// repository" for the same reason.
-func repoKey(repoRoot string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(repoRoot))
-	return fmt.Sprintf("opentree-%08x", h.Sum32())
-}
+// repoKey is fsutil.RepoKey: the sockets, the history, the exports and the
+// state share one answer to "which repository".
+func repoKey(repoRoot string) string { return fsutil.RepoKey(repoRoot) }
 
 // workspaceFile is a workspace's name as a file name, shortened past
 // socketNameMax the way SocketPath describes.

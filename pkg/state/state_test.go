@@ -305,7 +305,7 @@ func TestPersistenceAcrossInstances(t *testing.T) {
 	}
 
 	// Verify the state file was written.
-	stateFile := filepath.Join(dir, ".opentree", "state.json")
+	stateFile := filepath.Join(Dir(dir), "state.json")
 	if _, err := os.Stat(stateFile); err != nil {
 		t.Fatalf("state file not created: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestFanoutGroup_RoundTripsAndOmitsWhenEmpty(t *testing.T) {
 
 	// The empty value is every pre-fanout workspace; it must not start
 	// appearing in their records just because the field now exists.
-	raw, err := os.ReadFile(filepath.Join(dir, ".opentree", "state.json"))
+	raw, err := os.ReadFile(filepath.Join(Dir(dir), "state.json"))
 	if err != nil {
 		t.Fatalf("reading state file: %v", err)
 	}
@@ -564,10 +564,10 @@ func TestAtomicWrite_NoPartialReads(t *testing.T) {
 // fail JSON parsing and brick every opentree command.
 func TestNew_EmptyStateFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".opentree", "state.json"), nil, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(Dir(dir), "state.json"), nil, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -584,11 +584,11 @@ func TestNew_EmptyStateFile(t *testing.T) {
 // resolution) used to panic on the first dereference.
 func TestNew_NullWorkspaceEntrySkipped(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
 		t.Fatal(err)
 	}
 	content := `{"workspaces": {"broken": null, "ok": {"name": "ok", "branch": "ok"}}}`
-	if err := os.WriteFile(filepath.Join(dir, ".opentree", "state.json"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(Dir(dir), "state.json"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -608,10 +608,10 @@ func TestNew_NullWorkspaceEntrySkipped(t *testing.T) {
 // A corrupt state file should fail with a recovery hint, not a bare JSON error.
 func TestNew_CorruptStateFileHasRecoveryHint(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".opentree", "state.json"), []byte("{not json"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(Dir(dir), "state.json"), []byte("{not json"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -756,10 +756,10 @@ func TestRecordSession_Persists(t *testing.T) {
 // writeStateFile puts raw JSON where a Store opened on dir will find it.
 func writeStateFile(t *testing.T, dir, content string, perm os.FileMode) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, ".opentree"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(Dir(dir)), 0755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, ".opentree", "state.json")
+	path := filepath.Join(Dir(dir), "state.json")
 	if err := os.WriteFile(path, []byte(content), perm); err != nil {
 		t.Fatal(err)
 	}
@@ -940,11 +940,75 @@ func TestAtomicWrite_TheStateFileAndItsLockArePrivate(t *testing.T) {
 		t.Errorf("state.json mode = %o, want 0600", perm)
 	}
 
-	lock, err := os.Stat(filepath.Join(dir, ".opentree", "state.lock"))
+	lock, err := os.Stat(filepath.Join(Dir(dir), "state.lock"))
 	if err != nil {
 		t.Fatalf("stat state.lock: %v", err)
 	}
 	if perm := lock.Mode().Perm(); perm&0077 != 0 {
 		t.Errorf("state.lock mode = %o, want nothing for group or other", perm)
+	}
+}
+
+// The state lives in opentree's own directory, not the repository. Every test
+// here gets a home of its own so nothing lands in the real one.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "opentree-state-home-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
+// A state.json an older release left under <repo>/.opentree moves out on the
+// first command, and takes the lock and the temp file with it. The directory
+// goes only when it is empty: a base_dir of ".opentree" keeps worktrees in it.
+func TestNew_MovesLegacyStateOutOfTheRepository(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, ".opentree")
+	if err := os.MkdirAll(legacy, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"version":1,"workspaces":{"old":{"name":"old","branch":"old"}}}`
+	for name, body := range map[string]string{"state.json": content, "state.lock": "", "state.json.tmp": "x"} {
+		if err := os.WriteFile(filepath.Join(legacy, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if _, err := store.GetWorkspace("old"); err != nil {
+		t.Errorf("workspace from the legacy file not loaded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(Dir(dir), "state.json")); err != nil {
+		t.Errorf("state.json not written to %s: %v", Dir(dir), err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("<repo>/.opentree still exists after the move (err=%v)", err)
+	}
+
+	// A worktree left in the legacy directory keeps it, and only the state
+	// files leave.
+	dir2 := t.TempDir()
+	legacy2 := filepath.Join(dir2, ".opentree")
+	if err := os.MkdirAll(filepath.Join(legacy2, "feat-x"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy2, "state.json"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(dir2); err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacy2, "state.json")); !os.IsNotExist(err) {
+		t.Errorf("legacy state.json still in the repository (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacy2, "feat-x")); err != nil {
+		t.Errorf("the worktree directory was removed with the state: %v", err)
 	}
 }

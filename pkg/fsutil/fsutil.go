@@ -3,6 +3,8 @@
 package fsutil
 
 import (
+	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 )
@@ -79,4 +81,14 @@ func replace(tmp *os.File, tmpPath, path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// RepoKey names a repository in a path — "opentree-<hash of its root>" — so
+// two checkouts of one project get directories of their own under ~/.opentree.
+// The sockets, the message history, the exports and the state all want the
+// same answer to "which repository", for the same reason.
+func RepoKey(repoRoot string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(repoRoot))
+	return fmt.Sprintf("opentree-%08x", h.Sum32())
 }

@@ -164,7 +164,7 @@ Paths are printed in full because which one was chosen is usually the answer.`,
 		}
 
 		section("state")
-		line("file", describeFile(filepath.Join(repoRoot, ".opentree", "state.json")))
+		line("file", describeFile(filepath.Join(state.Dir(repoRoot), "state.json")))
 		if store, err := state.New(repoRoot); err != nil {
 			line("status", "WILL NOT LOAD — "+err.Error())
 		} else {
