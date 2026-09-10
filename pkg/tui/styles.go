@@ -168,6 +168,9 @@ var (
 	diffCursorStyle = lipgloss.NewStyle().Foreground(ui.Accent)
 	diffAddBand     = lipgloss.NewStyle().Background(ui.AddBand)
 	diffDelBand     = lipgloss.NewStyle().Background(ui.DelBand)
+	// The words that changed within a changed line, on their band.
+	diffWordAddStyle = lipgloss.NewStyle().Foreground(ui.Success).Background(ui.AddBand).Bold(true).Underline(true)
+	diffWordDelStyle = lipgloss.NewStyle().Foreground(ui.Danger).Background(ui.DelBand).Bold(true).Underline(true)
 	// A find match: the current one in inverse, which reads as "here" on any
 	// background; the others underlined so the eye can count them.
 	diffCurrentMatchStyle = lipgloss.NewStyle().Reverse(true)

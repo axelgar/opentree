@@ -44,6 +44,8 @@ type diffView struct {
 	// rather than cut (w).
 	numbers bool
 	wrap    bool
+	// words is intra-line word-diff on paired rows (W).
+	words bool
 	// searching is the find box open in the footer; query lives on after
 	// enter closes the box, and n/N step its matches until esc clears it.
 	searching bool
@@ -83,6 +85,9 @@ type diffRow struct {
 	file int
 	// spans is the line's syntax colour, nil for plain.
 	spans []ui.Span
+	// pair is the row this one is the other half of — the added line a
+	// removed one became, or the reverse — for word-diff; -1 when none.
+	pair int
 }
 
 type diffFile struct {
@@ -100,6 +105,7 @@ type diffFile struct {
 func newDiffView(content, wsName string) diffView {
 	rows, files, gutter := parseDiff(content)
 	highlightFiles(rows, files)
+	pairRows(rows)
 	return diffView{open: true, wsName: wsName, rows: rows, files: files, gutter: gutter,
 		tree: true, reviewed: map[int]bool{}}
 }
@@ -256,6 +262,69 @@ func highlightFiles(rows []diffRow, files []diffFile) {
 	}
 }
 
+// pairRows finds the rows word-diff can compare: a run of k removed lines
+// followed at once by k added lines is k lines edited in place, and the i-th
+// of each is the other's partner. Any other shape — more added than removed,
+// a context line between — is not an edit of a line but of the region, and
+// stays unpaired.
+func pairRows(rows []diffRow) {
+	for i := range rows {
+		rows[i].pair = -1
+	}
+	for i := 0; i < len(rows); {
+		if rows[i].kind != rowDel {
+			i++
+			continue
+		}
+		dels := i
+		for i < len(rows) && rows[i].kind == rowDel {
+			i++
+		}
+		adds := i
+		for i < len(rows) && rows[i].kind == rowAdd {
+			i++
+		}
+		if adds-dels != i-adds {
+			continue
+		}
+		for k := range adds - dels {
+			rows[dels+k].pair = adds + k
+			rows[adds+k].pair = dels + k
+		}
+	}
+}
+
+// tokens splits a line for word-diff: runs of word characters, runs of
+// spaces, and every other rune on its own, so "foo(bar)" against "foo(baz)"
+// changes one token and not the line.
+func tokens(s string) []string {
+	var out []string
+	start := 0
+	class := func(r rune) int {
+		switch {
+		case r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
+			return 1
+		case r == ' ':
+			return 2
+		default:
+			return 0
+		}
+	}
+	prev := -1
+	for i, r := range s {
+		c := class(r)
+		if i > 0 && (c != prev || c == 0) {
+			out = append(out, s[start:i])
+			start = i
+		}
+		prev = c
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
 // gitPaths splits the "a/old b/new" tail of a diff --git line. Paths with a
 // space in them are split on the last " b/", which is right for every path
 // that does not itself contain " b/".
@@ -328,6 +397,8 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.tree = !d.tree
 	case "L":
 		d.numbers = !d.numbers
+	case "W":
+		d.words = !d.words
 	case "w":
 		d.wrap = !d.wrap
 	case "]":
@@ -725,6 +796,7 @@ var diffKeys = [][2]string{
 	{"space", "mark file reviewed"},
 	{"t", "show / hide the tree"},
 	{"L", "line numbers"},
+	{"W", "word-diff on changed lines"},
 	{"w", "wrap long lines"},
 	{"esc q", "close"},
 }
@@ -747,6 +819,9 @@ func (m Model) paintRow(i int) string {
 		mark = diffCursorStyle.Render("▎")
 	}
 	line := styleRow(r)
+	if m.diff.words && r.pair >= 0 {
+		line = paintWords(line, r, m.diff.rows[r.pair])
+	}
 	// Matches were measured on the bare text; a code row has its sign in
 	// front of that. Painted from the right so the columns hold.
 	shift := 0
@@ -828,6 +903,35 @@ func paintCode(r diffRow) string {
 		sb.WriteString(band.Foreground(synColour(sp.Kind)).Render(expandTabs(sp.Text)))
 	}
 	return sb.String()
+}
+
+// paintWords marks, on one half of a paired row, the tokens the other half
+// does not have: the words that changed, rather than the whole line that
+// contains them. The tokens are matched old to new and the columns walked
+// along this row's own side of the script.
+func paintWords(line string, r, partner diffRow) string {
+	oldText, newText := expandTabs(r.text), expandTabs(partner.text)
+	mine, style := byte('-'), diffWordDelStyle
+	if r.kind == rowAdd {
+		oldText, newText = newText, oldText
+		mine, style = '+', diffWordAddStyle
+	}
+	var ranges [][2]int
+	col := 1 // past the sign
+	for _, e := range ui.Diff(tokens(oldText), tokens(newText)) {
+		if e.Kind != '=' && e.Kind != mine {
+			continue
+		}
+		w := lipgloss.Width(e.Text)
+		if e.Kind == mine {
+			ranges = append(ranges, [2]int{col, w})
+		}
+		col += w
+	}
+	for i := len(ranges) - 1; i >= 0; i-- {
+		line = ui.Paint(line, ranges[i][0], ranges[i][1], style)
+	}
+	return line
 }
 
 // synColour is the palette colour of each kind of span; plain code keeps the

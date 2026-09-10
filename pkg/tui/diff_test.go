@@ -498,3 +498,53 @@ func TestPaintCode_SignSurvivesTheColour(t *testing.T) {
 		t.Errorf("a context line has a band: %q", ctx)
 	}
 }
+
+// --- word-diff ---------------------------------------------------------------
+
+func TestParseDiff_PairsEqualRuns(t *testing.T) {
+	d := newDiffView("diff --git a/f b/f\n@@ -1,4 +1,5 @@\n-a\n-b\n+A\n+B\n c\n-d\n+D\n+E\n", "a")
+	// Two removed then two added pair i↔i; one removed then two added do not.
+	if d.rows[2].pair != 4 || d.rows[3].pair != 5 || d.rows[4].pair != 2 || d.rows[5].pair != 3 {
+		t.Errorf("pairs = %d %d %d %d, want 4 5 2 3", d.rows[2].pair, d.rows[3].pair, d.rows[4].pair, d.rows[5].pair)
+	}
+	for _, i := range []int{0, 1, 6, 7, 8, 9} {
+		if d.rows[i].pair != -1 {
+			t.Errorf("row %d paired with %d", i, d.rows[i].pair)
+		}
+	}
+	if got := fmt.Sprint(tokens("foo(bar_1, x)  y")); got != "[foo ( bar_1 ,   x )    y]" {
+		t.Errorf("tokens = %s", got)
+	}
+}
+
+func TestDiffView_WordDiffMarksChangedTokens(t *testing.T) {
+	before := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(before) })
+
+	m := newTestModel()
+	m.diff = newDiffView("diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-return one\n+return two", "a")
+	plain := m.paintRow(2)
+	m, _ = applyUpdate(m, keyMsg("W"))
+	line := m.paintRow(2)
+	if line == plain {
+		t.Fatal("W changed nothing")
+	}
+	// lipgloss underlines a rune at a time; the emphasised text is whatever
+	// the bold+underline segments add up to.
+	emphasised := ""
+	for _, seg := range strings.Split(line, "\x1b[0m") {
+		if strings.Contains(seg, "\x1b[1;4;") {
+			emphasised += ansi.Strip(seg)
+		}
+	}
+	if emphasised != "one" {
+		t.Errorf("emphasised %q, want just the changed word: %q", emphasised, line)
+	}
+	if ansi.Strip(line) != ansi.Strip(plain) {
+		t.Errorf("word-diff changed the text: %q", ansi.Strip(line))
+	}
+	if add := ansi.Strip(m.paintRow(3)); !strings.HasSuffix(add, "+return two") {
+		t.Errorf("the added half = %q", add)
+	}
+}
