@@ -46,6 +46,14 @@ type diffView struct {
 	wrap    bool
 	// words is intra-line word-diff on paired rows (W).
 	words bool
+	// notes are the annotations; noting is the one being typed, in the
+	// footer box; listing is the @ card over the diff and listCursor its
+	// row; closeArmed is the first esc with notes unsent.
+	notes      []annotation
+	noting     *annotation
+	listing    bool
+	listCursor int
+	closeArmed bool
 	// searching is the find box open in the footer; query lives on after
 	// enter closes the box, and n/N step its matches until esc clears it.
 	searching bool
@@ -370,19 +378,51 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if d.searching {
 		return m.handleDiffFindKey(msg)
 	}
+	if d.noting != nil {
+		return m.handleNoteKey(msg)
+	}
+	if d.listing {
+		return m.handleNoteListKey(msg)
+	}
+	armed := d.closeArmed
+	d.closeArmed = false
 	page := m.diffPage()
 	switch msg.String() {
-	case "esc":
-		// With a live query, esc clears it; the next esc closes.
-		if d.query != "" {
+	case "esc", "q":
+		// With a live query, esc clears it. With notes unsent, the first
+		// press warns and the second discards them.
+		if msg.String() == "esc" && d.query != "" {
 			d.query, d.matches = "", nil
+			return m, nil
+		}
+		if len(d.notes) > 0 && !armed {
+			d.closeArmed = true
 			return m, nil
 		}
 		m.diff = diffView{}
 		return m, nil
-	case "q":
-		m.diff = diffView{}
-		return m, nil
+	case "a", "enter":
+		if d.cursor >= len(d.rows) || !isCodeRow(d.rows[d.cursor].kind) {
+			return m, m.transientErrCmd("notes go on a line of code — or A for the whole file")
+		}
+		return m.startNote(d.noteFor(d.cursor))
+	case "A":
+		f := d.fileAt(d.cursor)
+		if f < 0 {
+			return m, m.transientErrCmd("no file under the cursor")
+		}
+		return m.startNote(annotation{row: -1, file: f, path: d.files[f].path, kind: 'f'})
+	case "@":
+		if len(d.notes) == 0 {
+			return m, m.transientErrCmd("no notes yet — a or enter makes one")
+		}
+		d.listing, d.listCursor = true, 0
+	case "x":
+		if i := d.noteAt(d.cursor); i >= 0 {
+			d.notes = append(d.notes[:i], d.notes[i+1:]...)
+		}
+	case "s":
+		return m.sendNotes()
 	case "/":
 		d.searching = true
 		m.input.Reset()
@@ -438,6 +478,11 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampDiffScroll()
 	return m, nil
+}
+
+// isCodeRow is whether a row is a line of the file rather than structure.
+func isCodeRow(kind byte) bool {
+	return kind == rowContext || kind == rowAdd || kind == rowDel
 }
 
 // handleDiffFindKey types into the find box. Enter keeps the query and gives
@@ -547,6 +592,9 @@ func (m Model) clickDiff(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.diff.help = false
 		return m, nil
 	}
+	if m.diff.noting != nil || m.diff.listing {
+		return m, nil
+	}
 	line := msg.Y - appStyle.GetPaddingTop() - 2 // header and divider
 	if line < 0 || line >= m.diffPage() {
 		return m, nil
@@ -632,6 +680,9 @@ func (m Model) diffScreen() string {
 	if m.diff.help {
 		return m.diffHelpCard()
 	}
+	if m.diff.listing {
+		return m.noteListCard()
+	}
 	d := m.diff
 	page := m.diffPage()
 
@@ -649,19 +700,41 @@ func (m Model) diffScreen() string {
 	}
 
 	header := m.bar(titleStyle.Render("Diff: "+d.wsName), m.diffSummary())
-	footer := m.bar(
-		dialogHintStyle.Render("j/k [ ] n/p move  •  / find  •  space reviewed  •  ? keys  •  esc close"),
-		dialogHintStyle.Render(m.diffPosition()),
-	)
-	if d.searching {
-		footer = m.bar(
-			titleStyle.Render("find")+" › "+m.input.View()+"   "+dialogHintStyle.Render(m.diffMatchCount()),
-			dialogHintStyle.Render("enter keep  •  esc clear"),
-		)
-	}
+	footer := m.diffFooter()
 	return appStyle.Render(strings.Join([]string{
 		header, m.divider(), pane + "\n" + m.divider(), footer,
 	}, "\n"))
+}
+
+// diffFooter is the bottom bar: the key hints and the position, unless the
+// moment has something more pressing to say — a box being typed into, the
+// note under the cursor, the warning that notes would be lost, an error.
+func (m Model) diffFooter() string {
+	d := m.diff
+	switch {
+	case d.searching:
+		return m.bar(
+			titleStyle.Render("find")+" › "+m.input.View()+"   "+dialogHintStyle.Render(m.diffMatchCount()),
+			dialogHintStyle.Render("enter keep  •  esc clear"),
+		)
+	case d.noting != nil:
+		return m.bar(
+			titleStyle.Render("note")+" › "+m.input.View()+"   "+dialogHintStyle.Render(d.noting.where()),
+			dialogHintStyle.Render("enter save  •  esc cancel"),
+		)
+	}
+	right := dialogHintStyle.Render(m.diffPosition())
+	if toast := m.toastLine(); toast != "" {
+		right = toast
+	}
+	left := dialogHintStyle.Render("j/k [ ] n/p move  •  / find  •  a note  •  s send  •  ? keys  •  esc close")
+	switch {
+	case d.closeArmed:
+		left = warnStyle.Render(fmt.Sprintf("%s unsent — esc again discards, s sends", plural(len(d.notes), "note")))
+	case d.noteAt(d.cursor) >= 0:
+		left = diffCursorStyle.Render("● ") + d.notes[d.noteAt(d.cursor)].note
+	}
+	return m.bar(left, right)
 }
 
 // diffPosition is the footer's right end: the cursor line, and while a query
@@ -737,6 +810,9 @@ func (m Model) treeLines() []treeLine {
 			counts = fileAddedStyle.Render(fmt.Sprintf("+%d", f.added)) + " " +
 				fileRemovedStyle.Render(fmt.Sprintf("-%d", f.removed))
 		}
+		if n := d.notesOn(i); n > 0 {
+			counts += " " + diffCursorStyle.Render(fmt.Sprintf("●%d", n))
+		}
 		nameWidth := diffTreeWidth - 3 - lipgloss.Width(counts)
 		name := shortenPath(f.path, nameWidth)
 		mark := " "
@@ -750,6 +826,17 @@ func (m Model) treeLines() []treeLine {
 		out = append(out, treeLine{text: mark + " " + name + pad + " " + counts, file: i})
 	}
 	return out
+}
+
+// notesOn is how many notes a file carries, its own and its lines'.
+func (d diffView) notesOn(file int) int {
+	n := 0
+	for _, a := range d.notes {
+		if a.file == file {
+			n++
+		}
+	}
+	return n
 }
 
 // treeWindow is the tree's lines and the first one on screen, chosen so the
@@ -797,6 +884,11 @@ var diffKeys = [][2]string{
 	{"t", "show / hide the tree"},
 	{"L", "line numbers"},
 	{"W", "word-diff on changed lines"},
+	{"a enter", "note on the line; ends in ? to ask"},
+	{"A", "note on the whole file"},
+	{"@", "list the notes"},
+	{"x", "delete the note under the cursor"},
+	{"s", "send the notes to the agent"},
 	{"w", "wrap long lines"},
 	{"esc q", "close"},
 }
@@ -817,6 +909,11 @@ func (m Model) paintRow(i int) string {
 	mark := " "
 	if i == m.diff.cursor {
 		mark = diffCursorStyle.Render("▎")
+	}
+	if m.diff.noteAt(i) >= 0 {
+		mark += diffCursorStyle.Render("●")
+	} else {
+		mark += " "
 	}
 	line := styleRow(r)
 	if m.diff.words && r.pair >= 0 {
