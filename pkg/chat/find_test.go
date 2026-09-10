@@ -138,14 +138,3 @@ func TestFind_DoesNotDisturbTheDraft(t *testing.T) {
 		t.Errorf("the draft became %q", got)
 	}
 }
-
-func TestFindMatches_MeasuresColumnsPastColourAndWidth(t *testing.T) {
-	rows := []string{"\x1b[31m日本\x1b[0m needle and NEEDLE"}
-	got := findMatches(rows, "needle")
-	if len(got) != 2 {
-		t.Fatalf("matches = %+v, want 2", got)
-	}
-	if got[0].col != 5 || got[0].width != 6 || got[1].col != 16 {
-		t.Errorf("matches = %+v, want cols 5 and 16 of width 6", got)
-	}
-}

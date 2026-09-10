@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // twoFileDiff is what DiffCombined hands over for a rename with one hunk and
@@ -376,5 +378,82 @@ func TestDiffKeys_LineNumbersToggle(t *testing.T) {
 	m, _ = applyUpdate(m, keyMsg("L"))
 	if strings.Contains(m.View(), "10 12") {
 		t.Error("a second L did not hide the numbers")
+	}
+}
+
+// --- search --------------------------------------------------------------------
+
+func TestDiffSearch_NStepsMatchesWhileQueryLives(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	m, _ = applyUpdate(m, keyMsg("/"))
+	for _, r := range "b :=" {
+		m, _ = applyUpdate(m, keyMsg(string(r)))
+	}
+	if len(m.diff.matches) != 2 || m.diff.cursor != 9 {
+		t.Fatalf("matches = %+v cursor = %d, want two matches and the cursor on the first, row 9", m.diff.matches, m.diff.cursor)
+	}
+	if !strings.Contains(m.View(), "1 of 2") {
+		t.Errorf("the box does not count the matches:\n%s", m.View())
+	}
+	m, _ = applyUpdate(m, keyMsg("enter"))
+	if m.diff.searching || m.diff.query != "b :=" {
+		t.Fatal("enter should close the box and keep the query")
+	}
+	m, _ = applyUpdate(m, keyMsg("n"))
+	if m.diff.cursor != 10 {
+		t.Errorf("n moved to %d, want the second match, 10", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("n"))
+	if m.diff.cursor != 9 {
+		t.Errorf("n at the last match moved to %d, want to wrap to 9", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("N"))
+	if m.diff.cursor != 10 {
+		t.Errorf("N moved to %d, want 10", m.diff.cursor)
+	}
+	if !strings.Contains(m.View(), "≋ b := · 2 of 2") {
+		t.Errorf("the footer does not show the live query:\n%s", m.View())
+	}
+
+	// esc clears the query and n goes back to stepping files; a second esc closes.
+	m, _ = applyUpdate(m, keyMsg("esc"))
+	if !m.diff.open || m.diff.query != "" {
+		t.Fatal("esc with a query should clear it, not close")
+	}
+	m, _ = applyUpdate(m, keyMsg("n"))
+	if m.diff.cursor != 13 {
+		t.Errorf("n without a query moved to %d, want the next file, 13", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("esc"))
+	if m.diff.open {
+		t.Error("esc without a query should close")
+	}
+}
+
+func TestDiffSearch_PaintsTheMatchOnTheRow(t *testing.T) {
+	before := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(before) })
+
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	m.diff.tree = false
+	m, _ = applyUpdate(m, keyMsg("/"))
+	m, _ = applyUpdate(m, keyMsg("2"))
+	// The first 2 is in the index line, row 4: that one is current, in
+	// inverse; the one in "b := 2" on row 9 is underlined.
+	if m.diff.cursor != 4 {
+		t.Fatalf("cursor = %d, want the first match's row 4", m.diff.cursor)
+	}
+	if line := m.paintRow(4); !strings.Contains(line, "\x1b[7m2") {
+		t.Errorf("the current match is not painted in inverse: %q", line)
+	}
+	line := m.paintRow(9) // "-\tb := 2"
+	if !strings.Contains(line, "\x1b[4;") || !strings.Contains(ansi.Strip(line), "2") {
+		t.Errorf("the other match is not underlined: %q", line)
+	}
+	if got := ansi.Strip(line); !strings.HasSuffix(got, "-    b := 2") {
+		t.Errorf("painting changed the text: %q", got)
 	}
 }

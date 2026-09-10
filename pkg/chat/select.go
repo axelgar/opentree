@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // Selecting text with the mouse. The chat holds the mouse so the wheel scrolls
@@ -309,12 +311,7 @@ func (m Model) paintSelection(lines []string) []string {
 		if i == to.line {
 			end = to.col + 1
 		}
-		row := out[i]
-		mid := ansi.Strip(ansi.Cut(row, start, end))
-		if mid == "" {
-			continue
-		}
-		out[i] = ansi.Cut(row, 0, start) + selectStyle.Render(mid) + ansi.Cut(row, end, colEnd)
+		out[i] = ui.Paint(out[i], start, end-start, selectStyle)
 	}
 	return out
 }

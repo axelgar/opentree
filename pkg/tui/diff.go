@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -41,6 +42,12 @@ type diffView struct {
 	// rather than cut (w).
 	numbers bool
 	wrap    bool
+	// searching is the find box open in the footer; query lives on after
+	// enter closes the box, and n/N step its matches until esc clears it.
+	searching bool
+	query     string
+	matches   []ui.Match
+	current   int
 }
 
 // The tree pane's width, and the terminal width below which it is not worth
@@ -226,11 +233,30 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.help = false
 		return m, nil
 	}
+	if d.searching {
+		return m.handleDiffFindKey(msg)
+	}
 	page := m.diffPage()
 	switch msg.String() {
-	case "esc", "q":
+	case "esc":
+		// With a live query, esc clears it; the next esc closes.
+		if d.query != "" {
+			d.query, d.matches = "", nil
+			return m, nil
+		}
 		m.diff = diffView{}
 		return m, nil
+	case "q":
+		m.diff = diffView{}
+		return m, nil
+	case "/":
+		d.searching = true
+		m.input.Reset()
+		m.input.Placeholder = "find"
+		m.input.Focus()
+		return m, textinput.Blink
+	case "N":
+		m.stepDiffMatch(-1)
 	case "?":
 		d.help = true
 	case "t":
@@ -244,6 +270,11 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "[":
 		m.jumpDiff(d.nextRow(d.cursor, -1, func(r diffRow) bool { return r.kind == rowHunk }))
 	case "n":
+		// revdiff's rule: n steps matches while there is a query, files otherwise.
+		if d.query != "" {
+			m.stepDiffMatch(+1)
+			break
+		}
 		m.jumpDiff(d.nextRow(d.cursor, +1, func(r diffRow) bool { return r.kind == rowFile }))
 	case "p":
 		m.jumpDiff(d.nextRow(d.cursor, -1, func(r diffRow) bool { return r.kind == rowFile }))
@@ -271,6 +302,76 @@ func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampDiffScroll()
 	return m, nil
+}
+
+// handleDiffFindKey types into the find box. Enter keeps the query and gives
+// the keys back to the diff; esc clears it.
+func (m Model) handleDiffFindKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	d := &m.diff
+	switch msg.String() {
+	case "esc":
+		d.searching, d.query, d.matches = false, "", nil
+		m.input.Reset()
+		return m, nil
+	case "enter":
+		d.searching = false
+		m.input.Reset()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	d.query = m.input.Value()
+	m.refindDiff()
+	return m, cmd
+}
+
+// refindDiff finds the query again and lands on the first match at or below
+// the cursor — searching starts from where the reader is — wrapping to the
+// first when nothing is below.
+func (m *Model) refindDiff() {
+	d := &m.diff
+	rows := make([]string, len(d.rows))
+	for i, r := range d.rows {
+		rows[i] = expandTabs(r.text)
+	}
+	d.matches = ui.FindMatches(rows, d.query)
+	d.current = -1
+	for i, mt := range d.matches {
+		if mt.Line >= d.cursor {
+			d.current = i
+			break
+		}
+	}
+	if d.current < 0 && len(d.matches) > 0 {
+		d.current = 0
+	}
+	m.showDiffMatch()
+}
+
+// stepDiffMatch moves to the next or previous match, around the ends.
+func (m *Model) stepDiffMatch(delta int) {
+	d := &m.diff
+	n := len(d.matches)
+	if n == 0 {
+		return
+	}
+	d.current = ((d.current+delta)%n + n) % n
+	m.showDiffMatch()
+}
+
+// showDiffMatch puts the cursor on the current match, centred on screen when
+// it was not already in view.
+func (m *Model) showDiffMatch() {
+	d := &m.diff
+	if d.current < 0 || d.current >= len(d.matches) {
+		return
+	}
+	line := d.matches[d.current].Line
+	if line < d.offset || line > m.lastVisibleRow() {
+		d.offset = line - m.diffPage()/2
+	}
+	d.cursor = line
+	m.clampDiffScroll()
 }
 
 // nextRow is the first row past from, in the direction of step, that want
@@ -413,12 +514,39 @@ func (m Model) diffScreen() string {
 
 	header := m.bar(titleStyle.Render("Diff: "+d.wsName), m.diffSummary())
 	footer := m.bar(
-		dialogHintStyle.Render("↑/↓ move  •  [/] hunk  •  n/p file  •  space reviewed  •  ? keys  •  esc close"),
-		dialogHintStyle.Render(fmt.Sprintf("line %d/%d", d.cursor+1, len(d.rows))),
+		dialogHintStyle.Render("j/k [ ] n/p move  •  / find  •  space reviewed  •  ? keys  •  esc close"),
+		dialogHintStyle.Render(m.diffPosition()),
 	)
+	if d.searching {
+		footer = m.bar(
+			titleStyle.Render("find")+" › "+m.input.View()+"   "+dialogHintStyle.Render(m.diffMatchCount()),
+			dialogHintStyle.Render("enter keep  •  esc clear"),
+		)
+	}
 	return appStyle.Render(strings.Join([]string{
 		header, m.divider(), pane + "\n" + m.divider(), footer,
 	}, "\n"))
+}
+
+// diffPosition is the footer's right end: the cursor line, and while a query
+// lives, where the reader stands among its matches.
+func (m Model) diffPosition() string {
+	pos := fmt.Sprintf("line %d/%d", m.diff.cursor+1, len(m.diff.rows))
+	if m.diff.query != "" {
+		return "≋ " + m.diff.query + " · " + m.diffMatchCount() + " · " + pos
+	}
+	return pos
+}
+
+func (m Model) diffMatchCount() string {
+	switch {
+	case m.diff.query == "":
+		return "type to search the diff"
+	case len(m.diff.matches) == 0:
+		return "no matches"
+	default:
+		return fmt.Sprintf("%d of %d", m.diff.current+1, len(m.diff.matches))
+	}
 }
 
 // showTree is whether the tree pane is drawn: wanted, worth it, and fits.
@@ -528,6 +656,7 @@ var diffKeys = [][2]string{
 	{"g/G", "first / last line"},
 	{"[ / ]", "previous / next hunk"},
 	{"n / p", "next / previous file"},
+	{"/", "find; n / N step the matches, esc clears"},
 	{"space", "mark file reviewed"},
 	{"t", "show / hide the tree"},
 	{"L", "line numbers"},
@@ -552,7 +681,25 @@ func (m Model) paintRow(i int) string {
 	if i == m.diff.cursor {
 		mark = diffCursorStyle.Render("▎")
 	}
-	return mark + m.gutter(r) + styleRow(r)
+	line := styleRow(r)
+	// Matches were measured on the bare text; a code row has its sign in
+	// front of that. Painted from the right so the columns hold.
+	shift := 0
+	if r.kind == rowContext || r.kind == rowAdd || r.kind == rowDel {
+		shift = 1
+	}
+	for j := len(m.diff.matches) - 1; j >= 0; j-- {
+		mt := m.diff.matches[j]
+		if mt.Line != i {
+			continue
+		}
+		style := diffMatchStyle
+		if j == m.diff.current {
+			style = diffCurrentMatchStyle
+		}
+		line = ui.Paint(line, mt.Col+shift, mt.Width, style)
+	}
+	return mark + m.gutter(r) + line
 }
 
 // gutter is the two line-number columns, old and new, blank where a row has

@@ -1377,7 +1377,7 @@ func (m Model) relayout() Model {
 	// A log that grew under an open find box is searched again, so the
 	// matches keep pointing at the rows they were found in.
 	if m.finding.open && m.finding.query != "" && m.finding.lines != len(m.logLines) {
-		m.finding.matches = findMatches(m.logLines, m.finding.query)
+		m.finding.matches = ui.FindMatches(m.logLines, m.finding.query)
 		m.finding.lines = len(m.logLines)
 		m.finding.current = min(m.finding.current, len(m.finding.matches)-1)
 	}

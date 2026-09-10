@@ -166,6 +166,10 @@ var (
 	diffHunkStyle   = lipgloss.NewStyle().Foreground(ui.Info)
 	diffFileStyle   = lipgloss.NewStyle().Foreground(ui.Meta).Bold(true)
 	diffCursorStyle = lipgloss.NewStyle().Foreground(ui.Accent)
+	// A find match: the current one in inverse, which reads as "here" on any
+	// background; the others underlined so the eye can count them.
+	diffCurrentMatchStyle = lipgloss.NewStyle().Reverse(true)
+	diffMatchStyle        = lipgloss.NewStyle().Foreground(ui.Warn).Underline(true)
 
 	// file changes panel
 	fileChangesBoxStyle = lipgloss.NewStyle().
