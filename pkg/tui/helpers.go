@@ -194,24 +194,6 @@ func (ws WorkspaceItem) renderDiffStat() string {
 		diffRemoveStyle.Render(fmt.Sprintf("-%d", removed)))
 }
 
-// renderDiffLine colorizes a single line of unified diff output.
-func renderDiffLine(line string) string {
-	switch {
-	case strings.HasPrefix(line, "══"):
-		return diffSectionStyle.Render(line)
-	case strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ "):
-		return diffFileStyle.Render(line)
-	case strings.HasPrefix(line, "@@"):
-		return diffHunkStyle.Render(line)
-	case strings.HasPrefix(line, "+"):
-		return diffAddStyle.Render(line)
-	case strings.HasPrefix(line, "-"):
-		return diffRemoveStyle.Render(line)
-	default:
-		return line
-	}
-}
-
 // countUncommitted counts files with uncommitted changes in a worktree.
 func countUncommitted(worktreePath string) int {
 	out, err := gitutil.Output(worktreePath, "status", "--short")

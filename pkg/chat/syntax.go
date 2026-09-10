@@ -1,19 +1,12 @@
 package chat
 
-// The code inside a reply's fences is coloured by chroma — but only lexed by
-// it. Chroma's own formatters and themes pick colours with no idea whether the
-// terminal is light or dark, which is the exact mistake the adaptive palette
-// exists to prevent; so its lexers hand over tokens, and the painting is done
-// here with palette colours, the same way everything else in the chat is.
-//
-// The mapping is deliberately coarse: keywords, strings, numbers, comments and
-// the names of things. Five colours read as highlighted code; twenty read as a
-// ransom note, doubly so at chat width.
+// The code inside a reply's fences is coloured by chroma — lexed in pkg/ui,
+// which says what each span is, and painted here in the chat's own styles,
+// the same way everything else in the chat is.
 
 import (
 	"strings"
 
-	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/lipgloss"
 
@@ -52,32 +45,20 @@ type codeSpan struct {
 }
 
 // highlight lexes code and returns it as styled spans per line, or nil when
-// the language is unknown — the caller falls back to unhighlighted code, which
-// is also what a lexing error degrades to. Chroma is given the block whole and
-// its tokens are split back into lines here, because token values carry
-// newlines wherever the grammar likes.
+// the language is unknown — the caller falls back to unhighlighted code.
 func highlight(code, lang string) [][]codeSpan {
 	if lang == "" {
 		return nil
 	}
-	lexer := lexers.Get(lang)
-	if lexer == nil {
+	lines := ui.Highlight(code, lexers.Get(lang))
+	if lines == nil {
 		return nil
 	}
-	it, err := chroma.Coalesce(lexer).Tokenise(nil, code)
-	if err != nil {
-		return nil
-	}
-	out := [][]codeSpan{{}}
-	for tok := it(); tok != chroma.EOF; tok = it() {
-		style := tokenStyle(tok.Type)
-		for i, part := range strings.Split(tok.Value, "\n") {
-			if i > 0 {
-				out = append(out, []codeSpan{})
-			}
-			if part != "" {
-				out[len(out)-1] = append(out[len(out)-1], codeSpan{text: part, style: style})
-			}
+	out := make([][]codeSpan, len(lines))
+	for i, line := range lines {
+		out[i] = make([]codeSpan, len(line))
+		for j, sp := range line {
+			out[i][j] = codeSpan{text: sp.Text, style: kindStyle(sp.Kind)}
 		}
 	}
 	return out
@@ -107,20 +88,19 @@ func paintSpans(line []codeSpan, width int) string {
 	return out.String()
 }
 
-// tokenStyle maps a chroma token to one of the five syntax styles, or to the
-// block's base style for everything structural.
-func tokenStyle(t chroma.TokenType) lipgloss.Style {
-	switch {
-	case t.InCategory(chroma.Comment):
+// kindStyle is the style each kind of span is painted in, the block's base
+// style for plain code.
+func kindStyle(k ui.SynKind) lipgloss.Style {
+	switch k {
+	case ui.KindComment:
 		return mdSynCommentStyle
-	case t.InCategory(chroma.Keyword):
+	case ui.KindKeyword:
 		return mdSynKeywordStyle
-	case t.InSubCategory(chroma.LiteralString):
+	case ui.KindString:
 		return mdSynStringStyle
-	case t.InSubCategory(chroma.LiteralNumber):
+	case ui.KindNumber:
 		return mdSynNumberStyle
-	case t == chroma.NameFunction || t == chroma.NameClass ||
-		t == chroma.NameBuiltin || t == chroma.NameDecorator:
+	case ui.KindName:
 		return mdSynNameStyle
 	default:
 		return mdCodeBlockStyle

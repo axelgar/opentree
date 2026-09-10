@@ -82,11 +82,13 @@ func TestPalette_EveryRoleIsReadableOnBothBackgrounds(t *testing.T) {
 // the background is — so it is checked the other way round: readable text on
 // top of it.
 func TestPalette_BandStaysBehindItsText(t *testing.T) {
-	if got := contrast(Body.Light, Band.Light); got < 4.5 {
-		t.Errorf("light body text on the light band is %.2f:1, want at least 4.5:1", got)
-	}
-	if got := contrast(Body.Dark, Band.Dark); got < 4.5 {
-		t.Errorf("dark body text on the dark band is %.2f:1, want at least 4.5:1", got)
+	for name, band := range map[string]lipgloss.AdaptiveColor{"Band": Band, "AddBand": AddBand, "DelBand": DelBand} {
+		if got := contrast(Body.Light, band.Light); got < 4.5 {
+			t.Errorf("light body text on the light %s is %.2f:1, want at least 4.5:1", name, got)
+		}
+		if got := contrast(Body.Dark, band.Dark); got < 4.5 {
+			t.Errorf("dark body text on the dark %s is %.2f:1, want at least 4.5:1", name, got)
+		}
 	}
 }
 

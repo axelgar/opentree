@@ -599,8 +599,8 @@ func (m Model) promoteWorkspaceCmd(winner string, losers []string) tea.Cmd {
 
 // buildGroupDiff joins the siblings' diffs under headers naming each one —
 // the same ══════ shape DiffCombined itself emits for its committed and
-// uncommitted halves, so renderDiffLine styles the seams between agents
-// without the viewer learning that groups exist.
+// uncommitted halves, so the viewer's parser reads the seams between agents
+// as sections without learning that groups exist.
 func buildGroupDiff(sections []groupDiffSection) string {
 	parts := make([]string, 0, len(sections))
 	for _, s := range sections {

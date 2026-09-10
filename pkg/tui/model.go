@@ -151,11 +151,8 @@ type Model struct {
 	refreshing           bool
 	statusChecksInFlight int
 
-	// diff view
-	diffViewing      bool
-	diffContent      string
-	diffScrollOffset int
-	diffWsName       string
+	// diff view; see diff.go
+	diff diffView
 
 	// confirming a 300MB adapter download, asked for from the Agents tab,
 	// and the agent to switch to once it lands

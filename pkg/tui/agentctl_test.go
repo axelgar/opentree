@@ -762,33 +762,31 @@ func TestWheel_StopsAtTheEnds(t *testing.T) {
 
 func TestWheel_ScrollsTheDiff(t *testing.T) {
 	m := newTestModel(testWS("a"))
-	m.diffViewing = true
-	m.diffContent = strings.Repeat("a line\n", 300)
+	m.diff = newDiffView(strings.Repeat("a line\n", 300), "a")
 
 	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
-	if m.diffScrollOffset != wheelLines {
-		t.Errorf("diffScrollOffset = %d, want %d", m.diffScrollOffset, wheelLines)
+	if m.diff.offset != wheelLines {
+		t.Errorf("diff.offset = %d, want %d", m.diff.offset, wheelLines)
 	}
 	if m.cursor != 0 {
 		t.Error("scrolling the diff moved the list behind it")
 	}
 
 	m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelUp))
-	if m.diffScrollOffset != 0 {
-		t.Errorf("diffScrollOffset = %d, want it back at 0", m.diffScrollOffset)
+	if m.diff.offset != 0 {
+		t.Errorf("diff.offset = %d, want it back at 0", m.diff.offset)
 	}
 }
 
 func TestWheel_DiffStopsAtTheLastLine(t *testing.T) {
 	m := newTestModel(testWS("a"))
-	m.diffViewing = true
-	m.diffContent = strings.Repeat("a line\n", 300)
+	m.diff = newDiffView(strings.Repeat("a line\n", 300), "a")
 
 	for range 200 {
 		m, _ = applyUpdate(m, wheel(tea.MouseButtonWheelDown))
 	}
-	if got, want := m.diffScrollOffset, m.maxDiffScroll(); got != want {
-		t.Errorf("diffScrollOffset = %d, want it clamped to %d", got, want)
+	if got, want := m.diff.offset, m.maxDiffScroll(); got != want {
+		t.Errorf("diff.offset = %d, want it clamped to %d", got, want)
 	}
 }
 

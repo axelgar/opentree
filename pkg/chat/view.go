@@ -1167,14 +1167,8 @@ func callDiff(call acp.ToolCall) []change {
 	return out
 }
 
-// maxDiffCells bounds the matching table. Past it the region already dwarfs the
-// dozen lines that will be shown, so exact matching stops paying for itself.
-//
-// ponytail: the fallback is the old behaviour — the whole region reported as
-// changed. It overstates a big edit, which is the harmless direction.
-const maxDiffCells = 1 << 16
-
-// diffLines matches two versions of a region line by line.
+// diffLines matches two versions of a region line by line and keeps only
+// what changed.
 //
 // ACP hands over the before and after text rather than a patch, so the client
 // does the diffing. Not doing it at all was a lie in both directions: a
@@ -1183,57 +1177,11 @@ const maxDiffCells = 1 << 16
 // line rendered as seven removals and seven additions and blew the display
 // budget before reaching the change.
 func diffLines(old, updated []string) []change {
-	// Lines shared at either end are context the agent did not touch.
-	for len(old) > 0 && len(updated) > 0 && old[0] == updated[0] {
-		old, updated = old[1:], updated[1:]
-	}
-	for len(old) > 0 && len(updated) > 0 && old[len(old)-1] == updated[len(updated)-1] {
-		old, updated = old[:len(old)-1], updated[:len(updated)-1]
-	}
-	if len(old)*len(updated) > maxDiffCells {
-		return append(changes(false, old), changes(true, updated)...)
-	}
-
-	// common[i][j] is the length of the longest common subsequence of old[i:]
-	// and updated[j:], which is what says whether a line was replaced or merely
-	// moved past.
-	common := make([][]int, len(old)+1)
-	for i := range common {
-		common[i] = make([]int, len(updated)+1)
-	}
-	for i := len(old) - 1; i >= 0; i-- {
-		for j := len(updated) - 1; j >= 0; j-- {
-			if old[i] == updated[j] {
-				common[i][j] = common[i+1][j+1] + 1
-			} else {
-				common[i][j] = max(common[i+1][j], common[i][j+1])
-			}
-		}
-	}
-
 	var out []change
-	i, j := 0, 0
-	for i < len(old) && j < len(updated) {
-		switch {
-		case old[i] == updated[j]:
-			// Unchanged, and unchanged lines are not what the row is reporting.
-			i, j = i+1, j+1
-		case common[i+1][j] >= common[i][j+1]:
-			out = append(out, change{text: old[i]})
-			i++
-		default:
-			out = append(out, change{add: true, text: updated[j]})
-			j++
+	for _, e := range ui.Diff(old, updated) {
+		if e.Kind != '=' {
+			out = append(out, change{add: e.Kind == '+', text: e.Text})
 		}
-	}
-	out = append(out, changes(false, old[i:])...)
-	return append(out, changes(true, updated[j:])...)
-}
-
-func changes(add bool, lines []string) []change {
-	out := make([]change, len(lines))
-	for i, l := range lines {
-		out[i] = change{add: add, text: l}
 	}
 	return out
 }

@@ -2,12 +2,12 @@ package chat
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
+
+	"github.com/axelgar/opentree/pkg/ui"
 )
 
 // Find is how a long conversation is read back through for the one thing in
@@ -22,14 +22,11 @@ import (
 // highlight and the scroll need. Colours are stripped first, so a word an
 // escape sequence runs through is still one word.
 
-// match is one occurrence: the row, and the cells it covers.
-type match struct{ line, col, width int }
-
 // finding is the state of the box.
 type finding struct {
 	open    bool
 	query   string
-	matches []match
+	matches []ui.Match
 	// current is the match the log is scrolled to, or -1 with none.
 	current int
 	// lines is how many rows the log had when the matches were found, so a
@@ -78,11 +75,11 @@ func (m Model) handleFindKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // not from the top of a conversation they have already read — and wraps to
 // the first when nothing is below.
 func (m Model) refind() Model {
-	m.finding.matches = findMatches(m.logLines, m.finding.query)
+	m.finding.matches = ui.FindMatches(m.logLines, m.finding.query)
 	m.finding.lines = len(m.logLines)
 	m.finding.current = -1
 	for i, mt := range m.finding.matches {
-		if mt.line >= m.viewport.YOffset {
+		if mt.Line >= m.viewport.YOffset {
 			m.finding.current = i
 			break
 		}
@@ -91,35 +88,6 @@ func (m Model) refind() Model {
 		m.finding.current = 0
 	}
 	return m.showMatch().relayout()
-}
-
-// findMatches is every occurrence of query in the rows, colours stripped,
-// case folded. The fold is applied to the row before it is measured too, so
-// the columns are measured on the text the index was found in.
-func findMatches(rows []string, query string) []match {
-	q := strings.ToLower(query)
-	if q == "" {
-		return nil
-	}
-	var out []match
-	for i, row := range rows {
-		plain := strings.ToLower(ansi.Strip(row))
-		from := 0
-		for {
-			at := strings.Index(plain[from:], q)
-			if at < 0 {
-				break
-			}
-			at += from
-			out = append(out, match{
-				line:  i,
-				col:   ansi.StringWidth(plain[:at]),
-				width: max(ansi.StringWidth(plain[at:at+len(q)]), 1),
-			})
-			from = at + len(q)
-		}
-	}
-	return out
 }
 
 // stepMatch moves to the next or previous match, around the ends.
@@ -138,7 +106,7 @@ func (m Model) showMatch() Model {
 	if m.finding.current < 0 || m.finding.current >= len(m.finding.matches) {
 		return m
 	}
-	line := m.finding.matches[m.finding.current].line
+	line := m.finding.matches[m.finding.current].Line
 	top, height := m.viewport.YOffset, m.viewport.Height
 	if line >= top && line < top+height {
 		return m
@@ -148,38 +116,18 @@ func (m Model) showMatch() Model {
 }
 
 // paintMatches marks every match on its row, the current one in inverse and
-// the rest underlined, the same way paintSelection marks a selection. Matches
-// on one row are painted from the right, so the columns of the ones still to
-// paint are the columns they were measured at.
+// the rest underlined, the same way paintSelection marks a selection.
 func (m Model) paintMatches(lines []string) []string {
-	if !m.finding.open || len(m.finding.matches) == 0 {
+	if !m.finding.open {
 		return lines
 	}
-	out := make([]string, len(lines))
-	copy(out, lines)
-	for i := len(m.finding.matches) - 1; i >= 0; i-- {
-		mt := m.finding.matches[i]
-		if mt.line < 0 || mt.line >= len(out) {
-			continue
-		}
-		row := out[mt.line]
-		mid := ansi.Strip(ansi.Cut(row, mt.col, mt.col+mt.width))
-		if mid == "" {
-			continue
-		}
-		style := findMatchStyle
-		if i == m.finding.current {
-			style = selectStyle
-		}
-		out[mt.line] = ansi.Cut(row, 0, mt.col) + style.Render(mid) + ansi.Cut(row, mt.col+mt.width, colEnd)
-	}
-	return out
+	return ui.PaintMatches(lines, m.finding.matches, m.finding.current, 0, selectStyle, findMatchStyle)
 }
 
 // findView is the box: the query with a cursor, where the reader stands among
 // the matches, and the keys.
 func (m Model) findView() string {
-	where := ""
+	var where string
 	switch {
 	case m.finding.query == "":
 		where = helpStyle.Render("type to search the conversation")
