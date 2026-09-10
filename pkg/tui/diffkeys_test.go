@@ -38,7 +38,7 @@ func TestDiffView_PagesAndJumpsToTheEnds(t *testing.T) {
 	if m.diff.offset != 0 {
 		t.Errorf("pgup at the top moved to %d", m.diff.offset)
 	}
-	if !strings.Contains(m.View(), "pgup/pgdn") {
-		t.Error("the footer does not name the page keys")
+	if !strings.Contains(m.View(), "? keys") {
+		t.Error("the footer does not point at the key card")
 	}
 }

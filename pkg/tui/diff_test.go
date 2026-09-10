@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -165,5 +166,151 @@ func TestDiffView_CursorDragsTheWindow(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "line 47/50") {
 		t.Errorf("footer does not show the cursor line:\n%s", m.View())
+	}
+}
+
+// --- tree and navigation ---------------------------------------------------
+
+func TestDiffTree_ListsFilesWithCounts(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	view := m.View()
+	for _, want := range []string{"pkg/new.go", "+2 -1", "README.md", "+2 -0", "│"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("tree lacks %q\n%s", want, view)
+		}
+	}
+	// t hides it, and a narrow terminal has no room for it.
+	m, _ = applyUpdate(m, keyMsg("t"))
+	if strings.Contains(m.View(), "+2 -1") {
+		t.Error("t did not hide the tree")
+	}
+	m, _ = applyUpdate(m, keyMsg("t"))
+	m.width = diffTreeMinWidth - 1
+	if strings.Contains(m.View(), "+2 -1") {
+		t.Error("the tree is drawn on a terminal too narrow for it")
+	}
+}
+
+func TestDiffTree_HiddenForOneFile(t *testing.T) {
+	m := newTestModel()
+	one, _, _ := strings.Cut(twoFileDiff, "diff --git a/README.md")
+	m.diff = newDiffView(one, "a")
+	if strings.Contains(m.View(), "+2 -1") {
+		t.Error("a single file has a tree; the code should have the width")
+	}
+}
+
+func TestDiffKeys_HunkAndFileJumps(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(fiftyLines()+"\n"+twoFileDiff, "a") // the diff starts at row 50
+	m, _ = applyUpdate(m, keyMsg("]"))
+	if m.diff.cursor != 57 || m.diff.offset != m.maxDiffScroll() {
+		t.Errorf("] landed on %d/%d, want the first hunk row 57 at the window's limit", m.diff.cursor, m.diff.offset)
+	}
+	m, _ = applyUpdate(m, keyMsg("]"))
+	if m.diff.cursor != 68 {
+		t.Errorf("second ] landed on %d, want 68", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("]"))
+	if m.diff.cursor != 68 {
+		t.Errorf("] past the last hunk moved to %d", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("["))
+	if m.diff.cursor != 57 {
+		t.Errorf("[ landed on %d, want 57", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("g"))
+	m, _ = applyUpdate(m, keyMsg("n"))
+	if m.diff.cursor != 50 {
+		t.Errorf("n landed on %d, want the first file header 50", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("n"))
+	if m.diff.cursor != 63 {
+		t.Errorf("second n landed on %d, want 63", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("p"))
+	if m.diff.cursor != 50 {
+		t.Errorf("p landed on %d, want 50", m.diff.cursor)
+	}
+}
+
+func TestDiffKeys_SpaceMarksReviewed(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	if strings.Contains(m.View(), "✓") {
+		t.Fatal("a fresh diff has a reviewed mark")
+	}
+	m, _ = applyUpdate(m, keyMsg("n")) // onto README.md, so the tick is not the cursor's file
+	m, _ = applyUpdate(m, keyMsg("p"))
+	m, _ = applyUpdate(m, keyMsg("j"))
+	m, _ = applyUpdate(m, keyMsg("n"))
+	m, _ = applyUpdate(m, keyMsg(" "))
+	m, _ = applyUpdate(m, keyMsg("p"))
+	if !strings.Contains(m.View(), "✓ README.md") {
+		t.Errorf("space did not tick the file:\n%s", m.View())
+	}
+	if m.diff.offset != 0 {
+		t.Error("space paged; it should only mark")
+	}
+	m, _ = applyUpdate(m, keyMsg("n"))
+	m, _ = applyUpdate(m, keyMsg(" "))
+	if strings.Contains(m.View(), "✓") {
+		t.Error("a second space did not untick")
+	}
+}
+
+func TestDiffClick_TreeJumpsBodySelects(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	top := appStyle.GetPaddingTop() + 2
+
+	// The tree's second line is README.md (no section heading, so no offset).
+	m, _ = applyUpdate(m, tea.MouseMsg{X: 4, Y: top + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.diff.cursor != 13 {
+		t.Errorf("a click on the second file put the cursor on %d, want 13", m.diff.cursor)
+	}
+	m, _ = applyUpdate(m, keyMsg("g"))
+	m, _ = applyUpdate(m, tea.MouseMsg{X: 60, Y: top + 5, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.diff.cursor != 5 {
+		t.Errorf("a click on the sixth body line put the cursor on %d, want 5", m.diff.cursor)
+	}
+	if m.cursor != 0 {
+		t.Error("a click in the diff moved the list behind it")
+	}
+}
+
+func TestGroupDiff_TreeGroupsFilesBySibling(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(buildGroupDiff([]groupDiffSection{
+		{name: "feat/x-claude", agent: "claude", content: twoFileDiff},
+		{name: "feat/x-gemini", agent: "gemini", content: twoFileDiff},
+	}), "feat/x · 2 siblings")
+	lines := m.treeLines()
+	files := make([]int, len(lines))
+	for i, l := range lines {
+		files[i] = l.file
+	}
+	if want := []int{-1, 0, 1, -1, 2, 3}; fmt.Sprint(files) != fmt.Sprint(want) {
+		t.Errorf("tree lines = %v, want a heading before each sibling's files %v", files, want)
+	}
+	if !strings.Contains(lines[3].text, "feat/x-gemini (gemini)") {
+		t.Errorf("second heading = %q", lines[3].text)
+	}
+}
+
+func TestDiffView_HelpCardNamesEveryKey(t *testing.T) {
+	m := newTestModel()
+	m.diff = newDiffView(twoFileDiff, "a")
+	m, _ = applyUpdate(m, keyMsg("?"))
+	view := m.View()
+	for _, k := range diffKeys {
+		if !strings.Contains(view, k[0]) || !strings.Contains(view, k[1]) {
+			t.Errorf("card lacks %v", k)
+		}
+	}
+	m, _ = applyUpdate(m, keyMsg("j"))
+	if m.diff.help || m.diff.cursor != 0 {
+		t.Error("the first key after the card should close it and do nothing else")
 	}
 }

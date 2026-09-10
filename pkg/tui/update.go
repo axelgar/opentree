@@ -1207,8 +1207,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
-	if m.tab != tabWorkspaces || m.busyWithDialog() || m.diff.open {
+	if m.tab != tabWorkspaces || m.busyWithDialog() {
 		return m, nil
+	}
+	if m.diff.open {
+		return m.clickDiff(msg)
 	}
 	i, ok := m.rowAt(msg.Y)
 	if !ok {
